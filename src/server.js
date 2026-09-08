@@ -36,8 +36,21 @@ app.get("/", (_req, res) => {
 app.use("/api", routes);
 
 // ─── 404 ──────────────────────────────────────────
-app.use((_req, res) => {
-  res.status(404).json({ ok: false, error: "Ruta no encontrada" });
+//
+// Dice QUÉ ruta vio Express, no solo que no la encontró. Detrás de un proxy
+// —Vercel reescribe todo a este archivo— la ruta que llega puede no ser la que
+// se pidió, y un "Ruta no encontrada" pelado no deja distinguir "escribí mal la
+// URL" de "el proxy me la cambió".
+app.use((req, res) => {
+  res.status(404).json({
+    ok: false,
+    error: "Ruta no encontrada",
+    metodo: req.method,
+    pedida: req.originalUrl,
+    vista: req.url,
+    montadas: ["/", "/api/health", "/api/sedes", "/api/plantilla/:especie",
+               "/api/recepciones", "/api/liquidaciones"],
+  });
 });
 
 // ─── Error handler ────────────────────────────────
