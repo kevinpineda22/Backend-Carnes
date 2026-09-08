@@ -39,7 +39,7 @@ EMAIL_PASS=
 CARNES_MAIL_ADMIN=
 
 # A dónde apunta el botón "Revisar y aprobar" del correo.
-CARNES_PANEL_URL=https://www.supermercadomerkahorro.com/carnes/admin
+CARNES_PANEL_URL=https://merkahorro.com/carnes/admin
 
 # ─── Llave de los endpoints de tokens de QR ──────────────────────────────────
 # Protege GET /api/sedes/tokens y POST /api/sedes/:id/regenerar-token, que son

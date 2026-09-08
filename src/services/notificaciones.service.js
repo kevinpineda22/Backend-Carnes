@@ -57,7 +57,7 @@ export async function notificarRecepcionFinalizada(recepcion, items = []) {
 
   const panel =
     process.env.CARNES_PANEL_URL ||
-    "https://www.supermercadomerkahorro.com/carnes/admin";
+    "https://merkahorro.com/carnes/admin";
 
   // Los adicionales van PRIMERO y destacados: son lo único de este correo que el
   // admin no puede resolver mirando la plantilla. Un renglón que el recibidor

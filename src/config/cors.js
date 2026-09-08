@@ -28,12 +28,18 @@ import { createError } from "../middleware/errorHandler.js";
  * `CARNES_ORIGENES` (opcional) reemplaza la lista, separada por comas. Sirve
  * para sumar un dominio nuevo sin tocar código:
  *
- *   CARNES_ORIGENES=https://www.supermercadomerkahorro.com,http://localhost:5173
+ *   CARNES_ORIGENES=https://merkahorro.com,http://localhost:5173
  */
 
 const POR_DEFECTO = [
-  "https://www.supermercadomerkahorro.com",
+  // El dominio de producción.
+  "https://merkahorro.com",
+  "https://www.merkahorro.com",
+  // El dominio viejo sigue vivo y sirve la misma app (verificado: responde 200).
+  // Va incluido porque sacarlo rompería a quien entre por ahí, y agregarlo no
+  // suma riesgo: es de la casa.
   "https://supermercadomerkahorro.com",
+  "https://www.supermercadomerkahorro.com",
   // Desarrollo local. Vite usa 5173 y salta a 5174 si está ocupado, así que van
   // los dos: si no, el día que el puerto está tomado el front deja de hablarle
   // al backend y el error que aparece —"Network Error"— no dice por qué.
