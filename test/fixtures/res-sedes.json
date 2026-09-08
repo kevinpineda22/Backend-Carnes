@@ -1,0 +1,801 @@
+{
+ "_origen": "01 Septiembre 2026.xlsx — hojas de sede, filas 11..47",
+ "_nota": "codigo_item = col A, costo_base = col D (VLOOKUP a 'Datos'), cantidad = col E",
+ "sedes": {
+  "Villahermosa": {
+   "kilos_excel": 388.22,
+   "costo_teorico_excel": 11380294.42,
+   "items": [
+    {
+     "codigo_item": "15167",
+     "descripcion": "CARNE PARA MOLER",
+     "costo_base": 23000.0,
+     "cantidad": 4.18,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15140",
+     "descripcion": "CASCARA DE FREIR",
+     "costo_base": 26215.0,
+     "cantidad": 12.31,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15141",
+     "descripcion": "CHATA DE SOLOMITO",
+     "costo_base": 46149.0,
+     "cantidad": 15.9,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15167",
+     "descripcion": "COGOTE",
+     "costo_base": 23000.0,
+     "cantidad": 16.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15145",
+     "descripcion": "COLA DE RES",
+     "costo_base": 19240.0,
+     "cantidad": 2.39,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "COLITA DE EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 6.1,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15147",
+     "descripcion": "COPETE",
+     "costo_base": 26244.0,
+     "cantidad": 8.41,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15151",
+     "descripcion": "COSTILLA DE RES",
+     "costo_base": 19459.0,
+     "cantidad": 15.62,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15218",
+     "descripcion": "COSTILLA CORRIENTE",
+     "costo_base": 6000.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "ENTRAÑITAS",
+     "costo_base": 26500.0,
+     "cantidad": 2.29,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "FALDITA",
+     "costo_base": 26500.0,
+     "cantidad": 3.45,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15161",
+     "descripcion": "HUEVO DE ALDANA",
+     "costo_base": 31556.0,
+     "cantidad": 23.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15162",
+     "descripcion": "HUEVO DE SOLOMO",
+     "costo_base": 26377.0,
+     "cantidad": 14.53,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "LAGARTO DELANTERO",
+     "costo_base": 26124.0,
+     "cantidad": 11.33,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15171",
+     "descripcion": "MORRILLO",
+     "costo_base": 26377.0,
+     "cantidad": 5.33,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15172",
+     "descripcion": "MUCHACHO",
+     "costo_base": 29685.0,
+     "cantidad": 10.79,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERITO",
+     "costo_base": 27193.0,
+     "cantidad": 6.08,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERO",
+     "costo_base": 27193.0,
+     "cantidad": 7.89,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15152",
+     "descripcion": "PECHO",
+     "costo_base": 26377.0,
+     "cantidad": 20.58,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15185",
+     "descripcion": "POSTA",
+     "costo_base": 29685.0,
+     "cantidad": 22.13,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15186",
+     "descripcion": "PUNTA DE ANCA",
+     "costo_base": 52500.0,
+     "cantidad": 6.68,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA DE FALDA",
+     "costo_base": 26500.0,
+     "cantidad": 2.77,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15196",
+     "descripcion": "PUNTA DE SOLOMO",
+     "costo_base": 44450.0,
+     "cantidad": 9.39,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA ESPALDILLA",
+     "costo_base": 27800.0,
+     "cantidad": 4.65,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15216",
+     "descripcion": "REPELE INDUSTRIAL",
+     "costo_base": 16000.0,
+     "cantidad": 14.72,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETA",
+     "costo_base": 27192.0,
+     "cantidad": 5.35,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETICA",
+     "costo_base": 27192.0,
+     "cantidad": 6.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15193",
+     "descripcion": "SOBREBARRIGA",
+     "costo_base": 27192.0,
+     "cantidad": 7.51,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15194",
+     "descripcion": "SOLOMITO",
+     "costo_base": 61000.0,
+     "cantidad": 10.11,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "SOLOMO EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 18.61,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15197",
+     "descripcion": "TABLA",
+     "costo_base": 31556.0,
+     "cantidad": 40.52,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TABLEADO TRASERO",
+     "costo_base": 26124.0,
+     "cantidad": 9.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "TABLON",
+     "costo_base": 26124.0,
+     "cantidad": 14.89,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TORTUGA",
+     "costo_base": 26124.0,
+     "cantidad": 8.33,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15203",
+     "descripcion": "TRES TELAS",
+     "costo_base": 20361.0,
+     "cantidad": 18.34,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18015",
+     "descripcion": "CHOCOZUELA *KL",
+     "costo_base": 2700.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18014",
+     "descripcion": "ROMPE KILO",
+     "costo_base": 3400.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    }
+   ]
+  },
+  "Parque": {
+   "kilos_excel": 260.79,
+   "costo_teorico_excel": 7588378.869999999,
+   "items": [
+    {
+     "codigo_item": "15167",
+     "descripcion": "CARNE PARA MOLER",
+     "costo_base": 23000.0,
+     "cantidad": 2.77,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15140",
+     "descripcion": "CASCARA DE FREIR",
+     "costo_base": 26215.0,
+     "cantidad": 7.65,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15141",
+     "descripcion": "CHATA DE SOLOMITO",
+     "costo_base": 46149.0,
+     "cantidad": 10.53,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15167",
+     "descripcion": "COGOTE",
+     "costo_base": 23000.0,
+     "cantidad": 11.61,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15145",
+     "descripcion": "COLA DE RES",
+     "costo_base": 19240.0,
+     "cantidad": 1.54,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "COLITA DE EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 3.77,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15147",
+     "descripcion": "COPETE",
+     "costo_base": 26244.0,
+     "cantidad": 5.49,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15151",
+     "descripcion": "COSTILLA DE RES",
+     "costo_base": 19459.0,
+     "cantidad": 10.93,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15218",
+     "descripcion": "COSTILLA CORRIENTE",
+     "costo_base": 6000.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "ENTRAÑITAS",
+     "costo_base": 26500.0,
+     "cantidad": 1.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "FALDITA",
+     "costo_base": 26500.0,
+     "cantidad": 2.9,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15161",
+     "descripcion": "HUEVO DE ALDANA",
+     "costo_base": 31556.0,
+     "cantidad": 15.11,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15162",
+     "descripcion": "HUEVO DE SOLOMO",
+     "costo_base": 26377.0,
+     "cantidad": 9.42,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "LAGARTO DELANTERO",
+     "costo_base": 26124.0,
+     "cantidad": 7.73,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15171",
+     "descripcion": "MORRILLO",
+     "costo_base": 26377.0,
+     "cantidad": 3.5,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15172",
+     "descripcion": "MUCHACHO",
+     "costo_base": 29685.0,
+     "cantidad": 7.36,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERITO",
+     "costo_base": 27193.0,
+     "cantidad": 4.57,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERO",
+     "costo_base": 27193.0,
+     "cantidad": 5.48,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15152",
+     "descripcion": "PECHO",
+     "costo_base": 26377.0,
+     "cantidad": 13.76,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15185",
+     "descripcion": "POSTA",
+     "costo_base": 29685.0,
+     "cantidad": 14.82,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15186",
+     "descripcion": "PUNTA DE ANCA",
+     "costo_base": 52500.0,
+     "cantidad": 4.57,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA DE FALDA",
+     "costo_base": 26500.0,
+     "cantidad": 1.74,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15196",
+     "descripcion": "PUNTA DE SOLOMO",
+     "costo_base": 44450.0,
+     "cantidad": 5.7,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA ESPALDILLA",
+     "costo_base": 27800.0,
+     "cantidad": 3.52,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15216",
+     "descripcion": "REPELE INDUSTRIAL",
+     "costo_base": 16000.0,
+     "cantidad": 10.06,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETA",
+     "costo_base": 27192.0,
+     "cantidad": 4.17,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETICA",
+     "costo_base": 27192.0,
+     "cantidad": 4.27,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15193",
+     "descripcion": "SOBREBARRIGA",
+     "costo_base": 27192.0,
+     "cantidad": 5.18,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15194",
+     "descripcion": "SOLOMITO",
+     "costo_base": 61000.0,
+     "cantidad": 6.09,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "SOLOMO EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 12.5,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15197",
+     "descripcion": "TABLA",
+     "costo_base": 31556.0,
+     "cantidad": 26.48,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TABLEADO TRASERO",
+     "costo_base": 26124.0,
+     "cantidad": 5.94,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "TABLON",
+     "costo_base": 26124.0,
+     "cantidad": 10.81,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TORTUGA",
+     "costo_base": 26124.0,
+     "cantidad": 5.61,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15203",
+     "descripcion": "TRES TELAS",
+     "costo_base": 20361.0,
+     "cantidad": 13.45,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18015",
+     "descripcion": "CHOCOZUELA *KL",
+     "costo_base": 2700.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18014",
+     "descripcion": "ROMPE KILO",
+     "costo_base": 3400.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    }
+   ]
+  },
+  "Lopez": {
+   "kilos_excel": 133.5,
+   "costo_teorico_excel": 3909772.079999999,
+   "items": [
+    {
+     "codigo_item": "15167",
+     "descripcion": "CARNE PARA MOLER",
+     "costo_base": 23000.0,
+     "cantidad": 4.49,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15140",
+     "descripcion": "CASCARA DE FREIR",
+     "costo_base": 26215.0,
+     "cantidad": 4.88,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15141",
+     "descripcion": "CHATA DE SOLOMITO",
+     "costo_base": 46149.0,
+     "cantidad": 4.8,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15167",
+     "descripcion": "COGOTE",
+     "costo_base": 23000.0,
+     "cantidad": 6.31,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15145",
+     "descripcion": "COLA DE RES",
+     "costo_base": 19240.0,
+     "cantidad": 0.98,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "COLITA DE EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 2.24,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15147",
+     "descripcion": "COPETE",
+     "costo_base": 26244.0,
+     "cantidad": 3.02,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15151",
+     "descripcion": "COSTILLA DE RES",
+     "costo_base": 19459.0,
+     "cantidad": 6.01,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15218",
+     "descripcion": "COSTILLA CORRIENTE",
+     "costo_base": 6000.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "ENTRAÑITAS",
+     "costo_base": 26500.0,
+     "cantidad": 0.77,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "FALDITA",
+     "costo_base": 26500.0,
+     "cantidad": 1.06,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15161",
+     "descripcion": "HUEVO DE ALDANA",
+     "costo_base": 31556.0,
+     "cantidad": 7.27,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15162",
+     "descripcion": "HUEVO DE SOLOMO",
+     "costo_base": 26377.0,
+     "cantidad": 5.29,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "LAGARTO DELANTERO",
+     "costo_base": 26124.0,
+     "cantidad": 3.82,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15171",
+     "descripcion": "MORRILLO",
+     "costo_base": 26377.0,
+     "cantidad": 1.73,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15172",
+     "descripcion": "MUCHACHO",
+     "costo_base": 29685.0,
+     "cantidad": 3.44,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERITO",
+     "costo_base": 27193.0,
+     "cantidad": 2.35,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "PALETERO",
+     "costo_base": 27193.0,
+     "cantidad": 2.83,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15152",
+     "descripcion": "PECHO",
+     "costo_base": 26377.0,
+     "cantidad": 7.27,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15185",
+     "descripcion": "POSTA",
+     "costo_base": 29685.0,
+     "cantidad": 7.43,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15186",
+     "descripcion": "PUNTA DE ANCA",
+     "costo_base": 52500.0,
+     "cantidad": 2.4,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA DE FALDA",
+     "costo_base": 26500.0,
+     "cantidad": 0.83,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15196",
+     "descripcion": "PUNTA DE SOLOMO",
+     "costo_base": 44450.0,
+     "cantidad": 3.18,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15187",
+     "descripcion": "PUNTA ESPALDILLA",
+     "costo_base": 27800.0,
+     "cantidad": 1.49,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15216",
+     "descripcion": "REPELE INDUSTRIAL",
+     "costo_base": 16000.0,
+     "cantidad": 2.55,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETA",
+     "costo_base": 27192.0,
+     "cantidad": 1.98,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15189",
+     "descripcion": "SABALETICA",
+     "costo_base": 27192.0,
+     "cantidad": 2.21,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15193",
+     "descripcion": "SOBREBARRIGA",
+     "costo_base": 27192.0,
+     "cantidad": 2.21,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15194",
+     "descripcion": "SOLOMITO",
+     "costo_base": 61000.0,
+     "cantidad": 3.56,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15195",
+     "descripcion": "SOLOMO EXTRANJERO",
+     "costo_base": 31556.0,
+     "cantidad": 6.04,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15197",
+     "descripcion": "TABLA",
+     "costo_base": 31556.0,
+     "cantidad": 14.19,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TABLEADO TRASERO",
+     "costo_base": 26124.0,
+     "cantidad": 3.08,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15176",
+     "descripcion": "TABLON",
+     "costo_base": 26124.0,
+     "cantidad": 5.37,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15277",
+     "descripcion": "TORTUGA",
+     "costo_base": 26124.0,
+     "cantidad": 2.55,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "15203",
+     "descripcion": "TRES TELAS",
+     "costo_base": 20361.0,
+     "cantidad": 5.87,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18015",
+     "descripcion": "CHOCOZUELA *KL",
+     "costo_base": 2700.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    },
+    {
+     "codigo_item": "18014",
+     "descripcion": "ROMPE KILO",
+     "costo_base": 3400.0,
+     "cantidad": 0.0,
+     "tipo": "carne"
+    }
+   ]
+  }
+ }
+}

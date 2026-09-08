@@ -1,0 +1,24 @@
+{
+  "name": "backend-carnes",
+  "version": "1.0.0",
+  "description": "API REST para Recepción de Carnes (Res y Cerdo) — Merkahorro",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "qr": "node scripts/generar-qr-sedes.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "morgan": "^1.10.0",
+    "nodemailer": "^6.10.1",
+    "qrcode": "^1.5.4",
+    "zod": "^3.24.2"
+  }
+}

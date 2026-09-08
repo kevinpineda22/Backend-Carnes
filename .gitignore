@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.local
+.vercel
+*.log
+
+# Contiene los tokens de QR EN CLARO. Se genera con `npm run qr`,
+# se imprime y se borra. Nunca al repositorio.
+qr-sedes.html
+qr-sedes-demo.html
