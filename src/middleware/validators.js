@@ -108,6 +108,16 @@ const itemSchema = z.object({
   costo_base: z.coerce.number().nonnegative().default(0),
   orden: z.coerce.number().int().nonnegative().default(0),
   activo: z.coerce.boolean().default(true),
+  // Cómo se llama este corte en el PDF del frigorífico. Vacío = sin mapear, y
+  // el cruce lo reporta como tal en vez de darlo por cuadrado. Se guarda "" como
+  // null para que la columna tenga un solo valor para "no configurado".
+  nombre_desposte: z
+    .string()
+    .trim()
+    .max(120)
+    .nullable()
+    .optional()
+    .transform((v) => (v ? v : null)),
 });
 
 const viceraSchema = z.object({
@@ -341,6 +351,16 @@ export const validators = {
       codigo_co: z.string().trim().max(10).nullable().optional(),
       nombre: z.string().trim().min(1).max(80).optional(),
       activo: z.coerce.boolean().optional(),
+      // Cadena "Sub Cliente" del informe de desposte, ej. "MK - 380 - BARRIO
+      // LOPEZ". Es lo que permite detectar que el admin adjuntó el PDF de otra
+      // sede sin que nadie lo lea a ojo.
+      subcliente_desposte: z
+        .string()
+        .trim()
+        .max(120)
+        .nullable()
+        .optional()
+        .transform((v) => (v ? v : null)),
     }),
   ),
 };

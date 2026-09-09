@@ -8,7 +8,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test",
-    "qr": "node scripts/generar-qr-sedes.js"
+    "qr": "node scripts/generar-qr-sedes.js",
+    "mapear": "node scripts/mapear-desposte.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.1",
@@ -17,8 +18,10 @@
     "express": "^4.21.2",
     "helmet": "^8.0.0",
     "morgan": "^1.10.0",
+    "multer": "^2.3.0",
     "nodemailer": "^6.10.1",
     "qrcode": "^1.5.4",
+    "unpdf": "^1.8.1",
     "zod": "^3.24.2"
   }
 }

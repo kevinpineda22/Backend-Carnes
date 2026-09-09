@@ -12,7 +12,11 @@ const TABLE = "carnes_sedes";
  * copia el de la sede que quiera y la verificación pasa a ser decorativa. El
  * token solo viaja en una dirección: del sticker al backend.
  */
-const CAMPOS_PUBLICOS = "id, codigo_co, nombre, activo";
+//
+// `subcliente_desposte` SÍ va: no es un secreto —es el nombre del cliente
+// impreso en un PDF que el admin ya tiene en la mano— y la pantalla de sedes
+// necesita mostrarlo para poder configurarlo.
+const CAMPOS_PUBLICOS = "id, codigo_co, nombre, activo, subcliente_desposte";
 
 /** Sedes activas, para el selector del recibidor. */
 export async function listar({ incluirInactivas = false } = {}) {

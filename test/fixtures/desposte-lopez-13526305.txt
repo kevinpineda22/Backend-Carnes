@@ -1,0 +1,84 @@
+VisualERP
+ASOMUNUS
+Planta
+FrigoriNus
+S.A.S.
+(Bovinos)
+Informe Rendimiento por Documento y Mermas Desposte (x Documento)
+Fecha Desposte: 28/08/2026
+Cliente: 380 - JULIO ARBOLEDA SIERRA
+Sub Cliente: MK - 380 - BARRIO LOPEZ
+Documento Cliente : 13526305
+Cantidad Animales
+(Ingreso Desposte): 1.00
+Producto Cantidad
+(Kg)
+Cantidad
+(Pesajes)
+Rto.
+Promedio
+(%)
+Promedio
+(Kg.)
+FINAS
+CARNE PARA MOLER 4.49 2 2.48 % 4.49
+CASCARA DE FREIR 4.88 1 2.69 % 4.88
+CHATA DE SOLOMITO 4.80 2 2.65 % 4.80
+COGOTE 6.31 1 3.48 % 6.31
+COLA DE RES 0.98 1 0.54 % 0.98
+COLITA DE EXTRANJERO 2.24 1 1.24 % 2.24
+COPETE 3.02 1 1.67 % 3.02
+COSTILLA 6.01 1 3.32 % 6.01
+ENTRAÑITAS 0.77 1 0.42 % 0.77
+FALDITA 1.06 1 0.58 % 1.06
+HUEVO DE ALDANA 7.27 2 4.01 % 7.27
+HUEVO DE SOLOMO 5.29 2 2.92 % 5.29
+LAGARTO DELANTERO 3.82 1 2.11 % 3.82
+MORRILLO 1.73 1 0.95 % 1.73
+MUCHACHO 3.44 1 1.90 % 3.44
+PALETERITO 2.35 1 1.30 % 2.35
+PALETERO 2.83 1 1.56 % 2.83
+PECHO 7.27 2 4.01 % 7.27
+POSTA 7.43 2 4.10 % 7.43
+PUNTA DE ANCA 2.40 2 1.32 % 2.40
+PUNTA DE FALDA 0.83 1 0.46 % 0.83
+PUNTA DE SOLOMO 3.18 2 1.75 % 3.18
+PUNTA ESPALDILLA 1.49 1 0.82 % 1.49
+REPELE INDUSTRIAL 2.55 1 1.41 % 2.55
+SABALETA 1.98 1 1.09 % 1.98
+SABALETICA 2.21 1 1.22 % 2.21
+SOBREBARRIGA 2.21 1 1.22 % 2.21
+SOLOMITO 3.56 2 1.96 % 3.56
+SOLOMO EXTRANJERO 6.04 1 3.33 % 6.04
+TABLA 14.19 2 7.83 % 14.19
+TABLEADO TRASERO 3.08 1 1.70 % 3.08
+TABLON 5.37 2 2.96 % 5.37
+TORTUGA 2.55 1 1.41 % 2.55
+TRES TELAS 5.87 2 3.24 % 5.87
+TOTAL 133.50 46 73.68
+SUBPRODUCTOS
+CHOCOZUELA 0.85 1 0.47 % 0.85
+DESPOJOS 1.10 1 0.61 % 1.10
+HUESO BLANCO 35.60 1 19.65 % 35.60
+Page 1 of 2Inf Rendimiento solo x Documento
+28/08/2026http://192.168.1.85/VisualERP/FrigoGanaderia/Informes/InfRendimientoSoloXDocu...
+ROMPE MALAYA - RILA 0.72 1 0.40 % 0.72
+SEBO 9.06 1 5.00 % 9.06
+TOTAL 47.33 5 26.12
+Total Animales 1
+Total Peso En Pie 352.0
+Total Peso Canal Caliente 185.5
+Total Peso Canal Fria
+(Ingreso Desposte) 181.2
+Total Peso Desposte 180.83
+Total Peso Desposte
+Aprovechable (TCA) 133.50
+Rendimiento Canal a
+Carne
+73.68
+%
+Merma en Kilogramos 0.37
+Merma en Porcentaje 0.20
+%
+Page 2 of 2Inf Rendimiento solo x Documento
+28/08/2026http://192.168.1.85/VisualERP/FrigoGanaderia/Informes/InfRendimientoSoloXDocu...

@@ -1,6 +1,8 @@
 import { Router } from "express";
 import * as RecepcionesController from "../controllers/recepciones.controller.js";
+import * as DesposteController from "../controllers/desposte.controller.js";
 import { validators } from "../middleware/validators.js";
+import { subirPDF } from "../middleware/subirPDF.js";
 
 const router = Router();
 
@@ -29,6 +31,20 @@ router.patch(
   validators.homologarAdicional,
   RecepcionesController.homologarAdicional,
 );
+
+// ─── Informe de desposte ──────────────────────────────────────────────────
+//
+// El PDF que emite el frigorífico por sede y por lote. Cuelga de la recepción
+// porque es uno a uno con ella: misma sede, misma entrega.
+//
+// Lo sube el ADMIN, nunca el recibidor, y el modelo lo rechaza mientras la
+// recepción esté en Borrador. Si el recibidor pudiera verlo antes de digitar,
+// transcribiría el informe en vez de contar la carne y el cruce compararía el
+// PDF contra sí mismo.
+router.get("/:id/desposte", DesposteController.obtener);
+router.post("/:id/desposte", subirPDF, DesposteController.adjuntar);
+router.get("/:id/desposte/archivo", DesposteController.archivo);
+router.delete("/:id/desposte", DesposteController.eliminar);
 
 // ─── Transiciones ─────────────────────────────────────────────────────────
 //

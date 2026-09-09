@@ -31,7 +31,19 @@ function tabla(catalogo) {
 
 /** Columnas que el cliente puede escribir, por catálogo. */
 const ESCRIBIBLES = {
-  items: ["codigo_tabla", "codigo_item", "descripcion", "costo_base", "orden", "activo"],
+  // `nombre_desposte` es el diccionario contra el PDF del frigorífico. Se edita
+  // desde la misma grilla que el resto de la plantilla porque es un dato del
+  // corte, no una configuración aparte: quien sabe que "Tabla" se llama "TABLA"
+  // en el informe es el mismo que mantiene la lista de cortes.
+  items: [
+    "codigo_tabla",
+    "codigo_item",
+    "descripcion",
+    "costo_base",
+    "orden",
+    "activo",
+    "nombre_desposte",
+  ],
   viceras: ["bloque", "nombre", "precio", "orden", "activo"],
   conceptos: ["nombre", "signo", "orden", "activo"],
 };
