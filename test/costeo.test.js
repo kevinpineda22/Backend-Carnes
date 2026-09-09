@@ -204,3 +204,48 @@ test("reparto sin kilos en ninguna sede no explota", () => {
   assert.equal(r[0].participacion, 0);
   assert.equal(r[0].valorFactura, 0);
 });
+
+test("un factor altísimo BLOQUEA aunque no llegue a 100%", () => {
+  // El caso real que apareció en producción: gastos cargados mil veces más
+  // chicos. Factor 99,86% → cada corte al 0,14% de su precio de lista. Un lomo
+  // de $61.000 costaría $85, y eso sube a SIESA sin protestar.
+  const r = calcularCosteo({
+    items: [{ codigo_item: "1", cantidad: 100, costo_base: 20000 }],
+    gastos: [{ concepto: "Ganado", valor: 2800 }], // 0,14% de 2.000.000
+  });
+
+  assert.ok(r.factor > 0.99 && r.factor < 1, `factor ${r.factor}`);
+  const aviso = r.advertencias.find((a) => a.codigo === "factor_anula_costos");
+  assert.ok(aviso, "tiene que avisar aunque el factor no llegue a 1");
+  assert.match(aviso.mensaje, /NO subir a SIESA/);
+});
+
+test("un factor sospechoso avisa pero NO bloquea", () => {
+  // 60%: matemáticamente posible, comercialmente raro. Se avisa.
+  const r = calcularCosteo({
+    items: [{ codigo_item: "1", cantidad: 100, costo_base: 20000 }],
+    gastos: [{ concepto: "Ganado", valor: 800000 }], // 40% del teórico
+  });
+
+  assert.ok(Math.abs(r.factor - 0.6) < 0.001, `factor ${r.factor}`);
+  assert.ok(r.advertencias.some((a) => a.codigo === "factor_alto"));
+  assert.equal(
+    r.advertencias.some((a) => a.codigo === "factor_anula_costos"),
+    false,
+    "no debe bloquear",
+  );
+});
+
+test("un factor normal no molesta", () => {
+  // 8,61%, como la hoja de cerdo del Excel.
+  const r = calcularCosteo({
+    items: [{ codigo_item: "1", cantidad: 100, costo_base: 20000 }],
+    gastos: [{ concepto: "Ganado", valor: 1827800 }],
+  });
+
+  assert.ok(r.factor > 0.08 && r.factor < 0.09, `factor ${r.factor}`);
+  assert.equal(
+    r.advertencias.some((a) => ["factor_alto", "factor_anula_costos"].includes(a.codigo)),
+    false,
+  );
+});

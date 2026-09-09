@@ -165,19 +165,44 @@ export async function abrir({
 
   const fecha = fecha_ingreso || new Date().toISOString().slice(0, 10);
 
-  const { data: existente, error: errorBusca } = await supabase
+  // Se buscan los DOS estados que el recibidor todavía puede tocar.
+  //
+  // El rechazado importa tanto como el borrador: sin él, el admin rechazaba con
+  // un motivo, el recibidor volvía a escanear, y como una rechazada no es un
+  // borrador se le abría una recepción NUEVA. Resultado: el motivo no lo leía
+  // nadie y quedaban dos documentos de la misma sede el mismo día. El rechazo
+  // era un callejón sin salida.
+  const { data: candidatas, error: errorBusca } = await supabase
     .from(TABLE)
-    .select("id")
+    .select("id, estado, motivo_rechazo")
     .eq("especie", especie)
     .eq("sede_id", sede_id)
     .eq("fecha_ingreso", fecha)
-    .eq("estado", ESTADOS.BORRADOR)
-    .maybeSingle();
+    .in("estado", [ESTADOS.BORRADOR, ESTADOS.RECHAZADO])
+    .order("id", { ascending: false });
   if (errorBusca) {
     throw new Error(`Error al buscar el borrador: ${errorBusca.message}`);
   }
 
+  // Si por lo que fuera hubiera de los dos, gana el borrador: es donde está el
+  // trabajo en curso.
+  const existente =
+    (candidatas || []).find((c) => c.estado === ESTADOS.BORRADOR) || (candidatas || [])[0];
+
   if (existente) {
+    if (existente.estado === ESTADOS.RECHAZADO) {
+      // Vuelve a Borrador para que se pueda corregir. El `motivo_rechazo` NO se
+      // borra acá: el recibidor lo tiene que seguir viendo mientras arregla.
+      // Se limpia recién al volver a cerrar (ver `finalizar`).
+      await cambiarEstado(existente.id, ESTADOS.BORRADOR);
+      return {
+        recepcion: await obtener(existente.id),
+        reanudada: true,
+        rechazada: true,
+        motivoRechazo: existente.motivo_rechazo,
+        verificacion,
+      };
+    }
     return { recepcion: await obtener(existente.id), reanudada: true, verificacion };
   }
 
@@ -232,6 +257,22 @@ function mensajeVerificacion({ estado, sede }) {
 }
 
 // ─── Edición del borrador ──────────────────────────────────────────────────
+
+/**
+ * ¿El error es "esa columna no existe"?
+ *
+ * Postgres devuelve `42703` (undefined_column) y PostgREST `PGRST204` cuando su
+ * cache de esquema todavía no la conoce. Se mira también el mensaje porque el
+ * código no siempre viaja.
+ */
+function esColumnaFaltante(error, columna) {
+  const codigo = error?.code || "";
+  const mensaje = String(error?.message || "");
+  return (
+    (codigo === "42703" || codigo === "PGRST204" || /column .* does not exist/i.test(mensaje)) &&
+    mensaje.includes(columna)
+  );
+}
 
 /** Trae la recepción y falla si no se puede editar. Guard compartido. */
 async function exigirBorrador(id) {
@@ -295,9 +336,44 @@ export async function guardarBorrador(id, { novillos, observaciones, items = [] 
   if (novillos !== undefined) cambios.novillos = Number(novillos) || 0;
   if (observaciones !== undefined) cambios.observaciones = observaciones;
 
+  // `iniciado_at` marca cuándo EMPEZÓ de verdad la recepción: el primer
+  // guardado que trae una cantidad mayor a cero.
+  //
+  // No sirve `created_at` para esto. Alguien escanea el QR a las 8 solo para
+  // ver cómo funciona, y a las 2 llega el camión: `created_at` diría que la
+  // recepción arrancó seis horas antes de que hubiera carne.
+  //
+  // Se escribe UNA sola vez —solo si estaba en null— para que corregir una
+  // cantidad tres horas después no mueva la hora de inicio.
+  const hayCantidad = filas.some((f) => Number(f.cantidad) > 0);
+  if (hayCantidad && !recepcion.iniciado_at) {
+    cambios.iniciado_at = new Date().toISOString();
+  }
+
   if (Object.keys(cambios).length) {
     const { error } = await supabase.from(TABLE).update(cambios).eq("id", id);
-    if (error) throw new Error(`Error al guardar la recepción: ${error.message}`);
+
+    // `iniciado_at` lo agrega la migración 003. Vercel despliega solo al hacer
+    // push, así que el código puede llegar antes que el SQL — y si eso rompiera
+    // el guardado, el recibidor se quedaría sin poder trabajar en plena jornada
+    // por una columna que solo sirve para informar una hora.
+    //
+    // Se reintenta sin ella y se avisa en el log. Cuando la migración corra,
+    // empieza a llenarse sola. Es la única columna con este trato: las demás son
+    // datos que el documento necesita.
+    if (error && esColumnaFaltante(error, "iniciado_at")) {
+      console.warn(
+        "⚠️  Falta la columna `iniciado_at` — corré sql/003_iniciado_at.sql. " +
+          "Mientras tanto se guarda sin la hora de inicio.",
+      );
+      const { iniciado_at: _, ...sinColumna } = cambios;
+      if (Object.keys(sinColumna).length) {
+        const { error: e2 } = await supabase.from(TABLE).update(sinColumna).eq("id", id);
+        if (e2) throw new Error(`Error al guardar la recepción: ${e2.message}`);
+      }
+    } else if (error) {
+      throw new Error(`Error al guardar la recepción: ${error.message}`);
+    }
   }
 
   return obtener(id);
@@ -408,6 +484,47 @@ export async function homologarAdicional(id, itemId, cambios) {
     .maybeSingle();
   if (error) throw new Error(`Error al homologar el renglón: ${error.message}`);
   return data;
+}
+
+/**
+ * Descarta un borrador. Borra de verdad, con sus renglones.
+ *
+ * Existe porque la pantalla se abre con solo escanear un QR, y no todo escaneo
+ * termina en una recepción: alguien prueba, alguien se equivoca de sede, alguien
+ * escanea dos veces. Sin una forma de tirarlo, esos borradores se acumulan y le
+ * ensucian al admin la lista de "En curso" — que es justamente la lista donde
+ * tiene que poder confiar en que hay alguien trabajando.
+ *
+ * Se BORRA en vez de marcarse: un borrador sin cerrar no es un documento, no
+ * tiene trazabilidad que preservar y nadie lo aprobó. Guardarlo "por las dudas"
+ * solo mueve el problema de una lista a una tabla.
+ *
+ * Solo en Borrador: una vez cerrada hay un documento con firma de quién y
+ * cuándo, y eso se rechaza, no se borra.
+ */
+export async function descartar(id) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("id, estado, sede:carnes_sedes ( nombre )")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Error al leer la recepción: ${error.message}`);
+  if (!data) throw createError(404, "Recepción no encontrada.");
+
+  if (data.estado !== ESTADOS.BORRADOR) {
+    throw createError(
+      409,
+      `Solo se pueden descartar borradores. Esta está en "${data.estado}": ` +
+        "si hay algo mal, rechazala para que quede constancia del motivo.",
+    );
+  }
+
+  // Los renglones se van solos por el ON DELETE CASCADE de la FK.
+  const { error: errorBorrar } = await supabase.from(TABLE).delete().eq("id", id);
+  if (errorBorrar) throw new Error(`Error al descartar: ${errorBorrar.message}`);
+
+  console.log(`🗑️  Borrador #${id} (${data.sede?.nombre}) descartado.`);
+  return { descartada: id };
 }
 
 // ─── Transiciones de estado ────────────────────────────────────────────────

@@ -207,6 +207,61 @@ export async function guardarGastos(id, filas = []) {
   return obtener(id);
 }
 
+/**
+ * Borra una liquidación creada por error.
+ *
+ * ─── Por qué SOLO cuando está Abierta ─────────────────────────────────────
+ *
+ * La FK de `carnes_recepciones.liquidacion_id` es `ON DELETE SET NULL`: al
+ * borrar la liquidación, sus recepciones se DESVINCULAN pero siguen existiendo
+ * con el estado que tenían.
+ *
+ * Si estaba Costeada, esas recepciones están en `Costeado` — y quedarían en
+ * `Costeado` sin ninguna liquidación detrás, con costos congelados que ya no
+ * corresponden a ningún cálculo. Un estado del que no se sale.
+ *
+ * La salida existe y está probada: `reabrir` devuelve las recepciones a
+ * `Aprobado` y limpia los costos. Después de eso, borrar es seguro. Se obliga a
+ * pasar por ahí en vez de replicar esa lógica acá.
+ *
+ * Los gastos se van solos por el `ON DELETE CASCADE` de su FK.
+ */
+export async function eliminar(id) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("id, estado, especie")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Error al leer la liquidación: ${error.message}`);
+  if (!data) throw createError(404, "Liquidación no encontrada.");
+
+  if (data.estado === ESTADOS_LIQUIDACION.CERRADA) {
+    throw createError(409, "La liquidación ya se subió a SIESA: no se puede borrar.");
+  }
+  if (data.estado === ESTADOS_LIQUIDACION.COSTEADA) {
+    throw createError(
+      409,
+      "Esta liquidación ya está costeada. Reabrila primero —eso devuelve las " +
+        "recepciones a Aprobado y limpia los costos— y ahí sí se puede borrar.",
+    );
+  }
+
+  // Se desvinculan a mano y no por la FK: así el conteo que se devuelve es real
+  // y el admin sabe cuántas recepciones quedaron libres.
+  const { data: liberadas, error: errorDesv } = await supabase
+    .from(TABLE_RECEPCIONES)
+    .update({ liquidacion_id: null })
+    .eq("liquidacion_id", id)
+    .select("id");
+  if (errorDesv) throw new Error(`Error al desvincular: ${errorDesv.message}`);
+
+  const { error: errorBorrar } = await supabase.from(TABLE).delete().eq("id", id);
+  if (errorBorrar) throw new Error(`Error al borrar la liquidación: ${errorBorrar.message}`);
+
+  console.log(`🗑️  Liquidación #${id} borrada · ${liberadas?.length || 0} recepción(es) liberada(s).`);
+  return { eliminada: id, recepcionesLiberadas: liberadas?.length || 0 };
+}
+
 // ─── Recepciones vinculadas ────────────────────────────────────────────────
 
 /**

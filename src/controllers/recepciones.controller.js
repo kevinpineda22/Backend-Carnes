@@ -10,8 +10,16 @@ import { notificarRecepcionFinalizada } from "../services/notificaciones.service
  */
 export async function abrir(req, res, next) {
   try {
-    const { recepcion, reanudada } = await RecepcionModel.abrir(req.body);
-    res.status(reanudada ? 200 : 201).json({ ok: true, data: recepcion, reanudada });
+    const { recepcion, reanudada, rechazada, motivoRechazo } =
+      await RecepcionModel.abrir(req.body);
+    res.status(reanudada ? 200 : 201).json({
+      ok: true,
+      data: recepcion,
+      reanudada,
+      // El front lo necesita para mostrarle al recibidor QUÉ le reclamaron
+      // antes de que empiece a corregir.
+      ...(rechazada ? { rechazada, motivoRechazo } : {}),
+    });
   } catch (error) {
     // La verificación de sede fallida viaja con su detalle: el front lo necesita
     // para decir CUÁL era la sede del QR, no solo que no coincidió.
@@ -117,6 +125,19 @@ export async function finalizar(req, res, next) {
     const notificacion = await notificarRecepcionFinalizada(data, data.items);
 
     res.json({ ok: true, data, notificacion });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * DELETE /api/recepciones/:id
+ * Tira un borrador que se abrió por error. Solo en Borrador.
+ */
+export async function descartar(req, res, next) {
+  try {
+    const data = await RecepcionModel.descartar(req.params.id);
+    res.json({ ok: true, ...data });
   } catch (error) {
     next(error);
   }

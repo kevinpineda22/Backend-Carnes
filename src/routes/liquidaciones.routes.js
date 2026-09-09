@@ -10,6 +10,9 @@ router.post("/", validators.crearLiquidacion, LiquidacionesController.crear);
 router.get("/:id", LiquidacionesController.obtener);
 router.patch("/:id", validators.actualizarLiquidacion, LiquidacionesController.actualizar);
 
+// Borrar una creada por error. Solo en Abierta — ver el modelo.
+router.delete("/:id", LiquidacionesController.eliminar);
+
 router.put("/:id/gastos", validators.guardarGastos, LiquidacionesController.guardarGastos);
 
 router.post(

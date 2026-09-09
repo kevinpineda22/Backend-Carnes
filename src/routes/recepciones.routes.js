@@ -11,6 +11,10 @@ router.get("/", RecepcionesController.listar);
 router.post("/abrir", validators.abrirRecepcion, RecepcionesController.abrir);
 
 router.get("/:id", RecepcionesController.obtener);
+
+// Descartar un borrador abierto por error. Va como DELETE del recurso y no como
+// una transición más porque no cambia de estado: deja de existir.
+router.delete("/:id", RecepcionesController.descartar);
 router.patch("/:id", validators.guardarBorrador, RecepcionesController.guardar);
 
 // Renglones fuera de plantilla — el "Otro / Agregar".

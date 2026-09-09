@@ -40,6 +40,19 @@ export async function actualizar(req, res, next) {
   }
 }
 
+/**
+ * DELETE /api/liquidaciones/:id
+ * Borra una liquidación creada por error. Solo si está Abierta.
+ */
+export async function eliminar(req, res, next) {
+  try {
+    const data = await LiquidacionModel.eliminar(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** PUT /api/liquidaciones/:id/gastos — Body: { filas: [...] } */
 export async function guardarGastos(req, res, next) {
   try {

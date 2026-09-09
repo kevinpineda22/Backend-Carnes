@@ -95,6 +95,18 @@ const DECIMALES_TOTAL = 2;
  *   residuo: number, advertencias: {codigo: string, mensaje: string}[]
  * }}
  */
+/**
+ * Umbrales del factor de ajuste.
+ *
+ * El factor es cuánto MÁS BARATO resultó lo pagado respecto del valor de lista.
+ * Uno sano es chico: la hoja de cerdo del Excel da 8,61%.
+ *
+ *   ≥ 0.9  → los costos quedan por debajo del 10% de la lista. Bloquea.
+ *   ≥ 0.5  → el costo real es menos de la mitad. Avisa.
+ */
+const FACTOR_INVEROSIMIL = 0.9;
+const FACTOR_SOSPECHOSO = 0.5;
+
 export function calcularCosteo({
   items = [],
   gastos = [],
@@ -140,16 +152,35 @@ export function calcularCosteo({
     factor = (costoTeorico - costoReal) / costoTeorico;
   }
 
-  if (factor >= 1) {
-    // Este es EL caso peligroso, y es el estado en que está el archivo de res
-    // hoy: gastos sin cargar → costo real 0 → factor 1 → todo a cero.
+  if (factor >= FACTOR_INVEROSIMIL) {
+    // El caso peligroso, y NO es solo el factor exactamente 1.
+    //
+    // Con factor 0.9986 —gastos mil veces más chicos de lo que corresponde— cada
+    // corte queda en el 0,14% de su precio de lista: un lomo de $61.000 costaría
+    // $85. Eso sube a SIESA sin protestar y deja el margen de todo el lote en
+    // 99,86%. Es tan destructivo como el cero exacto, así que se bloquea igual.
+    //
+    // El umbral es 0.9 y no 1 porque no existe una compra de carne donde lo
+    // pagado sea menos del 10% del valor de lista. Si un caso legítimo cayera
+    // acá, se sube la constante — pero que sea una decisión, no un descuido.
+    const porcentaje = redondear(factor * 100, 2);
     advertencias.push({
       codigo: "factor_anula_costos",
       mensaje:
-        "El factor de ajuste es " +
-        `${redondear(factor * 100, 2)}%, así que los costos ajustados dan cero o ` +
-        "negativo. Casi siempre significa que faltan cargar los gastos de la " +
-        "liquidación. NO subir a SIESA en este estado.",
+        `El factor de ajuste es ${porcentaje}%, así que cada corte queda en el ` +
+        `${redondear((1 - factor) * 100, 2)}% de su precio de lista. Casi siempre ` +
+        "significa que faltan gastos o que se cargaron con menos ceros. " +
+        "NO subir a SIESA en este estado.",
+    });
+  } else if (factor >= FACTOR_SOSPECHOSO) {
+    // Zona gris: matemáticamente posible, comercialmente raro. Se avisa pero no
+    // se bloquea — no me corresponde decidir hasta dónde llega su negocio.
+    advertencias.push({
+      codigo: "factor_alto",
+      mensaje:
+        `El factor de ajuste es ${redondear(factor * 100, 2)}%: el costo real es ` +
+        "menos de la mitad del valor de lista. Revisá que estén todos los gastos " +
+        "y que las cifras tengan los ceros que corresponden.",
     });
   } else if (factor < 0) {
     // Legítimo —se pagó más de lo que decía la lista— pero encarece cada corte
