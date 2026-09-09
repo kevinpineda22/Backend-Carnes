@@ -39,7 +39,8 @@ const EDITABLES = new Set([ESTADOS.RECIBIDO, ESTADOS.APROBADO, ESTADOS.RECHAZADO
 /**
  * ¿Este error de Postgres es "todavía no corriste la migración 004"?
  *
- * Toda esta función depende de tablas y columnas que agrega `sql/004_desposte.sql`.
+ * Toda esta función depende de tablas y columnas que agregan `sql/004_desposte.sql`
+ * y `sql/005_desposte_forzar.sql`.
  * Sin ese guard, el síntoma es un 500 con "Error interno del servidor" —el
  * `errorHandler` esconde los mensajes de Postgres a propósito, porque traen
  * nombres de tablas— y quien lo ve no tiene forma de saber que le falta correr
@@ -63,8 +64,9 @@ function fallar(error, contexto) {
   if (esMigracionFaltante(error)) {
     throw createError(
       503,
-      "El módulo de informes de desposte todavía no está instalado en la base. " +
-        "Corré sql/004_desposte.sql en Supabase y volvé a intentar.",
+      "A la base le falta parte del módulo de informes de desposte. " +
+        "Corré sql/004_desposte.sql y sql/005_desposte_forzar.sql en Supabase " +
+        "(en ese orden) y volvé a intentar.",
     );
   }
   throw new Error(`${contexto}: ${error.message}`);
@@ -308,10 +310,16 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
     // 409 y no 400: la petición está bien formada, el conflicto es con el estado
     // del mundo. El front muestra el mensaje y ofrece adjuntar igual.
     const detalle = identidad.problemas.find((p) => p.codigo === "sede_no_coincide");
-    throw createError(409, detalle.mensaje);
+    throw createError(409, detalle.mensaje, "sede_no_coincide");
   }
 
   // 3. ¿Este lote ya está en otra recepción?
+  //
+  // Avisa fuerte, pero no es un muro: el informe es un contraste, no una fuente
+  // de plata —no alimenta el costeo ni SIESA—, así que el mismo lote en dos
+  // recepciones deja mal UN cruce, no la contabilidad. Frenar en seco a alguien
+  // con el camión abierto es peor que dejarlo seguir con el aviso encima.
+  let loteRepetido = null;
   if (parseado.lote) {
     const { data: repetido } = await supabase
       .from(TABLA)
@@ -320,11 +328,15 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
       .neq("recepcion_id", recepcionId)
       .maybeSingle();
     if (repetido) {
-      throw createError(
-        409,
-        `El lote ${parseado.lote} ya está adjunto en la recepción #${repetido.recepcion_id}. ` +
-          "O el informe está en la sede equivocada, o esta carne se contó dos veces.",
-      );
+      loteRepetido = repetido;
+      if (!forzar) {
+        throw createError(
+          409,
+          `El lote ${parseado.lote} ya está adjunto en la recepción #${repetido.recepcion_id}. ` +
+            "O el informe está en la sede equivocada, o esta carne se contó dos veces.",
+          "lote_repetido",
+        );
+      }
     }
   }
 
@@ -361,6 +373,10 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
     texto_extraido: texto,
     sede_coincide: identidad.sedeCoincide,
     fecha_coincide: identidad.fechaCoincide,
+    // Que el admin haya pasado por encima de una advertencia es un HECHO de este
+    // informe, no un estado del sistema. Se guarda en la fila, igual que
+    // `sede_verificada` en la recepción.
+    forzado: Boolean(forzar && (sedeEquivocada || loteRepetido)),
     subido_por: subidoPor || null,
     subido_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
@@ -398,7 +414,20 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
     // sobreviven a la ida y vuelta por la base, así que se devuelven en la
     // respuesta de la subida, que es cuando importan.
     advertenciasLectura: parseado.advertencias,
-    identidad: identidad.problemas,
+    identidad: [
+      ...identidad.problemas,
+      ...(forzar && loteRepetido
+        ? [
+            {
+              codigo: "lote_repetido_forzado",
+              mensaje:
+                `Se adjuntó igual, pero el lote ${parseado.lote} también está en la ` +
+                `recepción #${loteRepetido.recepcion_id}. Una de las dos tiene el ` +
+                "informe que no le corresponde.",
+            },
+          ]
+        : []),
+    ],
   };
 }
 
