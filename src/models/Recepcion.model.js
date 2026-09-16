@@ -487,6 +487,90 @@ export async function homologarAdicional(id, itemId, cambios) {
 }
 
 /**
+ * El ADMIN corrige un renglón de una recepción ya cerrada.
+ *
+ * Cualquier columna que el recibidor pudo haber dejado mal: cantidad, costo
+ * base, código de SIESA, descripción. Se permite en Recibido y Aprobado — la
+ * recepción ya está en manos del admin— y se bloquea en los dos extremos:
+ *
+ *   · Borrador es del recibidor. Si el admin le mueve un número mientras digita,
+ *     los dos terminan escribiendo sobre el mismo renglón sin saberlo.
+ *   · Costeado y Enviado_SIESA ya movieron plata. Para tocar un costeado hay
+ *     que reabrir la liquidación, que es el camino que además limpia los costos.
+ *
+ * Deja rastro (ver sql/006): la primera vez que cambia la cantidad se guarda la
+ * original, y siempre queda quién y cuándo. Sin eso, el cruce contra el informe
+ * del frigorífico compararía la planta contra lo que el admin quiso, no contra
+ * lo que el recibidor contó.
+ */
+export async function editarItem(id, itemId, cambios, editadoPor) {
+  const recepcion = await obtener(id);
+
+  if (recepcion.estado === ESTADOS.BORRADOR) {
+    throw createError(
+      409,
+      "El recibidor todavía está digitando esta recepción. Esperá a que la cierre, o rechazala con el motivo para que él corrija.",
+    );
+  }
+  if (![ESTADOS.RECIBIDO, ESTADOS.APROBADO].includes(recepcion.estado)) {
+    const porque =
+      recepcion.estado === ESTADOS.ENVIADO_SIESA
+        ? "ya se subió a SIESA"
+        : recepcion.estado === ESTADOS.COSTEADO
+          ? "ya está costeada: reabrí la liquidación para corregirla"
+          : `está en ${recepcion.estado}`;
+    throw createError(409, `No se puede editar: la recepción ${porque}.`);
+  }
+
+  const item = recepcion.items.find((i) => String(i.id) === String(itemId));
+  if (!item) throw createError(404, "Renglón no encontrado en esta recepción.");
+
+  const limpio = {};
+  if (cambios.cantidad !== undefined) {
+    limpio.cantidad = Number(cambios.cantidad);
+    // Se guarda la original SOLO la primera vez. Si se corrige tres veces, lo que
+    // interesa seguir sabiendo es qué dijo el recibidor, no qué dijo el admin
+    // en su segundo intento.
+    if (item.cantidad_original === null || item.cantidad_original === undefined) {
+      if (Number(item.cantidad) !== limpio.cantidad) {
+        limpio.cantidad_original = Number(item.cantidad);
+      }
+    }
+  }
+  if (cambios.costo_base !== undefined) limpio.costo_base = Number(cambios.costo_base);
+  if (cambios.codigo_item !== undefined) {
+    limpio.codigo_item = String(cambios.codigo_item ?? "").trim() || null;
+  }
+  if (cambios.descripcion !== undefined) {
+    limpio.descripcion = String(cambios.descripcion).trim();
+  }
+
+  if (Object.keys(limpio).length === 0) return item;
+
+  limpio.editado_por = editadoPor || null;
+  limpio.editado_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from(TABLE_ITEMS)
+    .update(limpio)
+    .eq("id", itemId)
+    .select("*")
+    .maybeSingle();
+
+  const faltaMigracion =
+    error &&
+    ["cantidad_original", "editado_por", "editado_at"].some((c) => esColumnaFaltante(error, c));
+  if (faltaMigracion) {
+    throw createError(
+      503,
+      "A la base le falta la migración sql/006_edicion_admin.sql. Corrala en Supabase y volvé a intentar.",
+    );
+  }
+  if (error) throw new Error(`Error al editar el renglón: ${error.message}`);
+  return data;
+}
+
+/**
  * Descarta un borrador. Borra de verdad, con sus renglones.
  *
  * Existe porque la pantalla se abre con solo escanear un QR, y no todo escaneo

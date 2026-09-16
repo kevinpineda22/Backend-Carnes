@@ -23,6 +23,12 @@ router.patch("/:id", validators.guardarBorrador, RecepcionesController.guardar);
 router.post("/:id/items", validators.agregarAdicional, RecepcionesController.agregarAdicional);
 router.delete("/:id/items/:itemId", RecepcionesController.eliminarItem);
 
+// Corrección del ADMIN sobre cualquier renglón de una recepción cerrada:
+// cantidad, costo, código, descripción. Distinto de `homologar` (solo para
+// adicionales sin código) y del PATCH del borrador (que es del recibidor).
+// Deja guardado quién, cuándo y cuánto había antes.
+router.patch("/:id/items/:itemId", validators.editarItem, RecepcionesController.editarItem);
+
 // Homologar: el ADMIN le pone código de SIESA y costo a un renglón que el
 // recibidor agregó a mano. Ocurre DESPUÉS del cierre, por eso no vive con el
 // resto de la edición del borrador.

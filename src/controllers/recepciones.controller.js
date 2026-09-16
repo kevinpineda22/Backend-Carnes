@@ -88,6 +88,25 @@ export async function eliminarItem(req, res, next) {
 }
 
 /**
+ * PATCH /api/recepciones/:id/items/:itemId
+ * El admin corrige un renglón de una recepción cerrada. Deja rastro.
+ */
+export async function editarItem(req, res, next) {
+  try {
+    const { editado_por, ...cambios } = req.body;
+    const data = await RecepcionModel.editarItem(
+      req.params.id,
+      req.params.itemId,
+      cambios,
+      editado_por,
+    );
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * PATCH /api/recepciones/:id/items/:itemId/homologar
  * Body: { codigo_item, costo_base, codigo_tabla?, descripcion? }
  *

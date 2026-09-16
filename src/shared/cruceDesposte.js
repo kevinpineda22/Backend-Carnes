@@ -8,15 +8,14 @@
  *
  * El informe parte en dos bloques:
  *
- *   FINAS         los cortes aprovechables. ESTO es lo que se cruza.
- *   SUBPRODUCTOS  hueso blanco, sebo, despojos, chocozuela.
+ *   FINAS         los cortes aprovechables. Entran SIEMPRE al cruce.
+ *   SUBPRODUCTOS  hueso blanco, sebo, despojos, chocozuela, rompe.
  *
- * Los subproductos NO se concilian todavía. Está sin definir con la operación si
- * el recibidor los pesa como vísceras, como carne, o si directamente no entran a
- * la sede. Se leen, se guardan y se muestran aparte — pero no se suman ni se
- * restan de nada. Meterlos al total "para que cuadre" sería inventar una regla
- * de negocio, y una regla inventada acá se traduce en kilos que alguien va a
- * salir a buscar a una cava.
+ * Un subproducto entra al cruce SOLO si está mapeado en la plantilla
+ * (`nombre_desposte`). La operación definió que chocozuela y rompe kilo se
+ * reciben como carne; hueso, sebo y despojos no. Esa lista no vive acá: vive en
+ * el diccionario, que edita el admin. Un subproducto sin mapear se muestra
+ * aparte y no suma ni resta de nada.
  *
  * ─── Dos comparaciones, no una ────────────────────────────────────────────
  *
@@ -99,17 +98,36 @@ export function construirDiccionario(plantilla = []) {
 export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
   const advertencias = [];
 
-  const lineasPdf = (informe?.items || []).filter((i) => i.bloque === BLOQUE_FINAS);
-  const subproductosPdf = (informe?.items || []).filter((i) => i.bloque !== BLOQUE_FINAS);
+  const diccionario = construirDiccionario(plantilla);
+  const todas = informe?.items || [];
+
+  // ─── Qué líneas del PDF entran al cruce ─────────────────────────────────
+  //
+  // FINAS entra siempre. Un SUBPRODUCTO entra solo si está mapeado en la
+  // plantilla: la operación decidió que chocozuela y rompe kilo se reciben como
+  // carne, y el resto —hueso, sebo, despojos— no. Esa decisión vive en el
+  // diccionario y no en una lista de nombres acá adentro: si mañana el sebo
+  // también se recibe, es un dato que carga el admin, no un cambio de código.
+  const finas = todas.filter((i) => i.bloque === BLOQUE_FINAS);
+  const subproductosMapeados = todas.filter(
+    (i) => i.bloque !== BLOQUE_FINAS && diccionario.has(normalizarNombre(i.producto)),
+  );
+  const subproductosFuera = todas.filter(
+    (i) => i.bloque !== BLOQUE_FINAS && !diccionario.has(normalizarNombre(i.producto)),
+  );
+  const lineasPdf = [...finas, ...subproductosMapeados];
 
   // ─── 1. Totales ─────────────────────────────────────────────────────────
   //
-  // Se prefiere el total IMPRESO en el informe sobre la suma de las líneas: es
-  // el número que el frigorífico firma. Si los dos no coinciden, el parser ya
-  // avisó (`total_no_cuadra`), y ahí el problema es de lectura, no de kilos.
-  const kgPdf = kg(
-    informe?.totales?.kgFinas ?? lineasPdf.reduce((a, i) => a + (Number(i.cantidadKg) || 0), 0),
-  );
+  // Para FINAS se prefiere el total IMPRESO en el informe: es el número que el
+  // frigorífico firma. Si no coincide con la suma de líneas, el parser ya avisó
+  // (`total_no_cuadra`) y el problema es de lectura, no de kilos. Los
+  // subproductos que entran se suman línea por línea, porque el total impreso
+  // de esa sección incluye a los que NO entran.
+  const kgFinasPdf =
+    informe?.totales?.kgFinas ?? finas.reduce((a, i) => a + (Number(i.cantidadKg) || 0), 0);
+  const kgSubMapeados = subproductosMapeados.reduce((a, i) => a + (Number(i.cantidadKg) || 0), 0);
+  const kgPdf = kg(kgFinasPdf + kgSubMapeados);
   const recibidos = items.filter(ES_CARNE);
   const kgRecibido = kg(recibidos.reduce((a, i) => a + (Number(i.cantidad) || 0), 0));
 
@@ -144,7 +162,6 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
   }
 
   // ─── 2. Línea por línea ─────────────────────────────────────────────────
-  const diccionario = construirDiccionario(plantilla);
 
   // Los renglones del recibidor, indexados por el ítem de plantilla que usaron.
   // Se agrupa porque un mismo corte puede venir en dos renglones (la plantilla
@@ -171,6 +188,8 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
     if (!plantillaItem) {
       return {
         producto: linea.producto,
+        bloque: linea.bloque,
+        plantilla_item_id: null,
         descripcion: null,
         codigo_item: null,
         kgPdf: kg(linea.cantidadKg),
@@ -191,6 +210,8 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
 
     return {
       producto: linea.producto,
+      bloque: linea.bloque,
+      plantilla_item_id: plantillaItem.id,
       descripcion: plantillaItem.descripcion,
       codigo_item: plantillaItem.codigo_item,
       kgPdf: kgLineaPdf,
@@ -221,6 +242,8 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
 
     soloRecepcion.push({
       producto: null,
+      bloque: null,
+      plantilla_item_id: esAdicionalSuelto ? null : clave,
       descripcion: r.descripcion,
       codigo_item: r.codigo_item,
       kgPdf: null,
@@ -241,13 +264,16 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
     });
   }
 
-  // ─── 3. Subproductos: se muestran, no se concilian ──────────────────────
+  // ─── 3. Subproductos que NO entran ──────────────────────────────────────
+  //
+  // Solo los que no están mapeados. Los mapeados ya viajaron en `lineas` y en el
+  // total, así que listarlos acá también los contaría dos veces a la vista.
   const subproductos = {
-    kgPdf: kg(informe?.totales?.kgSubproductos ?? 0),
-    items: subproductosPdf.map((i) => ({ producto: i.producto, kgPdf: kg(i.cantidadKg) })),
+    kgPdf: kg(subproductosFuera.reduce((a, i) => a + (Number(i.cantidadKg) || 0), 0)),
+    items: subproductosFuera.map((i) => ({ producto: i.producto, kgPdf: kg(i.cantidadKg) })),
     nota:
-      "Hueso, sebo y despojos. Todavía no se cruzan: falta definir si el " +
-      "recibidor los pesa. No entran en la diferencia de arriba.",
+      "Hueso, sebo y despojos: no se reciben como carne y no entran en la " +
+      "diferencia. Si alguno sí se recibe, mapealo en la plantilla y pasa a contar.",
   };
 
   return { totales, lineas: [...lineas, ...soloRecepcion], subproductos, advertencias };

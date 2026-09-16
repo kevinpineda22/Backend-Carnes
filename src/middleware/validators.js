@@ -264,6 +264,25 @@ export const validators = {
     }),
   ),
 
+  // Corrección del admin sobre un renglón cerrado. Todo opcional: se manda
+  // solo lo que cambió. `editado_por` sí es obligatorio — sin él la corrección
+  // queda anónima, y el rastro es la mitad del punto de este endpoint.
+  editarItem: validar(
+    z.object({
+      cantidad: z.coerce
+        .number({ invalid_type_error: "La cantidad debe ser un número." })
+        .nonnegative("La cantidad no puede ser negativa.")
+        .optional(),
+      costo_base: z.coerce
+        .number({ invalid_type_error: "El costo base debe ser un número." })
+        .nonnegative("El costo base no puede ser negativo.")
+        .optional(),
+      codigo_item: z.union([z.string(), z.number()]).transform((x) => String(x).trim()).optional(),
+      descripcion: z.string().trim().min(1, "La descripción no puede quedar vacía.").max(200).optional(),
+      editado_por: correo("Falta el correo de quien edita."),
+    }),
+  ),
+
   crearLiquidacion: validar(
     z.object({
       especie: z.enum(ESPECIES, { errorMap: () => ({ message: "Elegí Res o Cerdo." }) }),

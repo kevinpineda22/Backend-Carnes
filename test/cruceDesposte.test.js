@@ -239,6 +239,62 @@ test("los subproductos se muestran pero NO entran en la diferencia", () => {
   assert.equal(r.totales.estado, "ok");
 });
 
+test("un subproducto MAPEADO entra al cruce como carne", () => {
+  // La operación recibe chocozuela y rompe como carne. Mapeados en la plantilla,
+  // pasan a contar en el total y en el detalle; el resto de los subproductos no.
+  const plantilla = [
+    ...plantillaCompleta(),
+    { id: 901, descripcion: "CHOCOZUELA *KL", codigo_item: "18015", nombre_desposte: "CHOCOZUELA" },
+    { id: 902, descripcion: "ROMPE KILO", codigo_item: "18014", nombre_desposte: "ROMPE MALAYA - RILA" },
+  ];
+  const items = [
+    ...recepcionPerfecta(),
+    carne(901, "CHOCOZUELA *KL", 0.85),
+    carne(902, "ROMPE KILO", 0.72),
+  ];
+
+  const r = cruzarDesposte({ informe: INFORME, items, plantilla });
+
+  // 133.50 de FINAS + 0.85 + 0.72
+  assert.equal(r.totales.kgPdf, 135.07);
+  assert.equal(r.totales.kgRecibido, 135.07);
+  assert.equal(r.totales.estado, "ok");
+
+  const choco = r.lineas.find((l) => l.producto === "CHOCOZUELA");
+  assert.equal(choco.estado, "ok");
+  assert.equal(choco.plantilla_item_id, 901);
+  assert.equal(choco.bloque, "subproductos");
+
+  // Los que siguen sin mapear quedan aparte, y ya no incluyen a los dos mapeados.
+  const fuera = r.subproductos.items.map((i) => i.producto);
+  assert.deepEqual(fuera, ["DESPOJOS", "HUESO BLANCO", "SEBO"]);
+  assert.equal(r.subproductos.kgPdf, 45.76); // 47.33 − 0.85 − 0.72
+});
+
+test("un subproducto mapeado que NO se recibió sale como solo_pdf", () => {
+  const plantilla = [
+    ...plantillaCompleta(),
+    { id: 901, descripcion: "CHOCOZUELA *KL", codigo_item: "18015", nombre_desposte: "CHOCOZUELA" },
+  ];
+  const r = cruzarDesposte({ informe: INFORME, items: recepcionPerfecta(), plantilla });
+
+  const choco = r.lineas.find((l) => l.producto === "CHOCOZUELA");
+  assert.equal(choco.estado, "solo_pdf");
+  assert.equal(r.totales.diferencia, -0.85);
+});
+
+test("cada línea del cruce lleva el id de plantilla para pegarla a la fila", () => {
+  const r = cruzarDesposte({
+    informe: INFORME,
+    items: recepcionPerfecta(),
+    plantilla: plantillaCompleta(),
+  });
+  const tabla = r.lineas.find((l) => l.producto === "TABLA");
+  assert.ok(Number.isInteger(tabla.plantilla_item_id));
+  const sinMapear = cruzarDesposte({ informe: INFORME, items: recepcionPerfecta() }).lineas[0];
+  assert.equal(sinMapear.plantilla_item_id, null);
+});
+
 // ─── Diccionario ────────────────────────────────────────────────────────────
 
 test("construirDiccionario ignora lo que no tiene nombre_desposte", () => {

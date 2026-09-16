@@ -357,7 +357,88 @@ export async function previsualizar(id) {
     bonificacionViceras: liquidacion.viceras_bonificacion,
   });
 
-  return { liquidacion, consolidado, cierre: puedeCerrarCosteo(consolidado) };
+  const sedesFaltantes = await buscarSedesFaltantes(liquidacion);
+
+  return { liquidacion, consolidado, sedesFaltantes, cierre: puedeCerrarCosteo(consolidado) };
+}
+
+/**
+ * Qué sedes activas NO están en esta liquidación.
+ *
+ * La operación reparte a TODAS las sedes el mismo día. Entonces una liquidación
+ * a la que le falta una sede casi siempre es una liquidación a la que se le
+ * olvidó vincular una recepción — y si se costea así, esa sede queda sin costo y
+ * las demás absorben un gasto que no era solo de ellas.
+ *
+ * Es un AVISO, no un bloqueo: a veces de verdad no se mandó a una sede. La
+ * decisión es del admin; lo que no puede pasar es que no se entere.
+ *
+ * Para cada sede que falta se busca si hay una recepción de esa especie y ese
+ * día en cualquier estado. Cambia por completo qué hacer: "hay una todavía sin
+ * aprobar" se resuelve aprobándola; "no hay ninguna" es preguntar si de verdad
+ * no se mandó.
+ *
+ * Con cero recepciones vinculadas no se avisa nada: ahí faltan todas, y ya lo
+ * dice el estado vacío del paso 1.
+ */
+async function buscarSedesFaltantes(liquidacion) {
+  if (!liquidacion.recepciones?.length) return [];
+
+  const { data: sedes, error } = await supabase
+    .from("carnes_sedes")
+    .select("id, nombre")
+    .eq("activo", true)
+    .order("nombre");
+  if (error) throw new Error(`Error al leer sedes: ${error.message}`);
+
+  const vinculadas = new Set(liquidacion.recepciones.map((r) => r.sede_id));
+  const faltantes = (sedes || []).filter((s) => !vinculadas.has(s.id));
+  if (faltantes.length === 0) return [];
+
+  // Una sola consulta para todas las sedes que faltan, no una por sede.
+  const { data: candidatas } = await supabase
+    .from("carnes_recepciones")
+    .select("id, sede_id, estado, liquidacion_id")
+    .eq("especie", liquidacion.especie)
+    .eq("fecha_ingreso", liquidacion.fecha)
+    .in(
+      "sede_id",
+      faltantes.map((s) => s.id),
+    )
+    .order("id", { ascending: false });
+
+  const porSede = new Map();
+  for (const r of candidatas || []) {
+    if (!porSede.has(r.sede_id)) porSede.set(r.sede_id, r);
+  }
+
+  return faltantes.map((s) => {
+    const r = porSede.get(s.id);
+    let pista;
+    if (!r) {
+      pista = "sin_recepcion";
+    } else if (r.liquidacion_id && r.liquidacion_id !== liquidacion.id) {
+      pista = "en_otra_liquidacion";
+    } else if (r.estado === ESTADOS.APROBADO) {
+      pista = "aprobada_sin_vincular";
+    } else if (r.estado === ESTADOS.RECIBIDO) {
+      pista = "sin_aprobar";
+    } else if (r.estado === ESTADOS.BORRADOR) {
+      pista = "en_curso";
+    } else if (r.estado === ESTADOS.RECHAZADO) {
+      pista = "rechazada";
+    } else {
+      pista = "otro_estado";
+    }
+    return {
+      sede_id: s.id,
+      nombre: s.nombre,
+      pista,
+      recepcion_id: r?.id ?? null,
+      estado: r?.estado ?? null,
+      liquidacion_id: r?.liquidacion_id ?? null,
+    };
+  });
 }
 
 /**
