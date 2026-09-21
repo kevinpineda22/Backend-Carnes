@@ -12,6 +12,7 @@ import { ESTADOS } from "../shared/estados.js";
 import { parsearInformeDesposte } from "../shared/desposteParser.js";
 import { cruzarDesposte, verificarIdentidad } from "../shared/cruceDesposte.js";
 import { extraerTexto } from "../services/pdf.service.js";
+import { notificarDiferenciaDesposte } from "../services/notificaciones.service.js";
 
 const TABLA = "carnes_desposte_informes";
 const TABLA_ITEMS = "carnes_desposte_items";
@@ -408,8 +409,18 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
   if (errorItems) fallar(errorItems, "No se pudieron guardar las líneas");
 
   const resultado = await obtener(recepcionId);
+
+  // Si lo recibido se aparta del informe más del umbral, el admin se entera
+  // por correo ahora — no cuando abra el panel. Best-effort: el correo no
+  // puede hacer fallar el adjunto.
+  let alerta = null;
+  if (resultado.cruce?.totales?.alerta) {
+    alerta = await notificarDiferenciaDesposte(recepcion, resultado.cruce, resultado.informe);
+  }
+
   return {
     ...resultado,
+    alerta,
     // Las advertencias del PARSEO (formato raro, sumas que no cuadran) no
     // sobreviven a la ida y vuelta por la base, así que se devuelven en la
     // respuesta de la subida, que es cuando importan.

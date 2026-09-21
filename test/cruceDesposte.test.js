@@ -9,6 +9,7 @@ import {
   verificarIdentidad,
   construirDiccionario,
   TOLERANCIA_KG,
+  UMBRAL_ALERTA_KG,
 } from "../src/shared/cruceDesposte.js";
 
 const TEXTO = readFileSync(
@@ -126,6 +127,23 @@ test("totales: un adicional SÍ entra — es carne que el frigorífico facturó"
 
   assert.equal(r.totales.kgRecibido, 136.5);
   assert.equal(r.totales.estado, "sobrante");
+});
+
+test("totales: la alerta por correo salta a los 2 kg, no antes", () => {
+  assert.equal(UMBRAL_ALERTA_KG, 2);
+
+  const casi = recepcionPerfecta();
+  casi[0].cantidad -= 1.9;
+  assert.equal(cruzarDesposte({ informe: INFORME, items: casi }).totales.alerta, false);
+
+  const justo = recepcionPerfecta();
+  justo[0].cantidad -= 2;
+  assert.equal(cruzarDesposte({ informe: INFORME, items: justo }).totales.alerta, true);
+
+  // Sobrante también: carne de más es carne de otro lote.
+  const sobra = recepcionPerfecta();
+  sobra[0].cantidad += 2.5;
+  assert.equal(cruzarDesposte({ informe: INFORME, items: sobra }).totales.alerta, true);
 });
 
 // ─── Cruce línea por línea ──────────────────────────────────────────────────

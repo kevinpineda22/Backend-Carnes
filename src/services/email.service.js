@@ -60,6 +60,16 @@ export function destinatariosAdmin() {
   return lista(process.env.CARNES_MAIL_ADMIN);
 }
 
+/**
+ * Quien ANULA en SIESA la entrada inicial cuando sale la oficial. Puede ser
+ * otra persona que el admin —alguien de contabilidad, por ejemplo—, por eso es
+ * una variable aparte. Si está vacía, cae al admin.
+ */
+export function destinatariosAnulacion() {
+  const propios = lista(process.env.CARNES_MAIL_ANULACION);
+  return propios.length ? propios : destinatariosAdmin();
+}
+
 export function emailConfigurado() {
   return Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 }

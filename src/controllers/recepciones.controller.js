@@ -1,5 +1,6 @@
 import * as RecepcionModel from "../models/Recepcion.model.js";
 import { notificarRecepcionFinalizada } from "../services/notificaciones.service.js";
+import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 
 /**
  * POST /api/recepciones/abrir
@@ -141,9 +142,21 @@ export async function homologarAdicional(req, res, next) {
 export async function finalizar(req, res, next) {
   try {
     const data = await RecepcionModel.finalizar(req.params.id, req.body || {});
-    const notificacion = await notificarRecepcionFinalizada(data, data.items);
 
-    res.json({ ok: true, data, notificacion });
+    // Los dos efectos del cierre —el correo al admin y la entrada inicial a
+    // SIESA— van en paralelo y ninguno lanza. La recepción YA está cerrada;
+    // lo que falle acá se reporta en la respuesta, no como error.
+    const [notificacion, siesa] = await Promise.all([
+      notificarRecepcionFinalizada(data, data.items),
+      SiesaEnvio.enviarInicial(data.id, data.recibido_por),
+    ]);
+
+    res.json({
+      ok: true,
+      data,
+      notificacion,
+      siesa: { estado: siesa.estado, referencia: siesa.referencia ?? null, error: siesa.error ?? null },
+    });
   } catch (error) {
     next(error);
   }

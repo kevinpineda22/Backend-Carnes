@@ -3,6 +3,7 @@ import sedesRoutes from "./sedes.routes.js";
 import plantillaRoutes from "./plantilla.routes.js";
 import recepcionesRoutes from "./recepciones.routes.js";
 import liquidacionesRoutes from "./liquidaciones.routes.js";
+import siesaRoutes from "./siesa.routes.js";
 import { verificarEmail } from "../services/email.service.js";
 import { sandboxOn } from "../config/sandbox.js";
 
@@ -12,9 +13,7 @@ router.use("/sedes", sedesRoutes);
 router.use("/plantilla", plantillaRoutes);
 router.use("/recepciones", recepcionesRoutes);
 router.use("/liquidaciones", liquidacionesRoutes);
-
-// Pendiente:
-//   /siesa — el conector (etapa final)
+router.use("/siesa", siesaRoutes);
 
 // Health check.
 //

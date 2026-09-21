@@ -60,6 +60,16 @@ const ES_CARNE = (i) => i.tipo === "carne" || i.tipo === "adicional";
 export const TOLERANCIA_KG = 0.5;
 export const TOLERANCIA_PCT = 0.005; // 0.5 %
 
+/**
+ * A partir de cuánto se le manda un correo al admin.
+ *
+ * Es otro umbral, y más alto, que el de "no cuadra": la pastilla en pantalla
+ * puede ponerse roja por 600 gramos, pero un correo por 600 gramos en cada
+ * entrega es un correo que nadie abre. Dos kilos es la cifra que definió la
+ * operación como "esto hay que mirarlo hoy".
+ */
+export const UMBRAL_ALERTA_KG = 2;
+
 /** Redondeo a kilos con tres decimales, como la columna `cantidad` de la base. */
 const kg = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
 
@@ -140,6 +150,7 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
     diferencia,
     diferenciaPct: kgPdf > 0 ? Math.round((diferencia / kgPdf) * 10000) / 100 : null,
     estado: estadoTotales,
+    alerta: Math.abs(diferencia) >= UMBRAL_ALERTA_KG,
     renglonesRecibidos: recibidos.length,
     renglonesPdf: lineasPdf.length,
   };

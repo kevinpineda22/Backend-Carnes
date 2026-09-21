@@ -28,6 +28,7 @@ app.get("/", (_req, res) => {
       plantilla: "/api/plantilla/:especie",
       recepciones: "/api/recepciones",
       liquidaciones: "/api/liquidaciones",
+      siesa: "/api/siesa/envios",
     },
   });
 });
@@ -49,7 +50,7 @@ app.use((req, res) => {
     pedida: req.originalUrl,
     vista: req.url,
     montadas: ["/", "/api/health", "/api/sedes", "/api/plantilla/:especie",
-               "/api/recepciones", "/api/liquidaciones"],
+               "/api/recepciones", "/api/liquidaciones", "/api/siesa"],
   });
 });
 
