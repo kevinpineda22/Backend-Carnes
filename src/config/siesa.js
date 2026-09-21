@@ -35,8 +35,8 @@ export const DOCUMENTO_CARNES = {
   idDocumento: "256783",
   nombreDocumento: "ENTRADA_DIRECTA_ALMACEN",
 
-  /** Código del tipo de documento (f350_id_tipo_docto, 3 caracteres). */
-  tipoDocto: null,
+  /** Código del tipo de documento (f350_id_tipo_docto, 3 caracteres). CEA = entrada de carnes. */
+  tipoDocto: "CEA",
   /** NIT del proveedor (f350_id_tercero) y su sucursal (f451_id_sucursal_prov). */
   nit: null,
   sucursal: null,
