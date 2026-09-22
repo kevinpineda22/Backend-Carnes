@@ -63,9 +63,17 @@ export const DOCUMENTO_CARNES = {
    * del valor bruto deben ser iguales a la cantidad de decimales de la moneda
    * en compra y venta".
    *
-   * Si el conector vuelve a quejarse de decimales, se ajusta acá.
+   * `decimalesValor: 0` — el peso colombiano no tiene centavos en este sistema.
+   * La prueba es limpia: en un envío de tres renglones, SIESA reclamó SOLO el
+   * que daba 117.967,50 y dejó pasar los dos que daban pesos exactos.
+   *
+   * Consecuencia: el valor de cada renglón se redondea al peso, así que la suma
+   * de los renglones puede diferir del total de la recepción en unos pocos
+   * pesos. Es la moneda del ERP la que manda; no se puede mandar el centavo.
+   *
+   * `decimalesCantidad: 3` — los kilos con tres decimales pasaron sin queja.
    */
-  decimalesValor: 2,
+  decimalesValor: 0,
   decimalesCantidad: 3,
   /** Unidad de negocio del movimiento (f470_id_un_movto). 003 = Carnes. */
   unidadNegocio: "003",

@@ -16,7 +16,7 @@ const CONFIG = {
   sucursal: "001",
   unidadMedida: "KL",
   unidadNegocio: "01",
-  decimalesValor: 2,
+  decimalesValor: 0,
   decimalesCantidad: 3,
 };
 
@@ -104,10 +104,10 @@ test("inicial: un movimiento por renglón con cantidad, al costo base", () => {
   assert.equal(m.UNIDAD_NEGOCIO, "01");
   assert.equal(m.CANTIDAD, "4.490");
   // VALOR_BRUTO = cantidad × costo base = 4.49 × 23000
-  assert.equal(m.VALOR_BRUTO, "103270.00");
+  assert.equal(m.VALOR_BRUTO, "103270");
 
   assert.equal(payload.Movimientos[1].NRO_REGISTRO, "2");
-  assert.equal(payload.Movimientos[1].VALOR_BRUTO, "425700.00"); // 14.19 × 30000
+  assert.equal(payload.Movimientos[1].VALOR_BRUTO, "425700"); // 14.19 × 30000
 
   assert.equal(resumen.renglones, 2);
   assert.equal(resumen.totalKilos, 18.68);
@@ -134,8 +134,8 @@ test("oficial: precio = costo ajustado, PENDIENTE apunta a la inicial", () => {
   assert.match(d.NOTAS, /ENTRADA OFICIAL/);
   assert.match(d.NOTAS, /R23O/);
 
-  // 4.49 × 21150.5 = 94965.745 → 94965.75
-  assert.equal(payload.Movimientos[0].VALOR_BRUTO, "94965.75");
+  // 4.49 × 21150.5 = 94965.745 → 94966, al peso: la moneda no tiene centavos.
+  assert.equal(payload.Movimientos[0].VALOR_BRUTO, "94966");
   assert.equal(resumen.referenciaInicial, "R23I");
 });
 
