@@ -14,8 +14,10 @@ const CONFIG = {
   tipoDocto: "EDA",
   nit: "890900000",
   sucursal: "001",
-  unidadMedida: "KG",
+  unidadMedida: "KL",
   unidadNegocio: "01",
+  decimalesValor: 2,
+  decimalesCantidad: 3,
 };
 
 /** La recepción de López, con dos renglones reales y uno adicional. */
@@ -97,15 +99,15 @@ test("inicial: un movimiento por renglón con cantidad, al costo base", () => {
   assert.equal(m.NRO_REGISTRO, "1");
   assert.equal(m.BODEGA, "B07");
   assert.equal(m.CO_MOVIMIENTO, "007");
-  assert.equal(m.UNIDAD_MEDIDA, "KG");
+  assert.equal(m.UNIDAD_MEDIDA, "KL");
   assert.equal(m.ITEM, "15167");
   assert.equal(m.UNIDAD_NEGOCIO, "01");
-  assert.equal(m.CANTIDAD, "4.4900");
+  assert.equal(m.CANTIDAD, "4.490");
   // VALOR_BRUTO = cantidad × costo base = 4.49 × 23000
-  assert.equal(m.VALOR_BRUTO, "103270.0000");
+  assert.equal(m.VALOR_BRUTO, "103270.00");
 
   assert.equal(payload.Movimientos[1].NRO_REGISTRO, "2");
-  assert.equal(payload.Movimientos[1].VALOR_BRUTO, "425700.0000"); // 14.19 × 30000
+  assert.equal(payload.Movimientos[1].VALOR_BRUTO, "425700.00"); // 14.19 × 30000
 
   assert.equal(resumen.renglones, 2);
   assert.equal(resumen.totalKilos, 18.68);
@@ -133,7 +135,7 @@ test("oficial: precio = costo ajustado, PENDIENTE apunta a la inicial", () => {
   assert.match(d.NOTAS, /R23O/);
 
   // 4.49 × 21150.5 = 94965.745 → 94965.75
-  assert.equal(payload.Movimientos[0].VALOR_BRUTO, "94965.7500");
+  assert.equal(payload.Movimientos[0].VALOR_BRUTO, "94965.75");
   assert.equal(resumen.referenciaInicial, "R23I");
 });
 

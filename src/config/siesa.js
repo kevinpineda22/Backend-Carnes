@@ -44,8 +44,29 @@ export const DOCUMENTO_CARNES = {
    */
   nit: "70329554",
   sucursal: "001",
-  /** Unidad de medida del movimiento (f470_id_unidad_medida, 4 caracteres). */
-  unidadMedida: "KG",
+  /**
+   * Unidad de medida del movimiento (f470_id_unidad_medida, 4 caracteres).
+   *
+   * `KL`, NO `KG`. Confirmado contra el maestro: los cortes de carne en SIESA
+   * tienen `f126_id_unidad_medida = "KL  "`. Con `KG` el conector respondió
+   * "La unidad de medida en el registro no existe".
+   */
+  unidadMedida: "KL",
+
+  /**
+   * Cuántos decimales llevan los números del movimiento.
+   *
+   * El plano define el ANCHO del campo (15 enteros + punto + 4 decimales), pero
+   * el conector exige que la cantidad de decimales REPORTADOS sea la que tiene
+   * configurada la moneda (para el valor) y la unidad de medida (para la
+   * cantidad). Mandar 4 decimales en el valor dio: "La cantidad de decimales
+   * del valor bruto deben ser iguales a la cantidad de decimales de la moneda
+   * en compra y venta".
+   *
+   * Si el conector vuelve a quejarse de decimales, se ajusta acá.
+   */
+  decimalesValor: 2,
+  decimalesCantidad: 3,
   /** Unidad de negocio del movimiento (f470_id_un_movto). 003 = Carnes. */
   unidadNegocio: "003",
 };

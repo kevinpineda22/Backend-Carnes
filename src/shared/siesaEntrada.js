@@ -81,8 +81,18 @@ export function coMovimiento(codigoCo) {
   return limpio.padStart(3, "0").slice(-3);
 }
 
-/** Número con hasta 4 decimales, como string. Sin separador de miles. */
-const decimal = (n, decimales = 4) => (Math.round((Number(n) || 0) * 1e4) / 1e4).toFixed(decimales);
+/**
+ * Número con N decimales exactos, como string. Sin separador de miles.
+ *
+ * La cantidad de decimales la manda SIESA, no el ancho del campo del plano: el
+ * valor tiene que traer los de la moneda y la cantidad los de la unidad de
+ * medida. Ver `decimalesValor` / `decimalesCantidad` en config/siesa.js.
+ */
+const decimal = (n, decimales) => {
+  const d = Number.isInteger(decimales) ? decimales : 2;
+  const f = 10 ** d;
+  return (Math.round((Number(n) || 0) * f) / f).toFixed(d);
+};
 
 /**
  * Renglones que van a SIESA: carne y adicionales CON código, con cantidad > 0.
@@ -202,7 +212,10 @@ export function armarEntradaDirecta({
   const movimientos = renglones.map((i, n) => {
     const cantidad = Number(i.cantidad) || 0;
     const precio = precioDe(i) ?? 0;
-    const bruto = Math.round(cantidad * precio * 100) / 100;
+    // Se redondea a los MISMOS decimales que se van a reportar: si se redondea
+    // a 2 y se imprime con 4, los dos últimos son ceros inventados.
+    const dv = Number.isInteger(config.decimalesValor) ? config.decimalesValor : 2;
+    const bruto = Math.round(cantidad * precio * 10 ** dv) / 10 ** dv;
     totalKilos += cantidad;
     totalValor += bruto;
     return {
@@ -212,8 +225,8 @@ export function armarEntradaDirecta({
       BODEGA: String(sede.bodega_siesa ?? ""),
       CO_MOVIMIENTO: co ?? "",
       UNIDAD_MEDIDA: String(config.unidadMedida ?? ""),
-      CANTIDAD: decimal(cantidad),
-      VALOR_BRUTO: decimal(bruto),
+      CANTIDAD: decimal(cantidad, config.decimalesCantidad),
+      VALOR_BRUTO: decimal(bruto, config.decimalesValor),
       ITEM: String(i.codigo_item ?? "").trim(),
       UNIDAD_NEGOCIO: String(config.unidadNegocio ?? ""),
     };
