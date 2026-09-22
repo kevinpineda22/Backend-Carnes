@@ -220,10 +220,16 @@ export function armarEntradaDirecta({
   });
 
   return {
+    // `Descuentos` NO va, ni siquiera como arreglo vacío.
+    //
+    // El conector valida la sección apenas la clave existe: con `Descuentos: []`
+    // respondió 400 "Error en la Estructura" y siete quejas pidiendo TIPO_DOCTO,
+    // CONSECUTIVO_DOCTO, NRO_REGISTRO, ORDEN_DESCUENTO y VALOR_TOTAL "en la
+    // sección Descuentos". Omitir la clave es lo que significa "esta entrada no
+    // tiene descuentos" — y no los tiene: el factor de la liquidación ya viene
+    // aplicado en el precio de cada renglón.
     payload: {
       Documentos: [documento],
-      // No se mandan descuentos: el factor ya viene aplicado en el precio.
-      Descuentos: [],
       Movimientos: movimientos,
     },
     resumen: {

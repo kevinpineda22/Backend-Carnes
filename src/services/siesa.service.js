@@ -84,13 +84,44 @@ export async function enviarASiesa(payload) {
   }
 }
 
-/** Texto corto de un cuerpo de error, para el mensaje. */
+/**
+ * Texto corto de un cuerpo de error, para el mensaje que ve el admin.
+ *
+ * Cuando el conector rechaza una estructura, `mensaje` dice apenas "Error en la
+ * Estructura" y el QUÉ está en `detalle`: un arreglo de objetos con la sección,
+ * el campo y la explicación. Sin sacarlo de ahí, el panel muestra tres palabras
+ * inútiles y hay que abrir el JSON crudo para entender qué pasó.
+ */
 function resumirError(respuesta) {
   if (!respuesta) return "sin cuerpo";
   if (typeof respuesta === "string") return respuesta.slice(0, 300);
-  const candidatos = [respuesta.mensaje, respuesta.message, respuesta.error, respuesta.detalle, respuesta.texto];
-  const primero = candidatos.find((x) => typeof x === "string" && x.trim());
-  return primero ? primero.slice(0, 300) : JSON.stringify(respuesta).slice(0, 300);
+
+  const partes = [];
+  const cabecera = [respuesta.mensaje, respuesta.message, respuesta.error].find(
+    (x) => typeof x === "string" && x.trim(),
+  );
+  if (cabecera) partes.push(cabecera.trim());
+
+  // `detalle` puede ser texto o el arreglo de validaciones del conector.
+  const d = respuesta.detalle;
+  if (Array.isArray(d)) {
+    // Las advertencias no explican el rechazo; los errores sí. Si solo hay
+    // advertencias se muestran igual, porque algo tiene que decir.
+    const errores = d.filter((x) => !/^Advertencia/i.test(String(x?.f_detalle ?? "")));
+    const mostrar = (errores.length ? errores : d).slice(0, 6);
+    for (const x of mostrar) {
+      const donde = [x?.f_nivel, x?.f_valor].filter(Boolean).join(" · ");
+      partes.push(donde ? `[${donde}] ${x?.f_detalle ?? ""}` : String(x?.f_detalle ?? ""));
+    }
+    const restantes = (errores.length ? errores : d).length - mostrar.length;
+    if (restantes > 0) partes.push(`(+${restantes} más)`);
+  } else if (typeof d === "string" && d.trim()) {
+    partes.push(d.trim());
+  } else if (!cabecera) {
+    partes.push(JSON.stringify(respuesta).slice(0, 300));
+  }
+
+  return partes.join(" ").slice(0, 700);
 }
 
 /**
@@ -102,6 +133,10 @@ function resumirError(respuesta) {
  */
 function detectarRechazo(respuesta) {
   if (!respuesta || typeof respuesta !== "object") return null;
+  // El conector usa `codigo`: 0 es éxito, cualquier otra cosa es rechazo.
+  if (respuesta.codigo !== undefined && Number(respuesta.codigo) !== 0) {
+    return `SIESA rechazó el documento: ${resumirError(respuesta)}`;
+  }
   const flags = [respuesta.exito, respuesta.success, respuesta.ok, respuesta.estado];
   if (flags.some((f) => f === false || String(f).toLowerCase() === "error")) {
     return `SIESA rechazó el documento: ${resumirError(respuesta)}`;

@@ -110,7 +110,8 @@ test("inicial: un movimiento por renglón con cantidad, al costo base", () => {
   assert.equal(resumen.renglones, 2);
   assert.equal(resumen.totalKilos, 18.68);
   assert.equal(resumen.totalValor, 528970);
-  assert.deepEqual(payload.Descuentos, []);
+  // La sección Descuentos NO se manda: con `[]` el conector responde 400.
+  assert.equal("Descuentos" in payload, false);
 });
 
 // ─── Entrada oficial ────────────────────────────────────────────────────────
@@ -203,7 +204,7 @@ test("el payload tiene exactamente la forma del conector", () => {
     consecutivo: 1,
     config: CONFIG,
   });
-  assert.deepEqual(Object.keys(payload), ["Documentos", "Descuentos", "Movimientos"]);
+  assert.deepEqual(Object.keys(payload), ["Documentos", "Movimientos"]);
   assert.deepEqual(Object.keys(payload.Movimientos[0]), [
     "TIPO_DOCTO",
     "NRO_DOCTO",
