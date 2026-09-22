@@ -15,6 +15,10 @@ router.delete("/:id", LiquidacionesController.eliminar);
 
 router.put("/:id/gastos", validators.guardarGastos, LiquidacionesController.guardarGastos);
 
+// A quién se le paga. La suma tiene que dar el total de los gastos; el cuadre
+// se valida al costear.
+router.put("/:id/pagos", validators.guardarPagos, LiquidacionesController.guardarPagos);
+
 router.post(
   "/:id/recepciones",
   validators.vincularRecepciones,

@@ -38,9 +38,12 @@ export const DOCUMENTO_CARNES = {
   /** Código del tipo de documento (f350_id_tipo_docto, 3 caracteres). CEA = entrada de carnes. */
   tipoDocto: "CEA",
   /**
-   * Proveedor: NIT (f350_id_tercero) y su sucursal (f451_id_sucursal_prov).
-   * 70329554 = Julio Arboleda Sierra, el frigorífico que firma el informe de
-   * desposte ("Cliente: 380 - JULIO ARBOLEDA SIERRA").
+   * Proveedor por defecto: NIT (f350_id_tercero) y sucursal
+   * (f451_id_sucursal_prov). 70329554 = Julio Arboleda Sierra, el frigorífico
+   * que firma el informe de desposte.
+   *
+   * La entrada OFICIAL lo pisa con el tercero que elige el admin — ver
+   * `TERCEROS_CARNES`. Esto es lo que usa la inicial, que sale sola.
    */
   nit: "70329554",
   sucursal: "001",
@@ -80,6 +83,41 @@ export const DOCUMENTO_CARNES = {
 };
 
 /**
+ * Con qué tercero puede entrar la entrada oficial.
+ *
+ * Según cómo se compró el ganado, la entrada va al frigorífico o a la cuenta de
+ * proveedores varios de carnes. Lo elige el ADMIN al enviar —el sistema no
+ * puede deducirlo de los datos de la recepción— y queda guardado en la
+ * liquidación.
+ *
+ * La entrada INICIAL no elige: sale sola al cerrar la recepción, cuando todavía
+ * no hay liquidación ni quién decida. Usa el del frigorífico y, si estuviera
+ * mal, la oficial la corrige — que es justamente para lo que la inicial se
+ * anula.
+ */
+export const TERCEROS_CARNES = [
+  {
+    id: "frigorifico",
+    nit: "70329554",
+    sucursal: "001",
+    etiqueta: "Julio Arboleda Sierra",
+    descripcion: "El frigorífico que firma el informe de desposte.",
+  },
+  {
+    id: "varios",
+    nit: "PVARIOS-CARNES",
+    sucursal: "001",
+    etiqueta: "Proveedores varios — Carnes",
+    descripcion: "Cuando la compra no va a nombre del frigorífico.",
+  },
+];
+
+/** El tercero por `id`, o el primero (frigorífico) si no se especifica. */
+export function terceroCarnes(id) {
+  return TERCEROS_CARNES.find((x) => x.id === id) || TERCEROS_CARNES[0];
+}
+
+/**
  * Ruta del conector de importación, tal como la documenta SIESA.
  *
  * NO es la misma ruta que usan los hermanos: `CONNEKTA_BASE_URL` apunta a la
@@ -113,9 +151,15 @@ export function conexionSiesa() {
   };
 }
 
-/** Lo que va adentro del documento. Se pasa a `armarEntradaDirecta`. */
-export function documentoSiesa() {
-  return { ...DOCUMENTO_CARNES };
+/**
+ * Lo que va adentro del documento. Se pasa a `armarEntradaDirecta`.
+ *
+ * `terceroId` cambia el NIT y la sucursal; el resto es igual para toda entrada
+ * de carnes. Sin argumento sale el frigorífico, que es el caso de la inicial.
+ */
+export function documentoSiesa(terceroId) {
+  const tercero = terceroCarnes(terceroId);
+  return { ...DOCUMENTO_CARNES, nit: tercero.nit, sucursal: tercero.sucursal };
 }
 
 /**

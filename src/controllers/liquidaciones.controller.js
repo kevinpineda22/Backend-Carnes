@@ -63,6 +63,16 @@ export async function guardarGastos(req, res, next) {
   }
 }
 
+/** PUT /api/liquidaciones/:id/pagos — Body: { filas: [...] } */
+export async function guardarPagos(req, res, next) {
+  try {
+    const data = await LiquidacionModel.guardarPagos(req.params.id, req.body.filas);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** POST /api/liquidaciones/:id/recepciones — Body: { recepcion_ids: [] } */
 export async function vincular(req, res, next) {
   try {

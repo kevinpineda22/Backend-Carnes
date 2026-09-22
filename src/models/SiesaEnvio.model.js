@@ -19,8 +19,20 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { ESTADOS } from "../shared/estados.js";
-import { armarEntradaDirecta, referenciaEnvio, TIPO_ENVIO } from "../shared/siesaEntrada.js";
-import { documentoSiesa, siesaConfigurado, siesaActivo, faltantesSiesa } from "../config/siesa.js";
+import { fallarSiFaltaMigracion } from "../shared/migraciones.js";
+import {
+  armarEntradaDirecta,
+  referenciaEnvio,
+  TIPO_ENVIO,
+} from "../shared/siesaEntrada.js";
+import {
+  documentoSiesa,
+  siesaConfigurado,
+  siesaActivo,
+  faltantesSiesa,
+  terceroCarnes,
+  TERCEROS_CARNES,
+} from "../config/siesa.js";
 import { enviarASiesa } from "../services/siesa.service.js";
 import { notificarAnularInicial } from "../services/notificaciones.service.js";
 
@@ -46,7 +58,11 @@ async function cargarRecepcion(recepcionId) {
     .select("*, sede:carnes_sedes ( id, codigo_co, nombre, bodega_siesa )")
     .eq("id", recepcionId)
     .maybeSingle();
-  if (error) fallar(error, "Error al leer la recepción");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer la recepción", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
   if (!data) throw createError(404, "Recepción no encontrada.");
 
   const { data: items, error: e2 } = await supabase
@@ -55,7 +71,11 @@ async function cargarRecepcion(recepcionId) {
     .eq("recepcion_id", recepcionId)
     .order("tipo")
     .order("orden");
-  if (e2) fallar(e2, "Error al leer los renglones");
+  if (e2)
+    fallarSiFaltaMigracion(e2, "Error al leer los renglones", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
 
   return { ...data, items: items || [] };
 }
@@ -71,28 +91,12 @@ async function ultimoEnvio(recepcionId, tipo, soloOk = true) {
     .limit(1);
   if (soloOk) q = q.eq("estado", "ok");
   const { data, error } = await q.maybeSingle();
-  if (error) fallar(error, "Error al leer el envío");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer el envío", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
   return data || null;
-}
-
-function esMigracionFaltante(error) {
-  const codigo = error?.code || "";
-  const mensaje = String(error?.message || "");
-  return (
-    ["42P01", "42703", "PGRST204", "PGRST205"].includes(codigo) ||
-    /(relation|column|table).*(does not exist|not found)/i.test(mensaje) ||
-    /schema cache/i.test(mensaje)
-  );
-}
-
-function fallar(error, contexto) {
-  if (esMigracionFaltante(error)) {
-    throw createError(
-      503,
-      "A la base le falta el módulo de SIESA. Corré sql/007_siesa.sql en Supabase y volvé a intentar.",
-    );
-  }
-  throw new Error(`${contexto}: ${error.message}`);
 }
 
 /**
@@ -115,7 +119,11 @@ export async function listar(f = {}) {
   if (f.liquidacion_id) q = q.eq("liquidacion_id", f.liquidacion_id);
 
   const { data, error } = await q;
-  if (error) fallar(error, "Error al listar envíos");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al listar envíos", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
   return data || [];
 }
 
@@ -123,10 +131,16 @@ export async function listar(f = {}) {
 export async function obtener(id) {
   const { data, error } = await supabase
     .from(TABLA)
-    .select("*, recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) )")
+    .select(
+      "*, recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) )",
+    )
     .eq("id", id)
     .maybeSingle();
-  if (error) fallar(error, "Error al leer el envío");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer el envío", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
   if (!data) throw createError(404, "Envío no encontrado.");
 
   // El payload lleva el código del ítem y nada más: es lo que SIESA necesita.
@@ -149,7 +163,12 @@ export async function obtener(id) {
     const clave = String(i.codigo_item ?? "").trim();
     // Si aun así hay dos con el mismo código, se nombran los dos: es más
     // honesto que elegir uno.
-    nombre.set(clave, nombre.has(clave) ? `${nombre.get(clave)} / ${i.descripcion}` : i.descripcion);
+    nombre.set(
+      clave,
+      nombre.has(clave)
+        ? `${nombre.get(clave)} / ${i.descripcion}`
+        : i.descripcion,
+    );
   }
 
   const movimientos = (data.payload?.Movimientos || []).map((m) => {
@@ -160,7 +179,8 @@ export async function obtener(id) {
       descripcion: nombre.get(String(m.ITEM)) || null,
       cantidad,
       valor_bruto: bruto,
-      precio_unitario: cantidad > 0 ? Math.round((bruto / cantidad) * 100) / 100 : null,
+      precio_unitario:
+        cantidad > 0 ? Math.round((bruto / cantidad) * 100) / 100 : null,
     };
   });
 
@@ -173,20 +193,32 @@ export async function obtener(id) {
  * Arma, manda (si hay credenciales) y registra. No lanza por SIESA: devuelve
  * la fila guardada, con `estado` ok o error.
  */
-async function ejecutarEnvio({ recepcion, tipo, liquidacionId = null, por, referenciaInicial }) {
+async function ejecutarEnvio({
+  recepcion,
+  tipo,
+  liquidacionId = null,
+  por,
+  referenciaInicial,
+  terceroId,
+}) {
   const consecutivo = consecutivoDe(recepcion.id, tipo);
   const { payload, resumen, bloqueos } = armarEntradaDirecta({
     recepcion,
     items: recepcion.items,
     tipo,
     consecutivo,
-    config: documentoSiesa(),
+    config: documentoSiesa(terceroId),
     referenciaInicial,
   });
 
   let resultado;
   if (bloqueos.length) {
-    resultado = { ok: false, status: null, respuesta: null, error: bloqueos.join(" ") };
+    resultado = {
+      ok: false,
+      status: null,
+      respuesta: null,
+      error: bloqueos.join(" "),
+    };
   } else if (!siesaConfigurado()) {
     resultado = {
       ok: false,
@@ -216,11 +248,21 @@ async function ejecutarEnvio({ recepcion, tipo, liquidacionId = null, por, refer
     enviado_por: por || null,
   };
 
-  const { data, error } = await supabase.from(TABLA).insert(fila).select("*").single();
-  if (error) fallar(error, "No se pudo registrar el envío");
+  const { data, error } = await supabase
+    .from(TABLA)
+    .insert(fila)
+    .select("*")
+    .single();
+  if (error)
+    fallarSiFaltaMigracion(error, "No se pudo registrar el envío", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
 
   if (!resultado.ok) {
-    console.error(`🔴 SIESA ${tipo} recepción #${recepcion.id}: ${resultado.error}`);
+    console.error(
+      `🔴 SIESA ${tipo} recepción #${recepcion.id}: ${resultado.error}`,
+    );
   }
   return data;
 }
@@ -234,7 +276,11 @@ export async function enviarInicial(recepcionId, por) {
   // mientras el interruptor está en off llenaría el panel de filas que no
   // significan nada.
   if (!siesaActivo()) {
-    return { estado: "apagado", tipo: TIPO_ENVIO.INICIAL, recepcion_id: recepcionId };
+    return {
+      estado: "apagado",
+      tipo: TIPO_ENVIO.INICIAL,
+      recepcion_id: recepcionId,
+    };
   }
   try {
     const recepcion = await cargarRecepcion(recepcionId);
@@ -246,21 +292,40 @@ export async function enviarInicial(recepcionId, por) {
     return await ejecutarEnvio({ recepcion, tipo: TIPO_ENVIO.INICIAL, por });
   } catch (e) {
     console.error(`🔴 SIESA inicial recepción #${recepcionId}: ${e.message}`);
-    return { estado: "error", error: e.message, tipo: TIPO_ENVIO.INICIAL, recepcion_id: recepcionId };
+    return {
+      estado: "error",
+      error: e.message,
+      tipo: TIPO_ENVIO.INICIAL,
+      recepcion_id: recepcionId,
+    };
   }
 }
 
 /** Reintento manual de la inicial, desde el panel. Sí lanza si no se puede. */
 export async function reintentarInicial(recepcionId, por) {
   if (!siesaActivo()) {
-    throw createError(409, "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
+    throw createError(
+      409,
+      "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).",
+    );
   }
   const recepcion = await cargarRecepcion(recepcionId);
-  if (![ESTADOS.RECIBIDO, ESTADOS.APROBADO, ESTADOS.COSTEADO].includes(recepcion.estado)) {
-    throw createError(409, `La recepción está en ${recepcion.estado}: la inicial ya no aplica.`);
+  if (
+    ![ESTADOS.RECIBIDO, ESTADOS.APROBADO, ESTADOS.COSTEADO].includes(
+      recepcion.estado,
+    )
+  ) {
+    throw createError(
+      409,
+      `La recepción está en ${recepcion.estado}: la inicial ya no aplica.`,
+    );
   }
   const previa = await ultimoEnvio(recepcionId, TIPO_ENVIO.INICIAL);
-  if (previa) throw createError(409, `Esta recepción ya tiene una entrada inicial ok (${previa.referencia}).`);
+  if (previa)
+    throw createError(
+      409,
+      `Esta recepción ya tiene una entrada inicial ok (${previa.referencia}).`,
+    );
   return ejecutarEnvio({ recepcion, tipo: TIPO_ENVIO.INICIAL, por });
 }
 
@@ -268,20 +333,28 @@ export async function reintentarInicial(recepcionId, por) {
  * Qué pasaría al enviar la oficial, sin mandar nada. Para que el botón del
  * panel pueda decir "no se puede, por esto" antes de apretarlo.
  */
-export async function previsualizarOficial(liquidacionId) {
+export async function previsualizarOficial(liquidacionId, terceroId) {
   const { data: liq, error } = await supabase
     .from("carnes_liquidaciones")
-    .select("id, estado, especie")
+    .select("id, estado, especie, siesa_nit, siesa_sucursal")
     .eq("id", liquidacionId)
     .maybeSingle();
-  if (error) fallar(error, "Error al leer la liquidación");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer la liquidación", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
   if (!liq) throw createError(404, "Liquidación no encontrada.");
 
   const { data: recs, error: e2 } = await supabase
     .from("carnes_recepciones")
     .select("id")
     .eq("liquidacion_id", liquidacionId);
-  if (e2) fallar(e2, "Error al leer las recepciones");
+  if (e2)
+    fallarSiFaltaMigracion(e2, "Error al leer las recepciones", [
+      "sql/007_siesa.sql",
+      "sql/008_pagos_y_tercero.sql",
+    ]);
 
   const sedes = [];
   for (const { id } of recs || []) {
@@ -293,7 +366,7 @@ export async function previsualizarOficial(liquidacionId) {
       items: recepcion.items,
       tipo: TIPO_ENVIO.OFICIAL,
       consecutivo: consecutivoDe(id, TIPO_ENVIO.OFICIAL),
-      config: documentoSiesa(),
+      config: documentoSiesa(terceroId),
       referenciaInicial: inicial?.referencia,
     });
     sedes.push({
@@ -301,7 +374,9 @@ export async function previsualizarOficial(liquidacionId) {
       sede: recepcion.sede?.nombre,
       estado: recepcion.estado,
       yaEnviada: Boolean(oficial),
-      inicial: inicial ? { referencia: inicial.referencia, enviado_at: inicial.enviado_at } : null,
+      inicial: inicial
+        ? { referencia: inicial.referencia, enviado_at: inicial.enviado_at }
+        : null,
       resumen,
       bloqueos,
     });
@@ -313,16 +388,25 @@ export async function previsualizarOficial(liquidacionId) {
     bloqueosGlobales.push("La liquidación tiene que estar costeada.");
   }
   if (!siesaActivo()) {
-    bloqueosGlobales.push("El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
+    bloqueosGlobales.push(
+      "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).",
+    );
   }
-  if (!configurado) bloqueosGlobales.push(`SIESA no está configurado. Faltan: ${faltantesSiesa().join(", ")}.`);
+  if (!configurado)
+    bloqueosGlobales.push(
+      `SIESA no está configurado. Faltan: ${faltantesSiesa().join(", ")}.`,
+    );
 
   return {
     liquidacion: liq,
+    terceros: TERCEROS_CARNES,
+    tercero: terceroCarnes(terceroId),
     configurado,
     bloqueos: bloqueosGlobales,
     sedes,
-    puedeEnviar: bloqueosGlobales.length === 0 && sedes.some((s) => !s.yaEnviada && s.bloqueos.length === 0),
+    puedeEnviar:
+      bloqueosGlobales.length === 0 &&
+      sedes.some((s) => !s.yaEnviada && s.bloqueos.length === 0),
   };
 }
 
@@ -334,8 +418,8 @@ export async function previsualizarOficial(liquidacionId) {
  * liquidación a Cerrada, correo a quien anula. Si alguna falla, no se cierra
  * nada y se devuelve el detalle.
  */
-export async function enviarOficial(liquidacionId, por) {
-  const previa = await previsualizarOficial(liquidacionId);
+export async function enviarOficial(liquidacionId, por, terceroId) {
+  const previa = await previsualizarOficial(liquidacionId, terceroId);
   if (previa.bloqueos.length) {
     throw createError(409, previa.bloqueos.join(" "));
   }
@@ -343,11 +427,21 @@ export async function enviarOficial(liquidacionId, por) {
   const resultados = [];
   for (const s of previa.sedes) {
     if (s.yaEnviada) {
-      resultados.push({ recepcion_id: s.recepcion_id, sede: s.sede, estado: "ok", repetido: true });
+      resultados.push({
+        recepcion_id: s.recepcion_id,
+        sede: s.sede,
+        estado: "ok",
+        repetido: true,
+      });
       continue;
     }
     if (s.bloqueos.length) {
-      resultados.push({ recepcion_id: s.recepcion_id, sede: s.sede, estado: "error", error: s.bloqueos.join(" ") });
+      resultados.push({
+        recepcion_id: s.recepcion_id,
+        sede: s.sede,
+        estado: "error",
+        error: s.bloqueos.join(" "),
+      });
       continue;
     }
     const recepcion = await cargarRecepcion(s.recepcion_id);
@@ -357,6 +451,7 @@ export async function enviarOficial(liquidacionId, por) {
       tipo: TIPO_ENVIO.OFICIAL,
       liquidacionId,
       por,
+      terceroId,
       referenciaInicial: inicial?.referencia,
     });
 
@@ -366,7 +461,10 @@ export async function enviarOficial(liquidacionId, por) {
     if (fila.estado === "ok") {
       const correo = await notificarAnularInicial(recepcion, inicial, fila);
       if (correo?.success) {
-        await supabase.from(TABLA).update({ aviso_anulacion: true }).eq("id", fila.id);
+        await supabase
+          .from(TABLA)
+          .update({ aviso_anulacion: true })
+          .eq("id", fila.id);
       }
     }
     resultados.push({
@@ -388,13 +486,30 @@ export async function enviarOficial(liquidacionId, por) {
       .update({ estado: ESTADOS.ENVIADO_SIESA, siesa_at: ahora })
       .in("id", ids)
       .neq("estado", ESTADOS.ENVIADO_SIESA);
-    if (e1) fallar(e1, "No se pudo marcar las recepciones como enviadas");
+    if (e1)
+      fallarSiFaltaMigracion(
+        e1,
+        "No se pudo marcar las recepciones como enviadas",
+        ["sql/007_siesa.sql", "sql/008_pagos_y_tercero.sql"],
+      );
 
+    // Con qué tercero entró queda escrito: dentro de seis meses la pregunta es
+    // "¿esta liquidación fue a nombre de quién?" y la respuesta tiene que estar
+    // en la fila, no en el payload de un envío.
+    const tercero = terceroCarnes(terceroId);
     const { error: e2 } = await supabase
       .from("carnes_liquidaciones")
-      .update({ estado: "Cerrada" })
+      .update({
+        estado: "Cerrada",
+        siesa_nit: tercero.nit,
+        siesa_sucursal: tercero.sucursal,
+      })
       .eq("id", liquidacionId);
-    if (e2) fallar(e2, "No se pudo cerrar la liquidación");
+    if (e2)
+      fallarSiFaltaMigracion(e2, "No se pudo cerrar la liquidación", [
+        "sql/007_siesa.sql",
+        "sql/008_pagos_y_tercero.sql",
+      ]);
   }
 
   return { cerrada: todasOk, resultados };

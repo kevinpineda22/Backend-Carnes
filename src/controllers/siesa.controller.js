@@ -52,7 +52,7 @@ export async function reintentarInicial(req, res, next) {
 /** GET /api/siesa/liquidaciones/:id/previsualizar */
 export async function previsualizarOficial(req, res, next) {
   try {
-    const data = await SiesaEnvio.previsualizarOficial(req.params.id);
+    const data = await SiesaEnvio.previsualizarOficial(req.params.id, req.query.tercero);
     res.json({ ok: true, ...data });
   } catch (error) {
     next(error);
@@ -62,7 +62,11 @@ export async function previsualizarOficial(req, res, next) {
 /** POST /api/siesa/liquidaciones/:id/enviar — la entrada oficial de cada sede. */
 export async function enviarOficial(req, res, next) {
   try {
-    const data = await SiesaEnvio.enviarOficial(req.params.id, req.body?.enviado_por);
+    const data = await SiesaEnvio.enviarOficial(
+      req.params.id,
+      req.body?.enviado_por,
+      req.body?.tercero,
+    );
     // 207: algunas sedes salieron y otras no. El front muestra el detalle.
     res.status(data.cerrada ? 200 : 207).json({ ok: data.cerrada, ...data });
   } catch (error) {

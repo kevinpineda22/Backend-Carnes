@@ -2,7 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-import { consolidarLiquidacion, puedeCerrarCosteo } from "../src/shared/consolidado.js";
+import { consolidarLiquidacion, puedeCerrarCosteo,
+  cuadrarPagos,
+} from "../src/shared/consolidado.js";
 
 /**
  * Los ítems salen del Excel de res ("01 Septiembre 2026.xlsx"), generados con un
@@ -256,4 +258,65 @@ test("una liquidación vacía no explota", () => {
   assert.deepEqual(c.sedes, []);
   assert.ok(c.advertencias.some((a) => a.codigo === "sin_recepciones"));
   assert.equal(puedeCerrarCosteo(c).ok, false);
+});
+
+// ─── Cuadre de pagos ────────────────────────────────────────────────────────
+
+test("cuadrarPagos: los pagos tienen que sumar lo mismo que los gastos", () => {
+  // El caso del Excel: nueve sedes reparten $192.816.139, y seis beneficiarios
+  // se reparten exactamente esa plata.
+  const pagos = [
+    { nombre: "Adriana Sanchez", valor: 43_722_400 },
+    { nombre: "Santiago Sotomayor", valor: 56_563_600 },
+    { nombre: "Brunt", valor: 61_979_438 },
+    { nombre: "Julio Arboleda", valor: 4_900_000 },
+    { nombre: "Figorinuss", valor: 12_213_200 },
+    { nombre: "Colmeat", valor: 13_437_501 },
+  ];
+  const r = cuadrarPagos(192_816_139, pagos);
+
+  assert.equal(r.totalPagos, 192_816_139);
+  assert.equal(r.diferencia, 0);
+  assert.equal(r.cuadra, true);
+});
+
+test("cuadrarPagos: un peso de más ya no cuadra", () => {
+  const r = cuadrarPagos(1000, [{ valor: 1002 }]);
+  assert.equal(r.diferencia, 2);
+  assert.equal(r.cuadra, false);
+});
+
+test("cuadrarPagos: un peso de redondeo se tolera", () => {
+  assert.equal(cuadrarPagos(1000, [{ valor: 1001 }]).cuadra, true);
+  assert.equal(cuadrarPagos(1000, [{ valor: 999 }]).cuadra, true);
+});
+
+test("cuadrarPagos: sin pagos cargados no hay diferencia que reportar", () => {
+  // Es el estado inicial de toda liquidación, no un error.
+  const r = cuadrarPagos(500_000, []);
+  assert.equal(r.cuadra, true);
+  assert.equal(r.sinPagos, true);
+});
+
+test("el costeo se bloquea si los pagos no cuadran", () => {
+  const r = consolidarLiquidacion({
+    recepciones: [
+      {
+        id: 1,
+        sede_id: 1,
+        items: [{ tipo: "carne", codigo_item: "1", descripcion: "X", cantidad: 10, costo_base: 1000 }],
+      },
+    ],
+    gastos: [{ concepto: "Valor de la carne", valor: 9000, signo: 1 }],
+    pagos: [{ nombre: "Alguien", valor: 8000 }],
+  });
+
+  const aviso = r.advertencias.find((a) => a.codigo === "pagos_no_cuadran");
+  assert.ok(aviso, JSON.stringify(r.advertencias));
+  assert.match(aviso.mensaje, /faltan 1000/);
+  assert.equal(r.cuadre.cuadra, false);
+
+  const cierre = puedeCerrarCosteo(r);
+  assert.equal(cierre.ok, false);
+  assert.ok(cierre.bloqueos.some((b) => b.codigo === "pagos_no_cuadran"));
 });

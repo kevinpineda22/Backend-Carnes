@@ -1,10 +1,18 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
-import { consolidarLiquidacion, puedeCerrarCosteo } from "../shared/consolidado.js";
+import {
+  consolidarLiquidacion,
+  puedeCerrarCosteo,
+} from "../shared/consolidado.js";
 import { ESTADOS } from "../shared/estados.js";
+import {
+  fallarSiFaltaMigracion,
+  esMigracionFaltante,
+} from "../shared/migraciones.js";
 
 const TABLE = "carnes_liquidaciones";
 const TABLE_GASTOS = "carnes_liquidacion_gastos";
+const TABLE_PAGOS = "carnes_liquidacion_pagos";
 const TABLE_RECEPCIONES = "carnes_recepciones";
 const TABLE_ITEMS = "carnes_recepcion_items";
 
@@ -31,14 +39,28 @@ export async function obtener(id) {
     .select("*")
     .eq("liquidacion_id", id)
     .order("id");
-  if (errorGastos) throw new Error(`Error al leer los gastos: ${errorGastos.message}`);
+  if (errorGastos)
+    throw new Error(`Error al leer los gastos: ${errorGastos.message}`);
+
+  // Los pagos pueden no existir todavía (migración 008 sin correr): se degrada
+  // a lista vacía en vez de tumbar la pantalla entera de la liquidación.
+  const { data: pagos, error: errorPagos } = await supabase
+    .from(TABLE_PAGOS)
+    .select("*")
+    .eq("liquidacion_id", id)
+    .order("orden")
+    .order("id");
+  if (errorPagos && !esMigracionFaltante(errorPagos)) {
+    throw new Error(`Error al leer los pagos: ${errorPagos.message}`);
+  }
 
   const { data: recepciones, error: errorRec } = await supabase
     .from(TABLE_RECEPCIONES)
     .select("*, sede:carnes_sedes ( id, codigo_co, nombre )")
     .eq("liquidacion_id", id)
     .order("id");
-  if (errorRec) throw new Error(`Error al leer las recepciones: ${errorRec.message}`);
+  if (errorRec)
+    throw new Error(`Error al leer las recepciones: ${errorRec.message}`);
 
   // Los renglones de TODAS las recepciones en UNA consulta, no una por sede: son
   // nueve sedes por 38 ítems, y nueve viajes extra por cada vez que el admin
@@ -52,7 +74,8 @@ export async function obtener(id) {
       .in("recepcion_id", ids)
       .order("orden")
       .order("id");
-    if (errorItems) throw new Error(`Error al leer los renglones: ${errorItems.message}`);
+    if (errorItems)
+      throw new Error(`Error al leer los renglones: ${errorItems.message}`);
     items = data || [];
   }
 
@@ -62,11 +85,21 @@ export async function obtener(id) {
   return {
     ...cabecera,
     gastos: gastos || [],
-    recepciones: (recepciones || []).map((r) => ({ ...r, items: porRecepcion.get(r.id) || [] })),
+    pagos: pagos || [],
+    recepciones: (recepciones || []).map((r) => ({
+      ...r,
+      items: porRecepcion.get(r.id) || [],
+    })),
   };
 }
 
-export async function listar({ especie, estado, desde, hasta, limite = 100 } = {}) {
+export async function listar({
+  especie,
+  estado,
+  desde,
+  hasta,
+  limite = 100,
+} = {}) {
   let q = supabase
     .from(TABLE)
     .select("*")
@@ -86,7 +119,12 @@ export async function listar({ especie, estado, desde, hasta, limite = 100 } = {
 
 // ─── Cabecera ──────────────────────────────────────────────────────────────
 
-export async function crear({ especie, fecha, proveedor, viceras_bonificacion = false }) {
+export async function crear({
+  especie,
+  fecha,
+  proveedor,
+  viceras_bonificacion = false,
+}) {
   const { data, error } = await supabase
     .from(TABLE)
     .insert({
@@ -129,9 +167,15 @@ async function exigirEditable(id) {
 export async function actualizar(id, cambios) {
   await exigirEditable(id);
 
-  const permitidas = ["fecha", "proveedor", "viceras_bonificacion", "observaciones"];
+  const permitidas = [
+    "fecha",
+    "proveedor",
+    "viceras_bonificacion",
+    "observaciones",
+  ];
   const limpio = {};
-  for (const c of permitidas) if (cambios[c] !== undefined) limpio[c] = cambios[c];
+  for (const c of permitidas)
+    if (cambios[c] !== undefined) limpio[c] = cambios[c];
 
   if (Object.keys(limpio).length === 0) {
     throw createError(400, "No hay campos válidos para actualizar.");
@@ -143,7 +187,8 @@ export async function actualizar(id, cambios) {
     .eq("id", id)
     .select("*")
     .maybeSingle();
-  if (error) throw new Error(`Error al actualizar la liquidación: ${error.message}`);
+  if (error)
+    throw new Error(`Error al actualizar la liquidación: ${error.message}`);
   return data;
 }
 
@@ -193,8 +238,14 @@ export async function guardarGastos(id, filas = []) {
   }
 
   for (const f of existentes) {
-    const { error } = await supabase.from(TABLE_GASTOS).update(fila(f)).eq("id", f.id);
-    if (error) throw new Error(`Error al actualizar el gasto #${f.id}: ${error.message}`);
+    const { error } = await supabase
+      .from(TABLE_GASTOS)
+      .update(fila(f))
+      .eq("id", f.id);
+    if (error)
+      throw new Error(
+        `Error al actualizar el gasto #${f.id}: ${error.message}`,
+      );
   }
 
   const conservados = [...existentes.map((f) => f.id), ...idsNuevos];
@@ -202,7 +253,70 @@ export async function guardarGastos(id, filas = []) {
   if (conservados.length) q = q.not("id", "in", `(${conservados.join(",")})`);
 
   const { error: errorBorra } = await q;
-  if (errorBorra) throw new Error(`Error al borrar gastos: ${errorBorra.message}`);
+  if (errorBorra)
+    throw new Error(`Error al borrar gastos: ${errorBorra.message}`);
+
+  return obtener(id);
+}
+
+/**
+ * Guarda la lista de beneficiarios de una liquidación.
+ *
+ * Mismo patrón que `guardarGastos`: lo que llega ES la lista completa, y lo que
+ * no vino se borra. Incluido el `select("id")` de las filas nuevas — sin eso el
+ * primer guardado se borra a sí mismo (ver el comentario de allá).
+ *
+ * La suma de estos pagos tiene que dar el total de los gastos. No se valida
+ * acá: se valida al costear, porque mientras el admin digita es normal que no
+ * cuadre — está a mitad de cargar la lista.
+ */
+export async function guardarPagos(id, filas = []) {
+  await exigirEditable(id);
+
+  const nuevas = filas.filter((f) => !f.id);
+  const existentes = filas.filter((f) => f.id);
+
+  const fila = (f, i) => ({
+    liquidacion_id: id,
+    nombre: String(f.nombre ?? "").trim(),
+    cuenta: f.cuenta ? String(f.cuenta).trim() : null,
+    valor: Number(f.valor) || 0,
+    orden: Number.isInteger(f.orden) ? f.orden : i,
+  });
+
+  const idsNuevos = [];
+  if (nuevas.length) {
+    const { data, error } = await supabase
+      .from(TABLE_PAGOS)
+      .insert(nuevas.map(fila))
+      .select("id");
+    if (error)
+      fallarSiFaltaMigracion(error, "Error al guardar los pagos", [
+        "sql/008_pagos_y_tercero.sql",
+      ]);
+    idsNuevos.push(...(data || []).map((f) => f.id));
+  }
+
+  for (const [i, f] of existentes.entries()) {
+    const { error } = await supabase
+      .from(TABLE_PAGOS)
+      .update({ ...fila(f, i), updated_at: new Date().toISOString() })
+      .eq("id", f.id);
+    if (error)
+      fallarSiFaltaMigracion(error, "Error al guardar los pagos", [
+        "sql/008_pagos_y_tercero.sql",
+      ]);
+  }
+
+  const conservados = [...existentes.map((f) => f.id), ...idsNuevos];
+  let q = supabase.from(TABLE_PAGOS).delete().eq("liquidacion_id", id);
+  if (conservados.length) q = q.not("id", "in", `(${conservados.join(",")})`);
+
+  const { error: errorBorra } = await q;
+  if (errorBorra)
+    fallarSiFaltaMigracion(errorBorra, "Error al borrar pagos", [
+      "sql/008_pagos_y_tercero.sql",
+    ]);
 
   return obtener(id);
 }
@@ -236,7 +350,10 @@ export async function eliminar(id) {
   if (!data) throw createError(404, "Liquidación no encontrada.");
 
   if (data.estado === ESTADOS_LIQUIDACION.CERRADA) {
-    throw createError(409, "La liquidación ya se subió a SIESA: no se puede borrar.");
+    throw createError(
+      409,
+      "La liquidación ya se subió a SIESA: no se puede borrar.",
+    );
   }
   if (data.estado === ESTADOS_LIQUIDACION.COSTEADA) {
     throw createError(
@@ -255,10 +372,16 @@ export async function eliminar(id) {
     .select("id");
   if (errorDesv) throw new Error(`Error al desvincular: ${errorDesv.message}`);
 
-  const { error: errorBorrar } = await supabase.from(TABLE).delete().eq("id", id);
-  if (errorBorrar) throw new Error(`Error al borrar la liquidación: ${errorBorrar.message}`);
+  const { error: errorBorrar } = await supabase
+    .from(TABLE)
+    .delete()
+    .eq("id", id);
+  if (errorBorrar)
+    throw new Error(`Error al borrar la liquidación: ${errorBorrar.message}`);
 
-  console.log(`🗑️  Liquidación #${id} borrada · ${liberadas?.length || 0} recepción(es) liberada(s).`);
+  console.log(
+    `🗑️  Liquidación #${id} borrada · ${liberadas?.length || 0} recepción(es) liberada(s).`,
+  );
   return { eliminada: id, recepcionesLiberadas: liberadas?.length || 0 };
 }
 
@@ -301,10 +424,14 @@ export async function vincular(id, recepcionIds = []) {
       );
     }
     if (r.liquidacion_id && String(r.liquidacion_id) !== String(id)) {
-      problemas.push(`${nombre}: ya está en la liquidación #${r.liquidacion_id}.`);
+      problemas.push(
+        `${nombre}: ya está en la liquidación #${r.liquidacion_id}.`,
+      );
     }
     if (r.estado === ESTADOS.BORRADOR) {
-      problemas.push(`${nombre}: todavía está en borrador, el recibidor no la cerró.`);
+      problemas.push(
+        `${nombre}: todavía está en borrador, el recibidor no la cerró.`,
+      );
     }
     if (r.estado === ESTADOS.RECHAZADO) {
       problemas.push(`${nombre}: está rechazada.`);
@@ -333,7 +460,8 @@ export async function desvincular(id, recepcionId) {
     .select("id")
     .maybeSingle();
   if (error) throw new Error(`Error al desvincular: ${error.message}`);
-  if (!data) throw createError(404, "Esa recepción no está en esta liquidación.");
+  if (!data)
+    throw createError(404, "Esa recepción no está en esta liquidación.");
 
   return obtener(id);
 }
@@ -355,11 +483,17 @@ export async function previsualizar(id) {
     recepciones: liquidacion.recepciones,
     gastos: liquidacion.gastos,
     bonificacionViceras: liquidacion.viceras_bonificacion,
+    pagos: liquidacion.pagos,
   });
 
   const sedesFaltantes = await buscarSedesFaltantes(liquidacion);
 
-  return { liquidacion, consolidado, sedesFaltantes, cierre: puedeCerrarCosteo(consolidado) };
+  return {
+    liquidacion,
+    consolidado,
+    sedesFaltantes,
+    cierre: puedeCerrarCosteo(consolidado),
+  };
 }
 
 /**
@@ -495,14 +629,16 @@ export async function costear(id) {
       .from(TABLE_RECEPCIONES)
       .update({ estado: ESTADOS.COSTEADO, costeado_at: ahora })
       .in("id", idsRecepciones);
-    if (error) throw new Error(`Error al marcar las recepciones: ${error.message}`);
+    if (error)
+      throw new Error(`Error al marcar las recepciones: ${error.message}`);
   }
 
   const { error: errorEstado } = await supabase
     .from(TABLE)
     .update({ estado: ESTADOS_LIQUIDACION.COSTEADA })
     .eq("id", id);
-  if (errorEstado) throw new Error(`Error al cerrar la liquidación: ${errorEstado.message}`);
+  if (errorEstado)
+    throw new Error(`Error al cerrar la liquidación: ${errorEstado.message}`);
 
   return previsualizar(id);
 }
@@ -541,7 +677,9 @@ export async function reabrir(id) {
       .in("id", ids)
       .eq("estado", ESTADOS.COSTEADO);
     if (errorEstado) {
-      throw new Error(`Error al revertir las recepciones: ${errorEstado.message}`);
+      throw new Error(
+        `Error al revertir las recepciones: ${errorEstado.message}`,
+      );
     }
   }
 

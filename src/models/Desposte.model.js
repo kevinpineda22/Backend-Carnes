@@ -9,6 +9,10 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { ESTADOS } from "../shared/estados.js";
+import {
+  fallarSiFaltaMigracion,
+  esMigracionFaltante,
+} from "../shared/migraciones.js";
 import { parsearInformeDesposte } from "../shared/desposteParser.js";
 import { cruzarDesposte, verificarIdentidad } from "../shared/cruceDesposte.js";
 import { extraerTexto } from "../services/pdf.service.js";
@@ -33,45 +37,11 @@ const SEGUNDOS_URL = 300;
  *
  * `Costeado` y `Enviado_SIESA` tampoco: ahí el documento ya movió plata.
  */
-const EDITABLES = new Set([ESTADOS.RECIBIDO, ESTADOS.APROBADO, ESTADOS.RECHAZADO]);
-
-// ─── Migración ─────────────────────────────────────────────────────────────
-
-/**
- * ¿Este error de Postgres es "todavía no corriste la migración 004"?
- *
- * Toda esta función depende de tablas y columnas que agregan `sql/004_desposte.sql`
- * y `sql/005_desposte_forzar.sql`.
- * Sin ese guard, el síntoma es un 500 con "Error interno del servidor" —el
- * `errorHandler` esconde los mensajes de Postgres a propósito, porque traen
- * nombres de tablas— y quien lo ve no tiene forma de saber que le falta correr
- * un archivo. Se traduce a un mensaje que dice exactamente qué hacer.
- *
- *   42P01 relación inexistente · 42703 columna inexistente
- *   PGRST205/204 lo mismo, visto desde PostgREST
- */
-function esMigracionFaltante(error) {
-  const codigo = error?.code || "";
-  const mensaje = String(error?.message || "");
-  return (
-    ["42P01", "42703", "PGRST204", "PGRST205"].includes(codigo) ||
-    /(relation|column|table).*(does not exist|not found)/i.test(mensaje) ||
-    /schema cache/i.test(mensaje)
-  );
-}
-
-/** Lanza el error de migración si corresponde; si no, propaga el original. */
-function fallar(error, contexto) {
-  if (esMigracionFaltante(error)) {
-    throw createError(
-      503,
-      "A la base le falta parte del módulo de informes de desposte. " +
-        "Corré sql/004_desposte.sql y sql/005_desposte_forzar.sql en Supabase " +
-        "(en ese orden) y volvé a intentar.",
-    );
-  }
-  throw new Error(`${contexto}: ${error.message}`);
-}
+const EDITABLES = new Set([
+  ESTADOS.RECIBIDO,
+  ESTADOS.APROBADO,
+  ESTADOS.RECHAZADO,
+]);
 
 // ─── Storage ───────────────────────────────────────────────────────────────
 
@@ -112,10 +82,16 @@ const rutaArchivo = (recepcionId) => `recepciones/${recepcionId}/informe.pdf`;
 async function obtenerRecepcion(recepcionId) {
   const { data, error } = await supabase
     .from("carnes_recepciones")
-    .select("*, sede:carnes_sedes ( id, codigo_co, nombre, subcliente_desposte )")
+    .select(
+      "*, sede:carnes_sedes ( id, codigo_co, nombre, subcliente_desposte )",
+    )
     .eq("id", recepcionId)
     .maybeSingle();
-  if (error) fallar(error, "Error al leer la recepción");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer la recepción", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
   if (!data) throw createError(404, "Recepción no encontrada.");
   return data;
 }
@@ -126,7 +102,11 @@ async function obtenerItemsRecepcion(recepcionId) {
     .from("carnes_recepcion_items")
     .select("id, tipo, plantilla_item_id, codigo_item, descripcion, cantidad")
     .eq("recepcion_id", recepcionId);
-  if (error) fallar(error, "Error al leer los renglones");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer los renglones", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
   return data || [];
 }
 
@@ -163,7 +143,11 @@ async function obtenerInforme(recepcionId) {
     .select("*")
     .eq("recepcion_id", recepcionId)
     .maybeSingle();
-  if (error) fallar(error, "Error al leer el informe");
+  if (error)
+    fallarSiFaltaMigracion(error, "Error al leer el informe", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
   if (!data) return null;
 
   const { data: items, error: errorItems } = await supabase
@@ -172,7 +156,11 @@ async function obtenerInforme(recepcionId) {
     .eq("informe_id", data.id)
     .order("bloque")
     .order("orden");
-  if (errorItems) fallar(errorItems, "Error al leer las líneas");
+  if (errorItems)
+    fallarSiFaltaMigracion(errorItems, "Error al leer las líneas", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
 
   return { ...data, items: items || [] };
 }
@@ -202,7 +190,8 @@ function aFormaDeParser(fila) {
     })),
     totales: {
       kgFinas: fila.kg_finas === null ? null : Number(fila.kg_finas),
-      kgSubproductos: fila.kg_subproductos === null ? null : Number(fila.kg_subproductos),
+      kgSubproductos:
+        fila.kg_subproductos === null ? null : Number(fila.kg_subproductos),
       kgPesoPie: fila.kg_peso_pie,
       kgCanalCaliente: fila.kg_canal_caliente,
       kgCanalFria: fila.kg_canal_fria,
@@ -257,14 +246,19 @@ export async function obtener(recepcionId) {
 /** URL firmada de corta duración para abrir el PDF. */
 export async function urlArchivo(recepcionId) {
   const informe = await obtenerInforme(recepcionId);
-  if (!informe) throw createError(404, "Esta recepción no tiene informe adjunto.");
+  if (!informe)
+    throw createError(404, "Esta recepción no tiene informe adjunto.");
 
   const { data, error } = await supabase.storage
     .from(BUCKET)
     .createSignedUrl(informe.archivo_path, SEGUNDOS_URL);
   if (error) throw new Error(`No se pudo generar el enlace: ${error.message}`);
 
-  return { url: data.signedUrl, expiraEn: SEGUNDOS_URL, nombre: informe.archivo_nombre };
+  return {
+    url: data.signedUrl,
+    expiraEn: SEGUNDOS_URL,
+    nombre: informe.archivo_nombre,
+  };
 }
 
 // ─── Escritura ─────────────────────────────────────────────────────────────
@@ -280,7 +274,10 @@ export async function urlArchivo(recepcionId) {
  * @param {number} recepcionId
  * @param {{buffer: Buffer, nombre: string, subidoPor: string, forzar?: boolean}} p
  */
-export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar = false }) {
+export async function adjuntar(
+  recepcionId,
+  { buffer, nombre, subidoPor, forzar = false },
+) {
   const recepcion = await obtenerRecepcion(recepcionId);
 
   if (!EDITABLES.has(recepcion.estado)) {
@@ -305,12 +302,20 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
   }
 
   // 2. ¿Es de esta sede?
-  const identidad = verificarIdentidad(parseado, recepcion.sede, recepcion.fecha_ingreso);
-  const sedeEquivocada = identidad.problemas.some((p) => p.codigo === "sede_no_coincide");
+  const identidad = verificarIdentidad(
+    parseado,
+    recepcion.sede,
+    recepcion.fecha_ingreso,
+  );
+  const sedeEquivocada = identidad.problemas.some(
+    (p) => p.codigo === "sede_no_coincide",
+  );
   if (sedeEquivocada && !forzar) {
     // 409 y no 400: la petición está bien formada, el conflicto es con el estado
     // del mundo. El front muestra el mensaje y ofrece adjuntar igual.
-    const detalle = identidad.problemas.find((p) => p.codigo === "sede_no_coincide");
+    const detalle = identidad.problemas.find(
+      (p) => p.codigo === "sede_no_coincide",
+    );
     throw createError(409, detalle.mensaje, "sede_no_coincide");
   }
 
@@ -346,7 +351,10 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
   const archivo_path = rutaArchivo(recepcionId);
   const { error: errorSubida } = await supabase.storage
     .from(BUCKET)
-    .upload(archivo_path, buffer, { contentType: "application/pdf", upsert: true });
+    .upload(archivo_path, buffer, {
+      contentType: "application/pdf",
+      upsert: true,
+    });
   if (errorSubida) {
     throw new Error(`No se pudo guardar el archivo: ${errorSubida.message}`);
   }
@@ -389,7 +397,11 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
     .upsert(fila, { onConflict: "recepcion_id" })
     .select("id")
     .single();
-  if (error) fallar(error, "No se pudo guardar el informe");
+  if (error)
+    fallarSiFaltaMigracion(error, "No se pudo guardar el informe", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
 
   // Las líneas se reemplazan enteras. Un informe nuevo no tiene nada que
   // conservar del anterior — es otro documento.
@@ -406,7 +418,11 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
     orden: i.orden,
   }));
   const { error: errorItems } = await supabase.from(TABLA_ITEMS).insert(lineas);
-  if (errorItems) fallar(errorItems, "No se pudieron guardar las líneas");
+  if (errorItems)
+    fallarSiFaltaMigracion(errorItems, "No se pudieron guardar las líneas", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
 
   const resultado = await obtener(recepcionId);
 
@@ -415,7 +431,11 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
   // puede hacer fallar el adjunto.
   let alerta = null;
   if (resultado.cruce?.totales?.alerta) {
-    alerta = await notificarDiferenciaDesposte(recepcion, resultado.cruce, resultado.informe);
+    alerta = await notificarDiferenciaDesposte(
+      recepcion,
+      resultado.cruce,
+      resultado.informe,
+    );
   }
 
   return {
@@ -446,23 +466,33 @@ export async function adjuntar(recepcionId, { buffer, nombre, subidoPor, forzar 
 export async function eliminar(recepcionId) {
   const recepcion = await obtenerRecepcion(recepcionId);
   if (!EDITABLES.has(recepcion.estado)) {
-    throw createError(409, `No se puede quitar el informe: la recepción está en ${recepcion.estado}.`);
+    throw createError(
+      409,
+      `No se puede quitar el informe: la recepción está en ${recepcion.estado}.`,
+    );
   }
 
   const informe = await obtenerInforme(recepcionId);
-  if (!informe) throw createError(404, "Esta recepción no tiene informe adjunto.");
+  if (!informe)
+    throw createError(404, "Esta recepción no tiene informe adjunto.");
 
   // Primero la fila. Si el borrado del archivo falla, queda un huérfano en
   // Storage —molesto pero inofensivo—; al revés quedaría una fila apuntando a
   // un archivo que ya no existe, y eso rompe la pantalla.
   const { error } = await supabase.from(TABLA).delete().eq("id", informe.id);
-  if (error) fallar(error, "No se pudo quitar el informe");
+  if (error)
+    fallarSiFaltaMigracion(error, "No se pudo quitar el informe", [
+      "sql/004_desposte.sql",
+      "sql/005_desposte_forzar.sql",
+    ]);
 
   const { error: errorArchivo } = await supabase.storage
     .from(BUCKET)
     .remove([informe.archivo_path]);
   if (errorArchivo) {
-    console.warn(`⚠️  Quedó el archivo huérfano ${informe.archivo_path}: ${errorArchivo.message}`);
+    console.warn(
+      `⚠️  Quedó el archivo huérfano ${informe.archivo_path}: ${errorArchivo.message}`,
+    );
   }
 
   return { eliminado: true, recepcion_id: Number(recepcionId) };

@@ -283,6 +283,27 @@ export const validators = {
     }),
   ),
 
+  // Beneficiarios de una liquidación. El nombre y la cuenta se escriben a mano
+  // —no hay maestro de terceros acá—; lo que importa es que la suma cuadre con
+  // los gastos, y eso se valida al costear, no al guardar.
+  guardarPagos: validar(
+    z.object({
+      filas: z
+        .array(
+          z.object({
+            id: z.coerce.number().int().positive().optional(),
+            nombre: z.string().trim().min(1, "El beneficiario necesita un nombre.").max(120),
+            cuenta: z.string().trim().max(80).nullable().optional(),
+            valor: z.coerce
+              .number({ invalid_type_error: "El valor debe ser un número." })
+              .nonnegative("El valor no puede ser negativo."),
+            orden: z.coerce.number().int().nonnegative().optional(),
+          }),
+        )
+        .default([]),
+    }),
+  ),
+
   crearLiquidacion: validar(
     z.object({
       especie: z.enum(ESPECIES, { errorMap: () => ({ message: "Elegí Res o Cerdo." }) }),

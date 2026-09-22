@@ -50,10 +50,42 @@ function num(v) {
  * @param {object[]} [entrada.gastos]     `{ concepto, valor, signo }`
  * @param {boolean}  [entrada.bonificacionViceras]
  */
+/**
+ * Tolerancia del cuadre entre gastos y pagos.
+ *
+ * Un peso: los dos lados son plata en pesos colombianos, sin centavos. Más que
+ * eso no es redondeo, es un renglón que falta.
+ */
+export const TOLERANCIA_CUADRE = 1;
+
+/**
+ * ¿La plata que se gira coincide con la que costó la entrega?
+ *
+ * Son dos vistas del mismo dinero: `totalGastos` es lo que costó (y es lo que
+ * se reparte entre las sedes); los pagos son a quién se le gira. Si no dan
+ * igual, o falta un pago o falta un gasto — y costear con esa diferencia
+ * reparte entre las sedes una plata que no coincide con la que salió del banco.
+ *
+ * Sin pagos cargados NO se reporta diferencia: es el estado inicial de toda
+ * liquidación, no un error.
+ */
+export function cuadrarPagos(totalGastos, pagos = []) {
+  const total = pagos.reduce((acc, p) => acc + num(p.valor), 0);
+  const diferencia = Number((total - num(totalGastos)).toFixed(2));
+  return {
+    totalPagos: Number(total.toFixed(2)),
+    totalGastos: Number(num(totalGastos).toFixed(2)),
+    diferencia,
+    cuadra: pagos.length === 0 || Math.abs(diferencia) <= TOLERANCIA_CUADRE,
+    sinPagos: pagos.length === 0,
+  };
+}
+
 export function consolidarLiquidacion({
   recepciones = [],
   gastos = [],
   bonificacionViceras = false,
+  pagos = [],
 } = {}) {
   const advertencias = [];
 
@@ -109,6 +141,18 @@ export function consolidarLiquidacion({
     advertencias.push({
       codigo: "sin_recepciones",
       mensaje: "La liquidación no tiene ninguna recepción vinculada.",
+    });
+  }
+
+  const cuadre = cuadrarPagos(totalGastos, pagos);
+  if (!cuadre.cuadra) {
+    const sobra = cuadre.diferencia > 0;
+    advertencias.push({
+      codigo: "pagos_no_cuadran",
+      mensaje:
+        `Los pagos suman ${cuadre.totalPagos} y los gastos ${cuadre.totalGastos}: ` +
+        `${sobra ? "sobran" : "faltan"} ${Math.abs(cuadre.diferencia)} en los pagos. ` +
+        "Los dos son la misma plata vista de dos maneras y tienen que dar igual.",
     });
   }
 
@@ -184,6 +228,7 @@ export function consolidarLiquidacion({
 
   return {
     totalGastos: Number(totalGastos.toFixed(2)),
+    cuadre,
     totalKilos: Number(totalKilos.toFixed(3)),
     costoPromedioKilo: totalKilos > 0 ? Number((totalGastos / totalKilos).toFixed(4)) : 0,
     totalCosteado: Number(totalCosteado.toFixed(2)),
@@ -218,6 +263,9 @@ export function puedeCerrarCosteo(consolidado, { estadosAprobados = ["Aprobado",
     "sin_kilos",
     "adicionales_sin_codigo",
     "factor_anula_costos",
+    // Costear con los pagos descuadrados reparte entre las sedes una plata que
+    // no es la que se giró. Se congela mal y después hay que reabrir.
+    "pagos_no_cuadran",
   ]);
 
   const bloqueos = consolidado.advertencias.filter((a) => BLOQUEANTES.has(a.codigo));
