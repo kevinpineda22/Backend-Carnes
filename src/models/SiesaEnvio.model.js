@@ -133,11 +133,24 @@ export async function obtener(id) {
   // Para la pantalla se le pega la descripción y el precio unitario desde los
   // renglones de la recepción, así el admin lee "TABLA · 14,19 kg × $27.588"
   // y no "15197 · 14.1900 · 391470.0000".
+  //
+  // Solo los renglones CON cantidad: son los únicos que viajaron. Varios cortes
+  // comparten el mismo código de SIESA —15187 lo tienen FALDITA, PUNTA DE
+  // FALDA, ENTRAÑITAS y PUNTA ESPALDILLA— así que un mapa armado con los 38
+  // renglones de la plantilla se queda con el último y muestra un corte que no
+  // es el que se recibió.
   const { data: items } = await supabase
     .from("carnes_recepcion_items")
-    .select("codigo_item, descripcion")
-    .eq("recepcion_id", data.recepcion_id);
-  const nombre = new Map((items || []).map((i) => [String(i.codigo_item ?? "").trim(), i.descripcion]));
+    .select("codigo_item, descripcion, cantidad")
+    .eq("recepcion_id", data.recepcion_id)
+    .gt("cantidad", 0);
+  const nombre = new Map();
+  for (const i of items || []) {
+    const clave = String(i.codigo_item ?? "").trim();
+    // Si aun así hay dos con el mismo código, se nombran los dos: es más
+    // honesto que elegir uno.
+    nombre.set(clave, nombre.has(clave) ? `${nombre.get(clave)} / ${i.descripcion}` : i.descripcion);
+  }
 
   const movimientos = (data.payload?.Movimientos || []).map((m) => {
     const cantidad = Number(m.CANTIDAD) || 0;
