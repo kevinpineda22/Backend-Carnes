@@ -37,9 +37,13 @@ export const DOCUMENTO_CARNES = {
 
   /** Código del tipo de documento (f350_id_tipo_docto, 3 caracteres). CEA = entrada de carnes. */
   tipoDocto: "CEA",
-  /** NIT del proveedor (f350_id_tercero) y su sucursal (f451_id_sucursal_prov). */
-  nit: null,
-  sucursal: null,
+  /**
+   * Proveedor: NIT (f350_id_tercero) y su sucursal (f451_id_sucursal_prov).
+   * 70329554 = Julio Arboleda Sierra, el frigorífico que firma el informe de
+   * desposte ("Cliente: 380 - JULIO ARBOLEDA SIERRA").
+   */
+  nit: "70329554",
+  sucursal: "001",
   /** Unidad de medida del movimiento (f470_id_unidad_medida, 4 caracteres). */
   unidadMedida: "KG",
   /** Unidad de negocio del movimiento (f470_id_un_movto). 003 = Carnes. */
