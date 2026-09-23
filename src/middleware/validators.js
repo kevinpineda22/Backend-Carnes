@@ -246,10 +246,6 @@ export const validators = {
     z.object({ recibido_por: correo("El correo del recibidor no es válido.").optional() }),
   ),
 
-  aprobar: validar(
-    z.object({ aprobado_por: correo("El correo del administrador no es válido.") }),
-  ),
-
   // El costo base es obligatorio y POSITIVO: un adicional homologado con costo 0
   // entra a SIESA valiendo cero y deja el margen de ese producto en 100%. Sube
   // sin error, así que no lo descubre nadie.
@@ -357,19 +353,6 @@ export const validators = {
       recepcion_ids: z
         .array(z.coerce.number().int().positive())
         .min(1, "Elegí al menos una recepción."),
-    }),
-  ),
-
-  // El motivo es obligatorio y con mínimo real: "no" o "mal" no le sirve de nada
-  // al recibidor, que es quien lo lee para corregir.
-  rechazar: validar(
-    z.object({
-      aprobado_por: correo("El correo del administrador no es válido."),
-      motivo: z
-        .string({ required_error: "Escribí por qué se rechaza." })
-        .trim()
-        .min(5, "Explicá el motivo: el recibidor lo lee para saber qué corregir.")
-        .max(2000),
     }),
   ),
 

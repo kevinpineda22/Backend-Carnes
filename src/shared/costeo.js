@@ -220,14 +220,14 @@ export function calcularCosteo({
 
   // Diferencia entre lo que se pagó y la suma de los renglones redondeados.
   // Debería ser centavos. Si no lo es, algo no cierra y el admin tiene que
-  // saberlo ANTES de aprobar, no cuando contabilidad reclame.
+  // saberlo ANTES de liquidar, no cuando contabilidad reclame.
   const residuo = redondear(costoReal - totalCosteado, DECIMALES_TOTAL);
   if (costoTeorico > 0 && Math.abs(residuo) > 1) {
     advertencias.push({
       codigo: "residuo_alto",
       mensaje:
         `La suma de los renglones difiere del costo real en $${residuo}. ` +
-        "Revisar antes de aprobar.",
+        "Revisar antes de liquidar.",
     });
   }
 

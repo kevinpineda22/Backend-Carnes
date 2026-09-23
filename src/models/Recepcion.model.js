@@ -599,7 +599,7 @@ export async function descartar(id) {
     throw createError(
       409,
       `Solo se pueden descartar borradores. Esta está en "${data.estado}": ` +
-        "si hay algo mal, rechazala para que quede constancia del motivo.",
+        "si hay algo mal, corregí los renglones desde el detalle.",
     );
   }
 
@@ -637,7 +637,11 @@ export async function cambiarEstado(id, hacia, extra = {}) {
 }
 
 /**
- * Cierra el borrador: Borrador → Recibido.
+ * Cierra el borrador: Borrador → Aprobado.
+ *
+ * Va directo a `Aprobado` porque ya no hay aprobación manual: cerrada, la
+ * recepción queda lista para vincular a una liquidación. `aprobado_at` se llena
+ * con la hora del cierre y `aprobado_por` queda vacío — nadie la aprobó a mano.
  *
  * Exige al menos un renglón con cantidad > 0. Una recepción vacía no es un
  * documento: es un borrador que alguien cerró sin querer, y llega al admin como
@@ -654,47 +658,27 @@ export async function finalizar(id, { recibido_por }) {
     );
   }
 
-  return cambiarEstado(id, ESTADOS.RECIBIDO, {
-    recibido_at: new Date().toISOString(),
+  const ahora = new Date().toISOString();
+  return cambiarEstado(id, ESTADOS.APROBADO, {
+    recibido_at: ahora,
     // Solo se pisa si vino: si el front no lo manda, vale el de la apertura.
     ...(recibido_por ? { recibido_por } : {}),
-    // Un cierre nuevo después de un rechazo tiene que limpiar el motivo viejo,
-    // o el admin vuelve a leer el reclamo de la vez pasada.
+    aprobado_at: ahora,
+    aprobado_por: null,
+    // Una rechazada de antes que se corrige y se vuelve a cerrar no tiene que
+    // seguir mostrando el reclamo viejo.
     motivo_rechazo: null,
-  });
-}
-
-/** Recibido → Aprobado. */
-export async function aprobar(id, { aprobado_por }) {
-  return cambiarEstado(id, ESTADOS.APROBADO, {
-    aprobado_por,
-    aprobado_at: new Date().toISOString(),
-  });
-}
-
-/** Recibido → Rechazado. El motivo es obligatorio y lo lee el recibidor. */
-export async function rechazar(id, { aprobado_por, motivo }) {
-  return cambiarEstado(id, ESTADOS.RECHAZADO, {
-    aprobado_por,
-    aprobado_at: new Date().toISOString(),
-    motivo_rechazo: motivo,
   });
 }
 
 /**
  * Rechazado → Borrador, para que el recibidor corrija.
  *
- * El `motivo_rechazo` NO se borra acá: se borra al volver a cerrar. Mientras
- * corrige, el recibidor tiene que seguir viendo qué le reclamaron.
+ * Solo aplica a recepciones rechazadas antes de quitar el rechazo: ya no se
+ * rechaza nada nuevo. El `motivo_rechazo` NO se borra acá: se borra al volver a
+ * cerrar. Mientras corrige, el recibidor tiene que seguir viendo qué le
+ * reclamaron.
  */
 export async function reabrir(id) {
   return cambiarEstado(id, ESTADOS.BORRADOR);
-}
-
-/** Aprobado → Recibido: deshacer una aprobación dada por error. */
-export async function desaprobar(id) {
-  return cambiarEstado(id, ESTADOS.RECIBIDO, {
-    aprobado_por: null,
-    aprobado_at: null,
-  });
 }

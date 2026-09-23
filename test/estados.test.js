@@ -11,9 +11,9 @@ import {
 } from "../src/shared/estados.js";
 
 test("el camino feliz completo está permitido", () => {
+  // Cerrar la recepción la deja lista para liquidar: no hay aprobación manual.
   const camino = [
     ESTADOS.BORRADOR,
-    ESTADOS.RECIBIDO,
     ESTADOS.APROBADO,
     ESTADOS.COSTEADO,
     ESTADOS.ENVIADO_SIESA,
@@ -39,22 +39,27 @@ test("Enviado_SIESA es terminal: no sale a NINGÚN estado", () => {
   }
 });
 
-test("un rechazo vuelve a borrador, pero un recibido NO", () => {
-  // Si el admin ve algo mal, RECHAZA — y el rechazo deja el motivo escrito.
-  // Una vuelta silenciosa a borrador borraría la razón.
-  assert.ok(puedeTransicionar(ESTADOS.RECHAZADO, ESTADOS.BORRADOR));
-  assert.equal(puedeTransicionar(ESTADOS.RECIBIDO, ESTADOS.BORRADOR), false);
+test("nada nuevo entra a Recibido ni a Rechazado", () => {
+  // Ya no hay aprobación ni rechazo manual. Los dos estados quedan solo por las
+  // filas viejas.
+  for (const desde of Object.values(ESTADOS)) {
+    assert.equal(puedeTransicionar(desde, ESTADOS.RECIBIDO), false, `${desde} → Recibido`);
+    assert.equal(puedeTransicionar(desde, ESTADOS.RECHAZADO), false, `${desde} → Rechazado`);
+  }
 });
 
-test("se puede deshacer una aprobación y un costeo", () => {
-  assert.ok(puedeTransicionar(ESTADOS.APROBADO, ESTADOS.RECIBIDO));
+test("una rechazada de antes todavía puede volver a borrador para corregirse", () => {
+  assert.ok(puedeTransicionar(ESTADOS.RECHAZADO, ESTADOS.BORRADOR));
+});
+
+test("se puede deshacer un costeo", () => {
   assert.ok(puedeTransicionar(ESTADOS.COSTEADO, ESTADOS.APROBADO));
 });
 
 test("no se puede saltear pasos", () => {
-  assert.equal(puedeTransicionar(ESTADOS.BORRADOR, ESTADOS.APROBADO), false);
+  assert.equal(puedeTransicionar(ESTADOS.BORRADOR, ESTADOS.COSTEADO), false);
   assert.equal(puedeTransicionar(ESTADOS.BORRADOR, ESTADOS.ENVIADO_SIESA), false);
-  assert.equal(puedeTransicionar(ESTADOS.RECIBIDO, ESTADOS.COSTEADO), false);
+  assert.equal(puedeTransicionar(ESTADOS.APROBADO, ESTADOS.ENVIADO_SIESA), false);
 });
 
 test("el motivo del rechazo es texto para una persona, no para un log", () => {

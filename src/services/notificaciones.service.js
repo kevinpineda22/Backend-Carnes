@@ -88,7 +88,7 @@ export async function notificarRecepcionFinalizada(recepcion, items = []) {
       </div>`
     : "";
 
-  // Si el QR no se verificó, el admin tiene que saberlo ANTES de aprobar. Es la
+  // Si el QR no se verificó, el admin tiene que saberlo ANTES de liquidar. Es la
   // única señal de que la sede del documento puede no ser la sede real.
   const avisoSede = recepcion.sede_verificada
     ? ""
@@ -99,7 +99,7 @@ export async function notificarRecepcionFinalizada(recepcion, items = []) {
         </p>
         <p style="margin:6px 0 0;color:#7f1d1d;font-size:13px;">
           La sede de este documento la eligió el recibidor a mano. Confirmala
-          antes de aprobar.
+          antes de liquidar.
         </p>
       </div>`;
 
@@ -143,7 +143,7 @@ export async function notificarRecepcionFinalizada(recepcion, items = []) {
       <a href="${panel}"
          style="display:inline-block;background:#1f2937;color:#ffffff;text-decoration:none;
                 padding:12px 24px;font-size:14px;border-radius:4px;">
-        Revisar y aprobar
+        Ver la recepción
       </a>
 
       <p style="margin:24px 0 0;color:#9ca3af;font-size:12px;">
@@ -223,7 +223,7 @@ export async function notificarDiferenciaDesposte(recepcion, cruce, informe) {
 
       <p style="margin:0 0 16px;font-size:13px;color:#6b7280;">
         Lote ${esc(informe?.lote || "—")} · desposte del ${esc(informe?.fecha_desposte || "—")}.
-        Todavía no está aprobada: revisá antes de aprobar, y reclamale al frigorífico si corresponde.
+        Revisala antes de liquidarla, y reclamale al frigorífico si corresponde.
       </p>
 
       <a href="${panel}" style="display:inline-block;background:#1f2937;color:#fff;text-decoration:none;padding:12px 24px;font-size:14px;border-radius:4px;">Abrir la recepción</a>

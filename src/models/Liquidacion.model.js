@@ -508,9 +508,9 @@ export async function previsualizar(id) {
  * decisión es del admin; lo que no puede pasar es que no se entere.
  *
  * Para cada sede que falta se busca si hay una recepción de esa especie y ese
- * día en cualquier estado. Cambia por completo qué hacer: "hay una todavía sin
- * aprobar" se resuelve aprobándola; "no hay ninguna" es preguntar si de verdad
- * no se mandó.
+ * día en cualquier estado. Cambia por completo qué hacer: "hay una cerrada sin
+ * vincular" se resuelve vinculándola; "no hay ninguna" es preguntar si de
+ * verdad no se mandó.
  *
  * Con cero recepciones vinculadas no se avisa nada: ahí faltan todas, y ya lo
  * dice el estado vacío del paso 1.
@@ -555,8 +555,6 @@ async function buscarSedesFaltantes(liquidacion) {
       pista = "en_otra_liquidacion";
     } else if (r.estado === ESTADOS.APROBADO) {
       pista = "aprobada_sin_vincular";
-    } else if (r.estado === ESTADOS.RECIBIDO) {
-      pista = "sin_aprobar";
     } else if (r.estado === ESTADOS.BORRADOR) {
       pista = "en_curso";
     } else if (r.estado === ESTADOS.RECHAZADO) {

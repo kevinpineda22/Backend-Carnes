@@ -129,7 +129,7 @@ export async function homologarAdicional(req, res, next) {
 
 /**
  * POST /api/recepciones/:id/finalizar
- * Borrador → Recibido, y le avisa al admin por correo.
+ * Borrador → Aprobado (lista para liquidar), y le avisa al admin por correo.
  *
  * El correo se ESPERA antes de responder, aunque sea un efecto secundario. En
  * Vercel la función se congela apenas se manda la respuesta, así que un
@@ -175,40 +175,10 @@ export async function descartar(req, res, next) {
   }
 }
 
-/** POST /api/recepciones/:id/aprobar — Recibido → Aprobado. */
-export async function aprobar(req, res, next) {
-  try {
-    const data = await RecepcionModel.aprobar(req.params.id, req.body);
-    res.json({ ok: true, data });
-  } catch (error) {
-    next(error);
-  }
-}
-
-/** POST /api/recepciones/:id/rechazar — Recibido → Rechazado. */
-export async function rechazar(req, res, next) {
-  try {
-    const data = await RecepcionModel.rechazar(req.params.id, req.body);
-    res.json({ ok: true, data });
-  } catch (error) {
-    next(error);
-  }
-}
-
 /** POST /api/recepciones/:id/reabrir — Rechazado → Borrador. */
 export async function reabrir(req, res, next) {
   try {
     const data = await RecepcionModel.reabrir(req.params.id);
-    res.json({ ok: true, data });
-  } catch (error) {
-    next(error);
-  }
-}
-
-/** POST /api/recepciones/:id/desaprobar — Aprobado → Recibido. */
-export async function desaprobar(req, res, next) {
-  try {
-    const data = await RecepcionModel.desaprobar(req.params.id);
     res.json({ ok: true, data });
   } catch (error) {
     next(error);

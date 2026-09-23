@@ -160,7 +160,7 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
       codigo: "faltan_kilos",
       mensaje:
         `El informe dice ${kgPdf} kg de cortes y se recibieron ${kgRecibido} kg: ` +
-        `faltan ${Math.abs(diferencia)} kg. Revisá antes de aprobar.`,
+        `faltan ${Math.abs(diferencia)} kg. Revisá antes de liquidar.`,
     });
   } else if (estadoTotales === "sobrante") {
     advertencias.push({

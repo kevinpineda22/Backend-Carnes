@@ -55,14 +55,13 @@ router.delete("/:id/desposte", DesposteController.eliminar);
 // ─── Transiciones ─────────────────────────────────────────────────────────
 //
 // Cada una es su propio POST y no un `PATCH { estado }` genérico. Un endpoint
-// con nombre dice qué pasó —y puede exigir lo que ese paso necesita: `rechazar`
-// pide el motivo, `aprobar` pide quién aprobó—. Con un campo `estado` suelto,
-// esas reglas quedarían en un `switch` que hay que acordarse de completar cada
-// vez que se agrega un estado.
+// con nombre dice qué pasó —y puede exigir lo que ese paso necesita—. Con un
+// campo `estado` suelto, esas reglas quedarían en un `switch` que hay que
+// acordarse de completar cada vez que se agrega un estado.
+//
+// No hay `aprobar` ni `rechazar`: `finalizar` deja la recepción lista para
+// liquidar. `reabrir` queda para las rechazadas de antes.
 router.post("/:id/finalizar", validators.finalizar, RecepcionesController.finalizar);
-router.post("/:id/aprobar", validators.aprobar, RecepcionesController.aprobar);
-router.post("/:id/rechazar", validators.rechazar, RecepcionesController.rechazar);
 router.post("/:id/reabrir", RecepcionesController.reabrir);
-router.post("/:id/desaprobar", RecepcionesController.desaprobar);
 
 export default router;

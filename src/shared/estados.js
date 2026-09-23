@@ -19,14 +19,13 @@ export const ESTADOS = {
 /**
  * A dónde puede ir cada estado.
  *
- * Las vueltas atrás están permitidas a propósito, PERO nunca después de SIESA:
- *
- *   · `Recibido → Borrador` no existe. Si el admin ve algo mal, RECHAZA — y el
- *     rechazo deja `motivo_rechazo` escrito. Una vuelta silenciosa a borrador
- *     borraría la razón, y el recibidor volvería a la pantalla sin saber qué
- *     corregir.
- *   · `Aprobado → Recibido` sí, porque aprobar es un clic y equivocarse también.
- *     Todavía no se calculó nada, así que no hay plata que deshacer.
+ *   · `Borrador → Aprobado` directo. Ya no hay aprobación manual: cerrar la
+ *     recepción la deja lista para vincular a una liquidación. El paso de
+ *     aprobar solo frenaba el flujo, y el admin igual puede corregir renglones
+ *     de una recepción cerrada mientras no esté costeada.
+ *   · `Recibido` y `Rechazado` quedan solo por las filas viejas (sql/009 migra
+ *     las `Recibido`). Nada nuevo entra a esos estados. `Rechazado → Borrador`
+ *     se conserva para que el recibidor pueda corregir una rechazada de antes.
  *   · `Costeado → Aprobado` sí: el admin corrige un gasto de la liquidación y se
  *     vuelve a costear. Es lo normal, no una excepción.
  *   · `Enviado_SIESA` NO SALE A NINGÚN LADO. Es terminal. El documento ya existe
@@ -34,10 +33,10 @@ export const ESTADOS = {
  *     de SIESA —la que vale— seguiría diciendo lo de antes.
  */
 const TRANSICIONES = {
-  [ESTADOS.BORRADOR]: [ESTADOS.RECIBIDO],
-  [ESTADOS.RECIBIDO]: [ESTADOS.APROBADO, ESTADOS.RECHAZADO],
+  [ESTADOS.BORRADOR]: [ESTADOS.APROBADO],
+  [ESTADOS.RECIBIDO]: [],
   [ESTADOS.RECHAZADO]: [ESTADOS.BORRADOR],
-  [ESTADOS.APROBADO]: [ESTADOS.COSTEADO, ESTADOS.RECIBIDO],
+  [ESTADOS.APROBADO]: [ESTADOS.COSTEADO],
   [ESTADOS.COSTEADO]: [ESTADOS.ENVIADO_SIESA, ESTADOS.APROBADO],
   [ESTADOS.ENVIADO_SIESA]: [],
 };
@@ -45,7 +44,7 @@ const TRANSICIONES = {
 /** Mensaje humano para cada estado, para explicar por qué algo no se puede. */
 const PORQUE = {
   [ESTADOS.RECIBIDO]: "ya la cerró el recibidor",
-  [ESTADOS.APROBADO]: "ya la aprobó el administrador",
+  [ESTADOS.APROBADO]: "ya la cerró el recibidor",
   [ESTADOS.COSTEADO]: "ya tiene el costeo cerrado",
   [ESTADOS.ENVIADO_SIESA]: "ya se subió a SIESA",
   [ESTADOS.RECHAZADO]: "está rechazada",
