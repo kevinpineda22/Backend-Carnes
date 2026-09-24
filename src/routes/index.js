@@ -4,6 +4,7 @@ import plantillaRoutes from "./plantilla.routes.js";
 import recepcionesRoutes from "./recepciones.routes.js";
 import liquidacionesRoutes from "./liquidaciones.routes.js";
 import siesaRoutes from "./siesa.routes.js";
+import desposteRoutes from "./desposte.routes.js";
 import { verificarEmail } from "../services/email.service.js";
 import { sandboxOn } from "../config/sandbox.js";
 
@@ -14,6 +15,7 @@ router.use("/plantilla", plantillaRoutes);
 router.use("/recepciones", recepcionesRoutes);
 router.use("/liquidaciones", liquidacionesRoutes);
 router.use("/siesa", siesaRoutes);
+router.use("/desposte", desposteRoutes);
 
 // Health check.
 //

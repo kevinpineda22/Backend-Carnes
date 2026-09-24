@@ -58,3 +58,60 @@ export async function eliminar(req, res, next) {
     next(error);
   }
 }
+
+// ─── Guía anticipada ───────────────────────────────────────────────────────
+
+/** GET /api/desposte/anticipadas?especie= — las que esperan su recepción. */
+export async function listarAnticipadas(req, res, next) {
+  try {
+    const data = await DesposteModel.listarAnticipadas({ especie: req.query.especie });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/desposte/anticipadas — multipart: `archivo`, `sede_id`, `especie`,
+ * `fecha` (de entrega), `subido_por`, `forzar`.
+ *
+ * Si la recepción de esa sede y fecha ya cerró, se adjunta directo y se compara
+ * en el acto (`destino: "recepcion"`). Si no, queda esperando (`"anticipada"`).
+ */
+export async function subirAnticipada(req, res, next) {
+  try {
+    if (!req.file) throw createError(400, "Falta el archivo PDF (campo `archivo`).");
+    const data = await DesposteModel.subirAnticipada({
+      sedeId: Number(req.body?.sede_id),
+      especie: req.body?.especie,
+      fecha: req.body?.fecha,
+      buffer: req.file.buffer,
+      nombre: req.file.originalname,
+      subidoPor: req.body?.subido_por,
+      forzar: req.body?.forzar === "true" || req.body?.forzar === true,
+    });
+    res.status(201).json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** GET /api/desposte/anticipadas/:id/archivo — URL firmada del PDF. */
+export async function archivoAnticipada(req, res, next) {
+  try {
+    const data = await DesposteModel.urlArchivoAnticipada(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** DELETE /api/desposte/anticipadas/:id — solo si todavía no se enganchó. */
+export async function eliminarAnticipada(req, res, next) {
+  try {
+    const data = await DesposteModel.eliminarAnticipada(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
