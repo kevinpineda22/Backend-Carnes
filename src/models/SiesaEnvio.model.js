@@ -352,19 +352,36 @@ async function ejecutarEnvio({
     http_status: resultado.status,
     error: resultado.error,
   };
+  // Solo si sigue en `enviando`: si alguien la resolvió o la anuló mientras
+  // SIESA contestaba, no se pisa lo que esa persona registró.
   const { data, error } = await supabase
     .from(TABLA)
     .update(cierre)
     .eq("id", reserva.id)
+    .eq("estado", "enviando")
     .select("*")
-    .single();
-  if (error) {
-    // SIESA ya contestó y no se pudo anotar. La fila queda en `enviando`, que
-    // bloquea el reintento: mejor trabado que duplicado.
+    .maybeSingle();
+  if (error || !data) {
+    // SIESA ya contestó y no se pudo anotar. Se devuelve lo que la base DICE,
+    // no lo que SIESA respondió: si se devolviera `ok` sin haberlo escrito, el
+    // que llama podría cerrar la liquidación con la fila todavía en `enviando`.
+    // Queda trabado —se resuelve desde el panel—, que es mejor que duplicado.
     console.error(
-      `🔴 SIESA ${tipo} recepción #${recepcion.id}: respondió "${estado}" pero no se pudo anotar (${error.message}).`,
+      `🔴 SIESA ${tipo} recepción #${recepcion.id}: respondió "${estado}" pero no se pudo anotar ` +
+        `(${error?.message || "la fila ya no estaba en enviando"}).`,
     );
-    return { ...reserva, ...cierre };
+    const { data: real } = await supabase
+      .from(TABLA)
+      .select("*")
+      .eq("id", reserva.id)
+      .maybeSingle();
+    const actual = real || reserva;
+    return {
+      ...actual,
+      error:
+        `SIESA respondió "${estado}" pero no se pudo anotar. Verificá en SIESA la ` +
+        `referencia ${actual.referencia} y resolvelo desde el panel de envíos.`,
+    };
   }
 
   if (estado !== "ok") {
@@ -532,6 +549,11 @@ export async function enviarOficial(liquidacionId, por, terceroId) {
   const previa = await previsualizarOficial(liquidacionId, terceroId);
   if (previa.bloqueos.length) {
     throw createError(409, previa.bloqueos.join(" "));
+  }
+  // Sin esto, `every` sobre una lista vacía da true y cerraría una liquidación
+  // sin haber mandado nada.
+  if (!previa.sedes.length) {
+    throw createError(409, "La liquidación no tiene recepciones para enviar.");
   }
 
   const resultados = [];
@@ -787,18 +809,39 @@ export async function anularOficiales(liquidacionId, { por, motivo, inicialesAnu
   const tipos = inicialesAnuladas
     ? [TIPO_ENVIO.OFICIAL, TIPO_ENVIO.INICIAL]
     : [TIPO_ENVIO.OFICIAL];
-  const { data: anulados, error: e3 } = await supabase
+  const marca = {
+    estado: "anulado",
+    anulado_por: por || null,
+    anulado_at: new Date().toISOString(),
+    motivo_anulacion: String(motivo ?? "").trim() || null,
+  };
+
+  // Dos updates y no uno: un `enviando` solo se anula si ya está ABANDONADO,
+  // y la condición va en la misma consulta que lo cambia. Si fuera en el
+  // chequeo de arriba, un envío reservado entre el chequeo y el update se
+  // anularía estando vivo, con su POST a SIESA todavía en camino.
+  const limite = new Date(Date.now() - ENVIANDO_ABANDONADO_MS).toISOString();
+  const { data: cerrados, error: e3 } = await supabase
     .from(TABLA)
-    .update({
-      estado: "anulado",
-      anulado_por: por || null,
-      anulado_at: new Date().toISOString(),
-      motivo_anulacion: String(motivo ?? "").trim() || null,
-    })
+    .update(marca)
     .in("recepcion_id", ids)
     .in("tipo", tipos)
-    .in("estado", ["ok", "duplicado", "sin_confirmar", "enviando"])
+    .in("estado", ["ok", "duplicado", "sin_confirmar"])
     .select("id, tipo, referencia");
+  let abandonados = [];
+  if (!e3) {
+    const r = await supabase
+      .from(TABLA)
+      .update(marca)
+      .in("recepcion_id", ids)
+      .in("tipo", tipos)
+      .eq("estado", "enviando")
+      .lt("enviado_at", limite)
+      .select("id, tipo, referencia");
+    if (r.error) fallarSiFaltaMigracion(r.error, "No se pudieron anular los envíos", MIGRACIONES);
+    abandonados = r.data || [];
+  }
+  const anulados = [...(cerrados || []), ...abandonados];
   if (e3) {
     // Sin sql/011, el CHECK no conoce `anulado`.
     if (e3.code === "23514") {
