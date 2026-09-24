@@ -73,3 +73,37 @@ export async function enviarOficial(req, res, next) {
     next(error);
   }
 }
+
+/**
+ * POST /api/siesa/envios/:id/resolver — { resultado: "ok" | "no_llego", por }
+ *
+ * Para un envío sin confirmar: alguien miró en SIESA y dice si está o no.
+ */
+export async function resolver(req, res, next) {
+  try {
+    const data = await SiesaEnvio.resolver(req.params.id, {
+      resultado: req.body?.resultado,
+      por: req.body?.por,
+    });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/siesa/liquidaciones/:id/anular
+ * { por, motivo, iniciales_anuladas } — las oficiales ya se anularon en SIESA.
+ */
+export async function anularOficiales(req, res, next) {
+  try {
+    const data = await SiesaEnvio.anularOficiales(req.params.id, {
+      por: req.body?.por,
+      motivo: req.body?.motivo,
+      inicialesAnuladas: Boolean(req.body?.iniciales_anuladas),
+    });
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}

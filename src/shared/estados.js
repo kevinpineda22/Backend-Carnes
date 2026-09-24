@@ -28,9 +28,11 @@ export const ESTADOS = {
  *     se conserva para que el recibidor pueda corregir una rechazada de antes.
  *   · `Costeado → Aprobado` sí: el admin corrige un gasto de la liquidación y se
  *     vuelve a costear. Es lo normal, no una excepción.
- *   · `Enviado_SIESA` NO SALE A NINGÚN LADO. Es terminal. El documento ya existe
- *     en el ERP; cambiarlo acá crearía dos versiones de la misma entrega, y la
- *     de SIESA —la que vale— seguiría diciendo lo de antes.
+ *   · `Enviado_SIESA` sale SOLO a `Costeado`, y solo por la anulación: alguien
+ *     anuló la oficial en SIESA y lo marca desde el panel. Sin esa salida, una
+ *     oficial que entró mal no tenía arreglo. Cualquier otra vuelta atrás sigue
+ *     prohibida: el documento existe en el ERP, y cambiarlo acá sin anularlo
+ *     allá crearía dos versiones de la misma entrega.
  */
 const TRANSICIONES = {
   [ESTADOS.BORRADOR]: [ESTADOS.APROBADO],
@@ -38,7 +40,7 @@ const TRANSICIONES = {
   [ESTADOS.RECHAZADO]: [ESTADOS.BORRADOR],
   [ESTADOS.APROBADO]: [ESTADOS.COSTEADO],
   [ESTADOS.COSTEADO]: [ESTADOS.ENVIADO_SIESA, ESTADOS.APROBADO],
-  [ESTADOS.ENVIADO_SIESA]: [],
+  [ESTADOS.ENVIADO_SIESA]: [ESTADOS.COSTEADO],
 };
 
 /** Mensaje humano para cada estado, para explicar por qué algo no se puede. */

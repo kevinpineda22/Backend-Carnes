@@ -27,14 +27,14 @@ test("el camino feliz completo está permitido", () => {
   }
 });
 
-test("Enviado_SIESA es terminal: no sale a NINGÚN estado", () => {
-  // El documento ya existe en el ERP. Cambiarlo acá crearía dos versiones de la
-  // misma entrega, y la de SIESA —la que vale— seguiría diciendo lo de antes.
+test("Enviado_SIESA sale solo a Costeado (la anulación en SIESA)", () => {
+  // El documento existe en el ERP. La única vuelta atrás es anularlo allá y
+  // volver a Costeado para reenviar; cualquier otra crearía dos versiones.
   for (const destino of Object.values(ESTADOS)) {
     assert.equal(
       puedeTransicionar(ESTADOS.ENVIADO_SIESA, destino),
-      false,
-      `no debería permitir Enviado_SIESA → ${destino}`,
+      destino === ESTADOS.COSTEADO,
+      `Enviado_SIESA → ${destino}`,
     );
   }
 });

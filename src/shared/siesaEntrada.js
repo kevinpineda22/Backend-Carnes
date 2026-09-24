@@ -175,6 +175,23 @@ export function armarEntradaDirecta({
     );
   }
 
+  // Oficial con TODOS los renglones al costo de lista: el factor de la
+  // liquidación no se aplicó (costo teórico en cero, o un costeo que no
+  // escribió). No existe una compra real donde lo pagado coincida al peso con
+  // la lista en cada corte, así que no se manda: subiría como "liquidada" una
+  // entrada que es la inicial con otro nombre.
+  if (
+    tipo === TIPO_ENVIO.OFICIAL &&
+    renglones.length > 0 &&
+    sinCosteo.length === 0 &&
+    renglones.every((i) => Number(i.costo_ajustado) === Number(i.costo_base))
+  ) {
+    bloqueos.push(
+      "El costo liquidado es igual al costo base en todos los renglones: el factor de " +
+        "la liquidación no se aplicó. Revisá los gastos y volvé a costear.",
+    );
+  }
+
   const referencia = referenciaEnvio(recepcion?.id, tipo);
   const tipoDocto = String(config.tipoDocto ?? "").trim();
   const consec = String(consecutivo ?? "");

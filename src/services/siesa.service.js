@@ -8,7 +8,15 @@
  * Nunca lanza por un error de SIESA: devuelve `{ ok, status, respuesta, error }`
  * y el modelo lo guarda tal cual. Un 400 del conector es información —qué
  * campo rechazó— y tiene que quedar en la tabla, no perderse en un throw.
+ *
+ * `incierto: true` cuando no se sabe si SIESA lo creó: el POST salió pero la
+ * respuesta no llegó (timeout, corte de red, 504 del gateway). Tratarlo como
+ * error invita a reintentar, y el reintento duplica si SIESA sí lo había
+ * creado. El modelo lo guarda como `sin_confirmar`.
  */
+
+/** Errores de red que garantizan que el pedido NO salió. */
+const NO_SALIO = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
 
 import { conexionSiesa, DOCUMENTO_CARNES } from "../config/siesa.js";
 
@@ -57,11 +65,17 @@ export async function enviarASiesa(payload) {
     }
 
     if (!r.ok) {
+      // 504: el gateway se cansó de esperar, pero el conector puede haber
+      // terminado detrás. Es un "no sé", no un rechazo.
+      const incierto = r.status === 504;
       return {
         ok: false,
+        incierto,
         status: r.status,
         respuesta,
-        error: `SIESA respondió ${r.status}: ${resumirError(respuesta)}`,
+        error: incierto
+          ? `SIESA no respondió a tiempo (HTTP 504). Puede haberlo creado: verificalo antes de reintentar.`
+          : `SIESA respondió ${r.status}: ${resumirError(respuesta)}`,
       };
     }
 
@@ -74,11 +88,31 @@ export async function enviarASiesa(payload) {
 
     return { ok: true, status: r.status, respuesta, error: null };
   } catch (e) {
-    const motivo =
-      e.name === "AbortError"
-        ? `SIESA no respondió en ${TIMEOUT_MS / 1000} s.`
-        : `No se pudo conectar con SIESA: ${e.message}`;
-    return { ok: false, status: null, respuesta: null, error: motivo };
+    if (e.name === "AbortError") {
+      return {
+        ok: false,
+        incierto: true,
+        status: null,
+        respuesta: null,
+        error:
+          `SIESA no respondió en ${TIMEOUT_MS / 1000} s. Puede haberlo creado: ` +
+          "verificalo en SIESA antes de reintentar.",
+      };
+    }
+    // `fetch` envuelve el error de red en `cause`. Si la conexión ni siquiera
+    // se abrió, es seguro que no salió; cualquier otro corte puede haber sido
+    // después de mandar.
+    const codigo = e.cause?.code;
+    const incierto = !NO_SALIO.has(codigo);
+    return {
+      ok: false,
+      incierto,
+      status: null,
+      respuesta: null,
+      error: incierto
+        ? `Se cortó la conexión con SIESA (${e.message}). Puede haberlo creado: verificalo antes de reintentar.`
+        : `No se pudo conectar con SIESA: ${e.message}`,
+    };
   } finally {
     clearTimeout(temporizador);
   }

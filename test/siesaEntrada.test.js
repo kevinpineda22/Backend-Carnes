@@ -220,3 +220,26 @@ test("el payload tiene exactamente la forma del conector", () => {
     "UNIDAD_NEGOCIO",
   ]);
 });
+
+test("oficial: todos los renglones al costo base se bloquea — el factor no se aplicó", () => {
+  const alBase = ITEMS.map((i) => ({ ...i, costo_ajustado: i.costo_base }));
+  const { bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: alBase,
+    tipo: TIPO_ENVIO.OFICIAL,
+    consecutivo: 1002,
+    config: CONFIG,
+  });
+  assert.ok(bloqueos.some((b) => /igual al costo base/.test(b)), JSON.stringify(bloqueos));
+});
+
+test("inicial: al costo base es lo esperado, no se bloquea", () => {
+  const { bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: ITEMS,
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1001,
+    config: CONFIG,
+  });
+  assert.ok(!bloqueos.some((b) => /costo base/.test(b)), JSON.stringify(bloqueos));
+});
