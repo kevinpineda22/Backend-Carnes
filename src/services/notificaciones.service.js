@@ -292,3 +292,66 @@ export async function notificarAnularInicial(recepcion, inicial, oficial) {
     html,
   });
 }
+
+/**
+ * La oficial CONSOLIDADA entró: un solo correo con todas las iniciales que hay
+ * que anular, una fila por sede.
+ *
+ * Con una CEA por liquidación ya no hay una oficial por sede que apunte a su
+ * inicial. Nueve correos de "anulá R2I", "anulá R3I"… para un solo documento
+ * serían ruido; uno con la lista completa es lo que quien anula necesita.
+ *
+ * @param {{ id: number, especie: string }} liquidacion
+ * @param {Array<{ sede: string, referencia: string, total_kilos: number, total_valor: number }>} iniciales
+ * @param {{ referencia: string, total_kilos: number, total_valor: number, renglones: number }} oficial
+ */
+export async function notificarAnularIniciales(liquidacion, iniciales, oficial) {
+  const especie = liquidacion?.especie === "cerdo" ? "Cerdo" : "Res";
+  const filas = iniciales
+    .map(
+      (i) => `
+        <tr>
+          <td style="padding:6px 8px;border-bottom:1px solid #fecaca;">${esc(i.sede || "—")}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #fecaca;"><b>${esc(i.referencia)}</b></td>
+          <td style="padding:6px 8px;border-bottom:1px solid #fecaca;text-align:right;">${kilos(i.total_kilos)} kg</td>
+          <td style="padding:6px 8px;border-bottom:1px solid #fecaca;text-align:right;">${pesos(i.total_valor)}</td>
+        </tr>`,
+    )
+    .join("");
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#111827;">
+      <h2 style="margin:0 0 4px;">Anular las entradas iniciales de la liquidación #${esc(liquidacion?.id)}</h2>
+      <p style="margin:0 0 16px;color:#6b7280;">${especie} · ${hora()}</p>
+
+      <p style="margin:0 0 12px;">
+        Ya está en SIESA la <b>entrada oficial consolidada</b> de esta liquidación,
+        con los costos liquidados de todas las sedes en un solo documento. Las
+        <b>entradas iniciales</b> de abajo hay que <b>anularlas</b> para que el
+        inventario no quede doble.
+      </p>
+
+      <p style="margin:0 0 6px;font-weight:bold;color:#7f1d1d;">Anular (notas "TALLER DE CARNES - ENTRADA INICIAL"):</p>
+      <table style="border-collapse:collapse;width:100%;font-size:14px;margin:0 0 16px;background:#fef2f2;">
+        ${filas}
+      </table>
+
+      <table style="border-collapse:collapse;width:100%;font-size:14px;margin:0 0 16px;">
+        <tr>
+          <td style="padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;white-space:nowrap;"><b>Dejar</b> → oficial</td>
+          <td style="padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;">
+            referencia <b>${esc(oficial.referencia)}</b> · notas "TALLER DE CARNES - ENTRADA OFICIAL"
+            · ${oficial.renglones} renglones · ${kilos(oficial.total_kilos)} kg · ${pesos(oficial.total_valor)}
+          </td>
+        </tr>
+      </table>
+
+      <p style="margin:24px 0 0;color:#9ca3af;font-size:12px;">Este correo es automático, no hace falta responderlo.</p>
+    </div>`;
+
+  return sendEmail({
+    to: destinatariosAnulacion(),
+    subject: `Anular ${iniciales.length} entrada(s) inicial(es) — liquidación #${liquidacion?.id} · ${especie}`,
+    html,
+  });
+}

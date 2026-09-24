@@ -452,6 +452,28 @@ export async function vincular(id, recepcionIds = []) {
 export async function desvincular(id, recepcionId) {
   await exigirEditable(id);
 
+  // Con una CEA consolidada vigente (enviando, ok o sin confirmar), la
+  // recepción ya está —o puede estar— en SIESA dentro de ese documento. Si se
+  // la sacara y se vinculara a otra liquidación, entraría dos veces. Primero se
+  // anula la CEA; después se reordena.
+  const { data: cea, error: errorCea } = await supabase
+    .from("carnes_siesa_envios")
+    .select("referencia, estado")
+    .eq("liquidacion_id", id)
+    .is("recepcion_id", null)
+    .eq("tipo", "oficial")
+    .in("estado", ["enviando", "ok", "sin_confirmar"])
+    .limit(1)
+    .maybeSingle();
+  if (errorCea) throw new Error(`Error al leer los envíos: ${errorCea.message}`);
+  if (cea) {
+    throw createError(
+      409,
+      `Esta liquidación tiene la entrada oficial ${cea.referencia} en SIESA (${cea.estado}). ` +
+        "Anulala en SIESA y registralo antes de sacar recepciones, o la carne entraría dos veces.",
+    );
+  }
+
   const { data, error } = await supabase
     .from(TABLE_RECEPCIONES)
     .update({ liquidacion_id: null })

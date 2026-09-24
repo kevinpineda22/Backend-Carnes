@@ -61,6 +61,16 @@ export function referenciaEnvio(recepcionId, tipo) {
   return `R${recepcionId}${sufijo}`.slice(0, LARGO_REFERENCIA);
 }
 
+/**
+ * Referencia de la oficial consolidada de una liquidación: `L12O`.
+ *
+ * `L` y no `R` para que en SIESA se distinga a simple vista de las oficiales
+ * viejas por sede (`R23O`), que quedan en el historial.
+ */
+export function referenciaLiquidacion(liquidacionId) {
+  return `L${liquidacionId}O`.slice(0, LARGO_REFERENCIA);
+}
+
 /** `2026-09-16` → `20260916`. El plano pide AAAAMMDD. */
 export function fechaSiesa(iso) {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso ?? ""));
@@ -273,5 +283,118 @@ export function armarEntradaDirecta({
       fecha: recepcion?.fecha_ingreso ?? null,
     },
     bloqueos,
+  };
+}
+
+/**
+ * La oficial CONSOLIDADA: una sola CEA con los renglones de todas las sedes de
+ * la liquidación.
+ *
+ * La cabecera de la CEA no tiene nada de la sede —tipo, fecha, NIT, sucursal,
+ * notas—; la bodega y el CO viajan en cada movimiento. Así que se arma cada
+ * sede con `armarEntradaDirecta` (mismas reglas: códigos, costo ajustado, costo
+ * base, bodega, CO) y se juntan los movimientos bajo una cabecera.
+ *
+ * Todo o nada: si una sede tiene un bloqueo, no sale el documento. Es el precio
+ * de que sea uno solo, y es lo que pidió contabilidad.
+ *
+ * La fecha es UNA: todas las recepciones de una liquidación llegan el mismo
+ * día. Si no, se bloquea en vez de elegir una fecha por las otras.
+ *
+ * @param {object} p
+ * @param {number} p.liquidacionId
+ * @param {Array}  p.recepciones  filas de `carnes_recepciones` con `sede` e `items`
+ * @param {number} p.consecutivo
+ * @param {object} p.config
+ * @returns {{ payload: object, resumen: object, bloqueos: string[], porSede: object[] }}
+ */
+export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], consecutivo, config = {} }) {
+  const bloqueos = [];
+  const referencia = referenciaLiquidacion(liquidacionId);
+  const tipoDocto = String(config.tipoDocto ?? "").trim();
+  const consec = String(consecutivo ?? "");
+
+  if (recepciones.length === 0) {
+    bloqueos.push("La liquidación no tiene recepciones.");
+  }
+
+  // Lo que falta en la configuración es igual para todas las sedes: se dice una
+  // vez, no nueve.
+  const faltantes = ["tipoDocto", "nit", "sucursal", "unidadMedida", "unidadNegocio"].filter(
+    (k) => !String(config[k] ?? "").trim(),
+  );
+  if (faltantes.length) {
+    bloqueos.push(`Falta configurar en SIESA: ${faltantes.join(", ")}.`);
+  }
+
+  const porSede = recepciones.map((recepcion) => {
+    const armado = armarEntradaDirecta({
+      recepcion,
+      items: recepcion.items || [],
+      tipo: TIPO_ENVIO.OFICIAL,
+      consecutivo,
+      config,
+    });
+    return {
+      recepcion_id: recepcion.id,
+      sede: recepcion.sede?.nombre ?? null,
+      fecha: recepcion.fecha_ingreso ?? null,
+      movimientos: armado.payload.Movimientos,
+      resumen: armado.resumen,
+      // La de configuración ya se dijo arriba.
+      bloqueos: armado.bloqueos.filter((b) => !b.startsWith("Falta configurar en SIESA")),
+    };
+  });
+
+  for (const s of porSede) {
+    for (const b of s.bloqueos) bloqueos.push(`${s.sede ?? `Recepción #${s.recepcion_id}`}: ${b}`);
+  }
+
+  const fechas = [...new Set(porSede.map((s) => fechaSiesa(s.fecha)).filter(Boolean))];
+  if (fechas.length > 1) {
+    bloqueos.push(
+      `Las recepciones tienen fechas distintas (${fechas.join(", ")}). La CEA lleva una sola ` +
+        "fecha: revisá la fecha de ingreso de cada recepción.",
+    );
+  }
+  // Sin ninguna fecha, cada sede ya lo dijo en su bloqueo.
+  const fecha = fechas.length === 1 ? fechas[0] : null;
+
+  // Movimientos de todas las sedes, numerados de corrido: `NRO_REGISTRO` es la
+  // posición dentro del documento, no dentro de la sede.
+  const movimientos = porSede
+    .flatMap((s) => s.movimientos)
+    .map((m, n) => ({ ...m, NRO_DOCTO: consec, NRO_REGISTRO: String(n + 1) }));
+
+  const documento = {
+    TIPO_DOCTO: tipoDocto,
+    CONSECUTIVO_DOCTO: consec,
+    FECHA: fecha ?? "",
+    NIT: String(config.nit ?? "").trim(),
+    SUCURSAL: String(config.sucursal ?? "").trim(),
+    // Una CEA de nueve sedes no puede apuntar a nueve iniciales en un campo de
+    // 12 caracteres: lleva su propia referencia, y el correo a quien anula las
+    // lista todas.
+    PENDIENTE: referencia,
+    NOTAS: `${NOTA[TIPO_ENVIO.OFICIAL]} ${referencia}`,
+  };
+
+  const totalKilos = porSede.reduce((a, s) => a + s.resumen.totalKilos, 0);
+  const totalValor = porSede.reduce((a, s) => a + s.resumen.totalValor, 0);
+
+  return {
+    payload: { Documentos: [documento], Movimientos: movimientos },
+    resumen: {
+      tipo: TIPO_ENVIO.OFICIAL,
+      referencia,
+      referenciaInicial: null,
+      renglones: movimientos.length,
+      sedes: porSede.length,
+      totalKilos: Math.round(totalKilos * 1000) / 1000,
+      totalValor: Math.round(totalValor * 100) / 100,
+      fecha,
+    },
+    bloqueos,
+    porSede: porSede.map(({ movimientos: _m, ...s }) => s),
   };
 }
