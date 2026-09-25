@@ -185,10 +185,13 @@ const correo = (mensaje) =>
 
 const abrirRecepcionSchema = z.object({
   especie: z.enum(ESPECIES, { errorMap: () => ({ message: "Elegí Res o Cerdo." }) }),
+  // Opcional: la sede sale del QR, que es único por sede. Se sigue aceptando
+  // para el front viejo, que la hacía elegir en una lista antes de escanear.
   sede_id: z.coerce
-    .number({ invalid_type_error: "Elegí primero la sede en la que estás." })
+    .number({ invalid_type_error: "La sede no es válida." })
     .int()
-    .positive("Elegí primero la sede en la que estás."),
+    .positive("La sede no es válida.")
+    .optional(),
   qr_token: z
     .string({
       required_error: "Escaneá el código QR de la sede.",

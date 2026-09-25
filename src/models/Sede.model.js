@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
+import { evaluarQr } from "../shared/verificacionQr.js";
 
 const TABLE = "carnes_sedes";
 
@@ -50,7 +51,10 @@ export async function obtener(id) {
 }
 
 /**
- * Verifica que el QR escaneado corresponda a la sede que eligió el recibidor.
+ * Busca la sede del QR escaneado y, si se pidió una, verifica que coincida.
+ *
+ * El recibidor ya no elige la sede: la pantalla manda solo el QR y la sede sale
+ * de ahí. `sedeId` sigue existiendo para el front viejo y para /sedes/verificar.
  *
  * Devuelve tres resultados distintos y cada uno importa:
  *
@@ -78,11 +82,8 @@ export async function verificarQr(sedeId, qrToken) {
     .maybeSingle();
   if (error) throw new Error(`Error al verificar el QR: ${error.message}`);
 
-  if (!data) return { estado: "desconocido", sede: null };
-  if (!data.activo) return { estado: "sede_inactiva", sede: data };
-  if (String(data.id) !== String(sedeId)) return { estado: "sede_distinta", sede: data };
-
-  return { estado: "ok", sede: data };
+  // La decisión es pura y está testeada: ver shared/verificacionQr.js.
+  return evaluarQr(data, sedeId);
 }
 
 /**

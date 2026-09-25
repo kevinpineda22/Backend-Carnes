@@ -153,7 +153,7 @@ export async function abrir({
   fecha_ingreso,
   novillos = 0,
 }) {
-  const verificacion = await SedeModel.verificarQr(sede_id, qr_token);
+  const verificacion = await SedeModel.verificarQr(sede_id ?? null, qr_token);
   if (verificacion.estado !== "ok") {
     // 409 y no 400: el cuerpo es válido, lo que no cuadra es el estado del mundo
     // —el recibidor no está donde dijo que estaba—. El front necesita
@@ -163,6 +163,8 @@ export async function abrir({
     throw e;
   }
 
+  // La sede es la del QR. Si el front mandó una, ya se verificó que coincide.
+  const sedeId = verificacion.sede.id;
   const fecha = fecha_ingreso || new Date().toISOString().slice(0, 10);
 
   // Se buscan los DOS estados que el recibidor todavía puede tocar.
@@ -176,7 +178,7 @@ export async function abrir({
     .from(TABLE)
     .select("id, estado, motivo_rechazo")
     .eq("especie", especie)
-    .eq("sede_id", sede_id)
+    .eq("sede_id", sedeId)
     .eq("fecha_ingreso", fecha)
     .in("estado", [ESTADOS.BORRADOR, ESTADOS.RECHAZADO])
     .order("id", { ascending: false });
@@ -210,7 +212,7 @@ export async function abrir({
     .from(TABLE)
     .insert({
       especie,
-      sede_id,
+      sede_id: sedeId,
       fecha_ingreso: fecha,
       novillos,
       estado: ESTADOS.BORRADOR,
