@@ -276,6 +276,29 @@ export const validators = {
     }),
   ),
 
+  // El ADMIN agrega un corte fuera de plantilla sobre una recepción ya
+  // cerrada. A diferencia de `agregarAdicional` (el del recibidor), acá
+  // código y costo son OBLIGATORIOS: el admin ya sabe qué es, y este endpoint
+  // existe justamente para no dejar el renglón pendiente de homologar.
+  agregarRenglonAdmin: validar(
+    z.object({
+      codigo_item: codigoSiesa("El código de SIESA es obligatorio."),
+      descripcion: z
+        .string({ required_error: "La descripción es obligatoria." })
+        .trim()
+        .min(1, "La descripción es obligatoria."),
+      cantidad: z.coerce
+        .number({ required_error: "Falta la cantidad.", invalid_type_error: "La cantidad debe ser un número." })
+        .positive("La cantidad tiene que ser mayor a 0."),
+      // Mismo criterio que `homologarAdicional`: un costo base en 0 entra a
+      // SIESA valiendo cero y deja el margen de ese producto en 100%.
+      costo_base: z.coerce
+        .number({ required_error: "Falta el costo base.", invalid_type_error: "El costo base debe ser un número." })
+        .positive("El costo base tiene que ser mayor a 0."),
+      agregado_por: correo("El correo de quien agrega no es válido.").optional(),
+    }),
+  ),
+
   // Corrección del admin sobre un renglón cerrado. Todo opcional: se manda
   // solo lo que cambió. `editado_por` sí es obligatorio — sin él la corrección
   // queda anónima, y el rastro es la mitad del punto de este endpoint.

@@ -90,6 +90,33 @@ export async function eliminarItem(req, res, next) {
 }
 
 /**
+ * POST /api/recepciones/:id/items/admin
+ * El admin agrega un corte fuera de plantilla sobre una recepción ya cerrada.
+ * Body: { codigo_item, descripcion, cantidad, costo_base, agregado_por? }
+ */
+export async function agregarRenglonAdmin(req, res, next) {
+  try {
+    const data = await RecepcionModel.agregarRenglonAdmin(req.params.id, req.body);
+    res.status(201).json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * DELETE /api/recepciones/:id/items/:itemId/admin
+ * Borra un renglón que el admin agregó con el endpoint de arriba.
+ */
+export async function eliminarRenglonAdmin(req, res, next) {
+  try {
+    const data = await RecepcionModel.eliminarRenglonAdmin(req.params.id, req.params.itemId);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * PATCH /api/recepciones/:id/items/:itemId
  * El admin corrige un renglón de una recepción cerrada. Deja rastro.
  */

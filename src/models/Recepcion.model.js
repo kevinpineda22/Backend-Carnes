@@ -6,6 +6,7 @@ import {
   ESTADOS,
   validarTransicion,
   puedeEditarCantidades,
+  puedeCorregirComoAdmin,
 } from "../shared/estados.js";
 
 const TABLE = "carnes_recepciones";
@@ -489,6 +490,31 @@ export async function homologarAdicional(id, itemId, cambios) {
 }
 
 /**
+ * Guard compartido por todo lo que el ADMIN corrige o agrega sobre una
+ * recepción ya cerrada: `editarItem`, `agregarRenglonAdmin` y
+ * `eliminarRenglonAdmin`. Ver `puedeCorregirComoAdmin` en `shared/estados.js`
+ * para la regla; acá solo se arma el mensaje, que tiene que decirle a la
+ * persona qué hacer, no solo qué transición falló.
+ */
+function exigirCorregibleComoAdmin(recepcion) {
+  if (recepcion.estado === ESTADOS.BORRADOR) {
+    throw createError(
+      409,
+      "El recibidor todavía está digitando esta recepción. Esperá a que la cierre, o rechazala con el motivo para que él corrija.",
+    );
+  }
+  if (!puedeCorregirComoAdmin(recepcion.estado)) {
+    const porque =
+      recepcion.estado === ESTADOS.ENVIADO_SIESA
+        ? "ya se subió a SIESA"
+        : recepcion.estado === ESTADOS.COSTEADO
+          ? "ya está costeada: reabrí la liquidación para corregirla"
+          : `está en ${recepcion.estado}`;
+    throw createError(409, `No se puede editar: la recepción ${porque}.`);
+  }
+}
+
+/**
  * El ADMIN corrige un renglón de una recepción ya cerrada.
  *
  * Cualquier columna que el recibidor pudo haber dejado mal: cantidad, costo
@@ -507,22 +533,7 @@ export async function homologarAdicional(id, itemId, cambios) {
  */
 export async function editarItem(id, itemId, cambios, editadoPor) {
   const recepcion = await obtener(id);
-
-  if (recepcion.estado === ESTADOS.BORRADOR) {
-    throw createError(
-      409,
-      "El recibidor todavía está digitando esta recepción. Esperá a que la cierre, o rechazala con el motivo para que él corrija.",
-    );
-  }
-  if (![ESTADOS.RECIBIDO, ESTADOS.APROBADO].includes(recepcion.estado)) {
-    const porque =
-      recepcion.estado === ESTADOS.ENVIADO_SIESA
-        ? "ya se subió a SIESA"
-        : recepcion.estado === ESTADOS.COSTEADO
-          ? "ya está costeada: reabrí la liquidación para corregirla"
-          : `está en ${recepcion.estado}`;
-    throw createError(409, `No se puede editar: la recepción ${porque}.`);
-  }
+  exigirCorregibleComoAdmin(recepcion);
 
   const item = recepcion.items.find((i) => String(i.id) === String(itemId));
   if (!item) throw createError(404, "Renglón no encontrado en esta recepción.");
@@ -570,6 +581,92 @@ export async function editarItem(id, itemId, cambios, editadoPor) {
   }
   if (error) throw new Error(`Error al editar el renglón: ${error.message}`);
   return data;
+}
+
+/**
+ * El ADMIN agrega un corte que quedó FUERA de la plantilla, después de que la
+ * recepción ya cerró.
+ *
+ * Es la contraparte de `agregarAdicional` (el "Otro / Agregar" del recibidor,
+ * solo en Borrador): un corte de plantilla ya existe como renglón y se corrige
+ * con el lápiz (`editarItem`); esto es para el que nunca tuvo fila — al
+ * recibidor se le pasó, o el admin se entera después de algo que llegó y no
+ * estaba en ninguna lista.
+ *
+ * A diferencia de `agregarAdicional`, acá el código de SIESA y el costo base
+ * son OBLIGATORIOS desde el vamos: el admin ya sabe qué es, y dejarlo sin
+ * homologar otra vez sería repetir el paso que este endpoint existe para
+ * saltarse. Mismo costo_base > 0 que exige `homologarAdicional` — un adicional
+ * con costo 0 entra a SIESA valiendo cero y nadie lo nota.
+ *
+ * `agregado_por`/`agregado_at` (sql/015) son la marca de que este renglón lo
+ * escribió el admin y no el recibidor: es lo que después decide si se puede
+ * borrar con `eliminarRenglonAdmin`.
+ */
+export async function agregarRenglonAdmin(
+  id,
+  { codigo_item, descripcion, cantidad, costo_base, agregado_por },
+) {
+  const recepcion = await obtener(id);
+  exigirCorregibleComoAdmin(recepcion);
+
+  const orden =
+    Math.max(0, ...recepcion.items.map((i) => Number(i.orden) || 0)) + 1;
+
+  const { data, error } = await supabase
+    .from(TABLE_ITEMS)
+    .insert({
+      recepcion_id: id,
+      tipo: "adicional",
+      plantilla_item_id: null,
+      cantidad_original: null,
+      codigo_item: String(codigo_item).trim(),
+      descripcion: String(descripcion).trim(),
+      cantidad: Number(cantidad),
+      costo_base: Number(costo_base),
+      orden,
+      agregado_por: agregado_por || null,
+      agregado_at: new Date().toISOString(),
+    })
+    .select("*")
+    .single();
+
+  const faltaMigracion =
+    error && ["agregado_por", "agregado_at"].some((c) => esColumnaFaltante(error, c));
+  if (faltaMigracion) {
+    throw createError(
+      503,
+      "A la base le falta la migración sql/015_renglon_admin.sql. Corrala en Supabase y volvé a intentar.",
+    );
+  }
+  if (error) throw new Error(`Error al agregar el renglón: ${error.message}`);
+  return data;
+}
+
+/**
+ * Borra un renglón que el ADMIN agregó con `agregarRenglonAdmin`.
+ *
+ * Solo esos: se exige `agregado_por` o `agregado_at` cargado, así que nunca
+ * borra un renglón del recibidor (ver `eliminarItem`, que es Borrador-only y
+ * es lo que usa el recibidor) ni uno de la plantilla. Es deshacer un agregado
+ * propio, no una segunda forma de borrar cualquier cosa.
+ */
+export async function eliminarRenglonAdmin(id, itemId) {
+  const recepcion = await obtener(id);
+  exigirCorregibleComoAdmin(recepcion);
+
+  const item = recepcion.items.find((i) => String(i.id) === String(itemId));
+  if (!item) throw createError(404, "Renglón no encontrado en esta recepción.");
+  if (!item.agregado_por && !item.agregado_at) {
+    throw createError(
+      409,
+      "Ese renglón no lo agregó el admin: no se puede borrar desde acá.",
+    );
+  }
+
+  const { error } = await supabase.from(TABLE_ITEMS).delete().eq("id", itemId);
+  if (error) throw new Error(`Error al borrar el renglón: ${error.message}`);
+  return { eliminado: itemId };
 }
 
 /**

@@ -107,3 +107,23 @@ export function puedeEditarCantidades(estado) {
 export function puedeCostear(estado) {
   return estado === ESTADOS.APROBADO || estado === ESTADOS.COSTEADO;
 }
+
+/**
+ * ¿El ADMIN puede corregir o agregar renglones de esta recepción?
+ *
+ * Solo en Recibido y Aprobado: la recepción ya está cerrada por el recibidor
+ * (no es Borrador, que es de él) y todavía no se costeó (Costeado y
+ * Enviado_SIESA ya movieron plata o subieron al ERP — para tocarlos hay que
+ * reabrir la liquidación o anular en SIESA primero).
+ *
+ * Es la misma ventana que usa `editarItem` para corregir cantidad/costo/código
+ * de un renglón, y la que usa `agregarRenglonAdmin` para agregar un corte que
+ * quedó fuera de la plantilla. Vive acá — no repetida en cada función del
+ * modelo— porque las dos tienen que abrirse y cerrarse exactamente al mismo
+ * tiempo: si el admin puede editar pero no agregar (o al revés) en el mismo
+ * estado, la pantalla termina mostrando un lápiz sin botón al lado, o viceversa,
+ * sin que nadie haya decidido eso a propósito.
+ */
+export function puedeCorregirComoAdmin(estado) {
+  return estado === ESTADOS.RECIBIDO || estado === ESTADOS.APROBADO;
+}

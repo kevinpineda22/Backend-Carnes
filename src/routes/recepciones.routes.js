@@ -23,6 +23,22 @@ router.patch("/:id", validators.guardarBorrador, RecepcionesController.guardar);
 router.post("/:id/items", validators.agregarAdicional, RecepcionesController.agregarAdicional);
 router.delete("/:id/items/:itemId", RecepcionesController.eliminarItem);
 
+// El ADMIN agrega un corte fuera de plantilla sobre una recepción ya cerrada
+// (Recibido/Aprobado) — el corte que se le pasó al recibidor y nunca tuvo
+// fila. A diferencia del "/items" de arriba, acá código de SIESA y costo base
+// son obligatorios: nace homologado, no como un adicional pendiente.
+router.post(
+  "/:id/items/admin",
+  validators.agregarRenglonAdmin,
+  RecepcionesController.agregarRenglonAdmin,
+);
+// Deshace SOLO un renglón agregado por el endpoint de arriba (ver
+// `eliminarRenglonAdmin`). Nunca un renglón del recibidor o de la plantilla.
+router.delete(
+  "/:id/items/:itemId/admin",
+  RecepcionesController.eliminarRenglonAdmin,
+);
+
 // Corrección del ADMIN sobre cualquier renglón de una recepción cerrada:
 // cantidad, costo, código, descripción. Distinto de `homologar` (solo para
 // adicionales sin código) y del PATCH del borrador (que es del recibidor).

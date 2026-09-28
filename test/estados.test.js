@@ -7,6 +7,7 @@ import {
   validarTransicion,
   puedeEditarCantidades,
   puedeCostear,
+  puedeCorregirComoAdmin,
   esEstadoValido,
 } from "../src/shared/estados.js";
 
@@ -101,4 +102,17 @@ test("el costeo solo escribe sobre aprobado o ya costeado", () => {
   assert.equal(puedeCostear(ESTADOS.RECIBIDO), false);
   // Ya está en el ERP: recostear cambiaría la plata de un documento cerrado.
   assert.equal(puedeCostear(ESTADOS.ENVIADO_SIESA), false);
+});
+
+test("el admin corrige o agrega renglones solo en Recibido y Aprobado", () => {
+  assert.ok(puedeCorregirComoAdmin(ESTADOS.RECIBIDO));
+  assert.ok(puedeCorregirComoAdmin(ESTADOS.APROBADO));
+  for (const e of [
+    ESTADOS.BORRADOR,
+    ESTADOS.COSTEADO,
+    ESTADOS.ENVIADO_SIESA,
+    ESTADOS.RECHAZADO,
+  ]) {
+    assert.equal(puedeCorregirComoAdmin(e), false, `${e} no debería dejar corregir como admin`);
+  }
 });
