@@ -67,24 +67,53 @@ const NOTA = {
 const LARGO_REFERENCIA = 12;
 
 /**
- * Referencia propia de un envío: `R23I` / `R23O`.
- *
- * Corta a propósito: tiene que caber en 12 caracteres junto con lo que sea que
- * se quiera agregar después, y tiene que poder buscarse en SIESA a ojo.
+ * La forma legible si entra en los 12 caracteres de `PENDIENTE`; si no, la
+ * compacta. Nunca se corta la legible: cortarla se come dígitos del número y
+ * dos recepciones distintas terminarían con la misma referencia en SIESA.
  */
-export function referenciaEnvio(recepcionId, tipo) {
-  const sufijo = tipo === TIPO_ENVIO.OFICIAL ? "O" : "I";
-  return `R${recepcionId}${sufijo}`.slice(0, LARGO_REFERENCIA);
+function ajustarReferencia(legible, compacta) {
+  return legible.length <= LARGO_REFERENCIA ? legible : compacta.slice(0, LARGO_REFERENCIA);
 }
 
 /**
- * Referencia de la oficial consolidada de una liquidación: `L12O`.
+ * Referencia propia de un envío: `TC INI R23` / `TC OFI R23`.
+ *
+ * TC = Taller de Carnes. Tiene que caber en 12 caracteres y leerse en SIESA sin
+ * un diccionario al lado. Entra legible hasta la recepción #9999; de ahí en
+ * adelante pasa a `TCIR12345`.
+ *
+ * Antes del 28/09/2026 el formato era `R23I` / `R23O`. Esas referencias siguen
+ * en la base tal cual —se leen de cada envío, nunca se recalculan con esta
+ * función—, así que el correo de anulación sigue nombrando el documento que
+ * existe de verdad en SIESA.
+ */
+export function referenciaEnvio(recepcionId, tipo) {
+  const corto = tipo === TIPO_ENVIO.OFICIAL ? "OFI" : "INI";
+  return ajustarReferencia(`TC ${corto} R${recepcionId}`, `TC${corto[0]}R${recepcionId}`);
+}
+
+/**
+ * Referencia de la oficial consolidada de una liquidación: `TC OFI L12`.
  *
  * `L` y no `R` para que en SIESA se distinga a simple vista de las oficiales
- * viejas por sede (`R23O`), que quedan en el historial.
+ * viejas por sede, que quedan en el historial. Antes del 28/09/2026: `L12O`.
  */
 export function referenciaLiquidacion(liquidacionId) {
-  return `L${liquidacionId}O`.slice(0, LARGO_REFERENCIA);
+  return ajustarReferencia(`TC OFI L${liquidacionId}`, `TCOL${liquidacionId}`);
+}
+
+/** `f350_notas` es texto largo, pero no infinito: se acota por las dudas. */
+const LARGO_NOTAS = 255;
+
+/**
+ * Notas del documento, legibles para quien lo abre en SIESA:
+ * "TALLER DE CARNES - ENTRADA INICIAL - RECEPCION #23 Lopez - TC INI R23".
+ *
+ * Hoy el conector tiene `f350_notas` FIJO y las ignora (ver el comentario en
+ * `armarEntradaDirecta`); el día que lo pasen a variable, esto aparece solo.
+ */
+function notasDocumento(nota, detalle, referencia) {
+  return [nota, detalle, referencia].filter(Boolean).join(" - ").slice(0, LARGO_NOTAS);
 }
 
 /** `2026-09-16` → `20260916`. El plano pide AAAAMMDD. */
@@ -263,7 +292,11 @@ export function armarEntradaDirecta({
       0,
       LARGO_REFERENCIA,
     ),
-    NOTAS: `${NOTA[tipo] ?? "TALLER DE CARNES"} ${referencia}`,
+    NOTAS: notasDocumento(
+      NOTA[tipo] ?? "TALLER DE CARNES",
+      `RECEPCION #${recepcion?.id} ${sede.nombre ?? ""}`.trim(),
+      referencia,
+    ),
   };
 
   // ─── Movimientos ───
@@ -414,7 +447,7 @@ export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], conse
     // 12 caracteres: lleva su propia referencia, y el correo a quien anula las
     // lista todas.
     PENDIENTE: referencia,
-    NOTAS: `${NOTA[TIPO_ENVIO.OFICIAL]} ${referencia}`,
+    NOTAS: notasDocumento(NOTA[TIPO_ENVIO.OFICIAL], `LIQUIDACION #${liquidacionId}`, referencia),
   };
 
   const totalKilos = porSede.reduce((a, s) => a + s.resumen.totalKilos, 0);

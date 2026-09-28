@@ -37,10 +37,17 @@ const ITEMS = [
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-test("referenciaEnvio: corta, con sufijo, cabe en 12 caracteres", () => {
-  assert.equal(referenciaEnvio(23, TIPO_ENVIO.INICIAL), "R23I");
-  assert.equal(referenciaEnvio(23, TIPO_ENVIO.OFICIAL), "R23O");
+test("referenciaEnvio: legible, TC + INI/OFI + recepción, cabe en 12 caracteres", () => {
+  assert.equal(referenciaEnvio(23, TIPO_ENVIO.INICIAL), "TC INI R23");
+  assert.equal(referenciaEnvio(23, TIPO_ENVIO.OFICIAL), "TC OFI R23");
+  // Hasta la #9999 entra legible.
+  assert.equal(referenciaEnvio(9999, TIPO_ENVIO.INICIAL), "TC INI R9999");
   assert.ok(referenciaEnvio(999999999999, TIPO_ENVIO.OFICIAL).length <= 12);
+});
+
+test("referenciaEnvio: pasada la #9999 se compacta sin comerse dígitos", () => {
+  assert.equal(referenciaEnvio(12345, TIPO_ENVIO.INICIAL), "TCIR12345");
+  assert.notEqual(referenciaEnvio(12345, TIPO_ENVIO.INICIAL), referenciaEnvio(12346, TIPO_ENVIO.INICIAL));
 });
 
 test("fechaSiesa: AAAAMMDD, y null si no hay fecha", () => {
@@ -76,9 +83,10 @@ test("inicial: cabecera con las seis variables del conector", () => {
   assert.equal(d.FECHA, "20260916");
   assert.equal(d.NIT, "890900000");
   assert.equal(d.SUCURSAL, "001");
-  assert.equal(d.PENDIENTE, "R23I");
+  assert.equal(d.PENDIENTE, "TC INI R23");
   assert.match(d.NOTAS, /ENTRADA INICIAL/);
-  assert.match(d.NOTAS, /R23I/);
+  assert.match(d.NOTAS, /TC INI R23/);
+  assert.match(d.NOTAS, /RECEPCION #23/);
 });
 
 test("inicial: un movimiento por renglón con cantidad, al costo base", () => {
@@ -132,7 +140,7 @@ test("oficial: precio = costo ajustado, PENDIENTE apunta a la inicial", () => {
   const d = payload.Documentos[0];
   assert.equal(d.PENDIENTE, "R23I"); // quien anula lee esto
   assert.match(d.NOTAS, /ENTRADA OFICIAL/);
-  assert.match(d.NOTAS, /R23O/);
+  assert.match(d.NOTAS, /TC OFI R23/);
 
   // 4.49 × 21150.5 = 94965.745 → 94966, al peso: la moneda no tiene centavos.
   assert.equal(payload.Movimientos[0].VALOR_BRUTO, "94966");

@@ -41,8 +41,8 @@ const BARBOSA = recepcion(2, "Carnes Barbosa", "00201", "02", [
 ]);
 const LOPEZ = recepcion(8, "Lopez", "00801", "08", [carne("15139", 4, 16800, 15099)]);
 
-test("referenciaLiquidacion: L + id + O", () => {
-  assert.equal(referenciaLiquidacion(12), "L12O");
+test("referenciaLiquidacion: TC OFI + L + id", () => {
+  assert.equal(referenciaLiquidacion(12), "TC OFI L12");
 });
 
 test("una sola cabecera, con los movimientos de todas las sedes numerados de corrido", () => {
@@ -62,7 +62,7 @@ test("una sola cabecera, con los movimientos de todas las sedes numerados de cor
   );
   // Todos los movimientos apuntan a la MISMA cabecera.
   assert.ok(payload.Movimientos.every((m) => m.NRO_DOCTO === "63"));
-  assert.equal(resumen.referencia, "L6O");
+  assert.equal(resumen.referencia, "TC OFI L6");
   assert.equal(resumen.sedes, 2);
 });
 
@@ -102,8 +102,8 @@ test("la cabecera lleva su propia referencia en PENDIENTE y en las notas", () =>
     config: CONFIG,
   });
   const d = payload.Documentos[0];
-  assert.equal(d.PENDIENTE, "L6O");
-  assert.match(d.NOTAS, /ENTRADA OFICIAL L6O/);
+  assert.equal(d.PENDIENTE, "TC OFI L6");
+  assert.match(d.NOTAS, /ENTRADA OFICIAL - LIQUIDACION #6 - TC OFI L6/);
   assert.equal(d.FECHA, "20260923");
   assert.equal(d.NIT, "70329554");
 });
