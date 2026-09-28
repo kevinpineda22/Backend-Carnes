@@ -378,3 +378,30 @@ test("identidad: tolera diferencias de mayúsculas y espacios en el sub-cliente"
 
   assert.equal(r.sedeCoincide, true);
 });
+
+// ─── Identidad de una guía de J&J: no se compara texto contra texto ────────
+//
+// `subcliente_desposte` es nomenclatura de VisualERP y hoy solo López lo
+// tiene cargado; J&J nombra sus sedes distinto ("LOPEZ 6 CANALES"). Comparar
+// los dos daría `sede_no_coincide` en casi todas las sedes aunque el PDF sea
+// el correcto, así que este formato nunca entra a esa rama.
+const INFORME_JJ = { formato: "jj", subcliente: "LOPEZ 6 CANALES", fechaDesposte: "2026-09-23" };
+
+test("identidad: una guía de J&J nunca bloquea por sede, avisa para que el admin la verifique a ojo", () => {
+  const r = verificarIdentidad(INFORME_JJ, SEDE_LOPEZ, "2026-09-23");
+
+  assert.equal(r.sedeCoincide, false);
+  assert.equal(r.problemas.some((p) => p.codigo === "sede_no_coincide"), false);
+
+  const problema = r.problemas.find((p) => p.codigo === "sede_sin_verificar");
+  assert.ok(problema, "tenía que avisar con sede_sin_verificar");
+  assert.match(problema.mensaje, /LOPEZ 6 CANALES/);
+  assert.match(problema.mensaje, /Lopez/);
+});
+
+test("identidad: J&J avisa igual aunque la sede no tenga subcliente_desposte configurado", () => {
+  const r = verificarIdentidad(INFORME_JJ, { id: 9, nombre: "Nueva" }, "2026-09-23");
+
+  assert.ok(r.problemas.some((p) => p.codigo === "sede_sin_verificar"));
+  assert.equal(r.problemas.some((p) => p.codigo === "sede_sin_configurar"), false);
+});

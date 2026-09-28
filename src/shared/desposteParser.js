@@ -37,7 +37,16 @@
  * sistema —donde el admin escribe "1.234,50"— así que la conversión NO se
  * comparte con `utils/formato.js` del frontend a propósito: son dos idiomas
  * numéricos distintos y mezclarlos convertiría 133.50 kg en 13350.
+ *
+ * ─── Segundo formato: Comercial de Carnes J&J (Ribisoft) ─────────────────
+ *
+ * Este archivo NO se tocó para agregar el segundo formato de guía (el de
+ * J&J/Ribisoft, cerdo): vive entero en `desposteParserJJ.js` y se detecta y
+ * delega en las dos primeras líneas de `parsearInformeDesposte`, más abajo. Lo
+ * único que cambia acá es ESO — nada del parseo de VisualERP se modificó.
  */
+
+import { esFormatoJJ, parsearInformeDesposteJJ } from "./desposteParserJJ.js";
 
 /** El bloque de cortes aprovechables. Es el que se cruza contra la recepción. */
 export const BLOQUE_FINAS = "finas";
@@ -144,6 +153,11 @@ const capturar = (texto, re) => {
  * }}
  */
 export function parsearInformeDesposte(texto) {
+  // Detección de formato: si el texto es una guía de J&J/Ribisoft, se delega
+  // entera a su propio parser y el resto de esta función —el formato de
+  // VisualERP— ni se ejecuta. Ver la nota de cabecera de este archivo.
+  if (esFormatoJJ(texto)) return parsearInformeDesposteJJ(texto);
+
   const advertencias = [];
 
   const lineas = String(texto ?? "")

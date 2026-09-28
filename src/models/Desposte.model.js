@@ -303,6 +303,31 @@ async function leerPdf(buffer) {
   return { texto, parseado };
 }
 
+/** Cómo se nombra cada especie en los mensajes al admin. */
+const ESPECIE_LABEL = { res: "Res", cerdo: "Cerdo" };
+
+/**
+ * ¿La guía es de la especie que se está subiendo?
+ *
+ * Solo aplica a formatos que declaran la especie en el propio documento (hoy,
+ * J&J/Ribisoft — ver `parseado.especie` en `desposteParserJJ.js`). El informe
+ * de VisualERP no la declara, así que `parseado.especie` viene `undefined` y
+ * esta función no hace nada: no se puede comparar lo que el PDF no dice, y
+ * frenar la subida de siempre por esto sería un cambio de comportamiento que
+ * nadie pidió.
+ *
+ * Es un 400 y no un 409 forzable a propósito: la plantilla de la especie
+ * equivocada no tiene los productos de esta guía, así que "forzar" no
+ * dejaría un cruce raro — dejaría un cruce sin un solo producto mapeado.
+ */
+function verificarEspecie(parseado, especieEsperada) {
+  if (!parseado?.especie || !especieEsperada) return;
+  if (parseado.especie === especieEsperada) return;
+  const detectada = ESPECIE_LABEL[parseado.especie] ?? parseado.especie;
+  const esperada = ESPECIE_LABEL[especieEsperada] ?? especieEsperada;
+  throw createError(400, `Esta guía es de ${detectada} y la estás subiendo en ${esperada}.`);
+}
+
 /** Las columnas del informe que salen del PDF. Iguales para los dos momentos. */
 function columnasDelPdf(parseado, texto) {
   return {
@@ -403,6 +428,7 @@ export async function adjuntar(
 
   // 1. Leer y entender el PDF.
   const { texto, parseado } = await leerPdf(buffer);
+  verificarEspecie(parseado, recepcion.especie);
   const existente = await obtenerInforme(recepcionId);
 
   // 2. ¿Es de esta sede?
@@ -640,6 +666,7 @@ export async function subirAnticipada({ sedeId, especie, fecha, buffer, nombre, 
   }
 
   const { texto, parseado } = await leerPdf(buffer);
+  verificarEspecie(parseado, especie);
 
   // La misma verificación que al adjuntar: contra la sede elegida y la fecha
   // de entrega. La fecha distinta es solo aviso (despostan un día antes).

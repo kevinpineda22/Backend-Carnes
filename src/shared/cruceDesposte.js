@@ -300,39 +300,62 @@ export function cruzarDesposte({ informe, items = [], plantilla = [] }) {
  * La fecha se compara aparte y NO invalida nada: el desposte es del día anterior
  * al ingreso más veces de las que no. Se informa, se guarda, y el admin decide.
  *
+ * ─── J&J no entra a esta comparación ──────────────────────────────────────
+ *
+ * `subcliente_desposte` está cargado con la nomenclatura de VisualERP (p.ej.
+ * "MK - 380 - BARRIO LOPEZ"), y hoy solo la sede López lo tiene configurado.
+ * J&J nombra sus sedes distinto ("LOPEZ 6 CANALES" en "Observaciones"), así que
+ * comparar los dos textos daría `sede_no_coincide` en casi todas las sedes,
+ * aunque el PDF sea el correcto — el mismo problema que "sede sin configurar"
+ * pero disfrazado de "sede equivocada", que si bloqueara sería peor: frenaría
+ * TODAS las guías de este proveedor por un dato que no se puede cargar (no hay
+ * una nomenclatura de J&J que copiar en la sede, distinta por sede, todavía
+ * definida). Por eso, para `informe.formato === "jj"`, no se compara texto
+ * contra texto: se avisa con `sede_sin_verificar` y el admin lo confirma a
+ * ojo, sin que nada se bloquee ni se pueda forzar por error.
+ *
  * @param {object} informe  Salida de `parsearInformeDesposte`.
  * @param {object} sede     Fila de `carnes_sedes`.
  * @param {string} fechaIngreso  `fecha_ingreso` de la recepción (ISO).
  */
 export function verificarIdentidad(informe, sede, fechaIngreso) {
-  const esperado = sede?.subcliente_desposte;
   const problemas = [];
-
   let sedeCoincide = false;
-  if (!esperado) {
-    // Sin configurar NO bloquea: frenar una recepción real porque falta un dato
-    // de catálogo es peor que aceptarla marcada como no verificada.
+
+  if (informe?.formato === "jj") {
     problemas.push({
-      codigo: "sede_sin_configurar",
+      codigo: "sede_sin_verificar",
       mensaje:
-        `La sede "${sede?.nombre ?? "?"}" no tiene cargado su "Sub Cliente" del ` +
-        `informe. El PDF dice "${informe?.subcliente ?? "—"}": si es el correcto, ` +
-        "guardalo en la sede y a partir de ahí se verifica solo.",
-    });
-  } else if (!informe?.subcliente) {
-    problemas.push({
-      codigo: "informe_sin_subcliente",
-      mensaje: 'El PDF no trae la línea "Sub Cliente", así que no se puede verificar.',
+        `La guía de J&J dice "${informe?.subcliente ?? "—"}"; verificá que sea de ` +
+        `${sede?.nombre ?? "esta sede"}.`,
     });
   } else {
-    sedeCoincide = normalizarNombre(informe.subcliente) === normalizarNombre(esperado);
-    if (!sedeCoincide) {
+    const esperado = sede?.subcliente_desposte;
+    if (!esperado) {
+      // Sin configurar NO bloquea: frenar una recepción real porque falta un dato
+      // de catálogo es peor que aceptarla marcada como no verificada.
       problemas.push({
-        codigo: "sede_no_coincide",
+        codigo: "sede_sin_configurar",
         mensaje:
-          `Este informe es de "${informe.subcliente}" y la recepción es de ` +
-          `"${sede.nombre}" ("${esperado}"). Es el PDF de otra sede.`,
+          `La sede "${sede?.nombre ?? "?"}" no tiene cargado su "Sub Cliente" del ` +
+          `informe. El PDF dice "${informe?.subcliente ?? "—"}": si es el correcto, ` +
+          "guardalo en la sede y a partir de ahí se verifica solo.",
       });
+    } else if (!informe?.subcliente) {
+      problemas.push({
+        codigo: "informe_sin_subcliente",
+        mensaje: 'El PDF no trae la línea "Sub Cliente", así que no se puede verificar.',
+      });
+    } else {
+      sedeCoincide = normalizarNombre(informe.subcliente) === normalizarNombre(esperado);
+      if (!sedeCoincide) {
+        problemas.push({
+          codigo: "sede_no_coincide",
+          mensaje:
+            `Este informe es de "${informe.subcliente}" y la recepción es de ` +
+            `"${sede.nombre}" ("${esperado}"). Es el PDF de otra sede.`,
+        });
+      }
     }
   }
 
