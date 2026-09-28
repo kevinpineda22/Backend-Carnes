@@ -243,3 +243,121 @@ test("inicial: al costo base es lo esperado, no se bloquea", () => {
   });
   assert.ok(!bloqueos.some((b) => /costo base/.test(b)), JSON.stringify(bloqueos));
 });
+
+// ─── Vísceras (sql/016) ─────────────────────────────────────────────────────
+
+/** Higado: víscera CON código, factor por novillo, unidad KL. */
+const HIGADO = {
+  tipo: "vicera",
+  codigo_item: "15159",
+  descripcion: "Higado",
+  cantidad: 8.323,
+  costo_base: 18000,
+  unidad: "KL",
+  factor_novillo: 4.16167,
+};
+
+/** Lengua: víscera CON código, UND, tipeada (sin factor). */
+const LENGUA = {
+  tipo: "vicera",
+  codigo_item: "15192",
+  descripcion: "Lengua",
+  cantidad: 3,
+  costo_base: 20000,
+  unidad: "UND",
+};
+
+/** Vísceras (el genérico): sin código en el catálogo hoy. */
+const VICERAS_SIN_CODIGO = {
+  tipo: "vicera",
+  codigo_item: null,
+  descripcion: "Viceras",
+  cantidad: 5,
+  costo_base: 17000,
+  unidad: "KL",
+};
+
+test("víscera con código va a SIESA con su unidad y al costo_base, en la inicial", () => {
+  const { payload, bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [HIGADO, LENGUA],
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+  });
+
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Movimientos.length, 2);
+
+  const higado = payload.Movimientos.find((m) => m.ITEM === "15159");
+  assert.equal(higado.UNIDAD_MEDIDA, "KL");
+  assert.equal(higado.CANTIDAD, "8.323");
+  assert.equal(higado.VALOR_BRUTO, String(Math.round(8.323 * 18000)));
+
+  const lengua = payload.Movimientos.find((m) => m.ITEM === "15192");
+  assert.equal(lengua.UNIDAD_MEDIDA, "UND");
+  assert.equal(lengua.VALOR_BRUTO, String(3 * 20000));
+});
+
+test("víscera con código va al costo_base también en la OFICIAL: no se prorratea", () => {
+  // Ni Higado ni Lengua traen `costo_ajustado` — no existe para vísceras.
+  const { payload, bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [HIGADO, LENGUA],
+    tipo: TIPO_ENVIO.OFICIAL,
+    consecutivo: 2,
+    config: CONFIG,
+    referenciaInicial: "R23I",
+  });
+
+  assert.deepEqual(bloqueos, []);
+  const higado = payload.Movimientos.find((m) => m.ITEM === "15159");
+  assert.equal(higado.VALOR_BRUTO, String(Math.round(8.323 * 18000)));
+});
+
+test("víscera SIN código no se manda, y NO bloquea el resto del documento", () => {
+  const { payload, bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [HIGADO, VICERAS_SIN_CODIGO],
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+  });
+
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Movimientos.length, 1);
+  assert.equal(payload.Movimientos[0].ITEM, "15159");
+});
+
+test("un producto sin código sigue bloqueando aunque haya vísceras con código", () => {
+  const productoSinCodigo = {
+    tipo: "carne",
+    codigo_item: null,
+    descripcion: "Corte sin homologar",
+    cantidad: 2,
+    costo_base: 20000,
+  };
+  const { bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [HIGADO, productoSinCodigo],
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+  });
+  const b = bloqueos.find((x) => /sin código/.test(x));
+  assert.ok(b, JSON.stringify(bloqueos));
+  assert.match(b, /Corte sin homologar/);
+  // La víscera con código no aparece en el reclamo: no le falta nada.
+  assert.doesNotMatch(b, /Higado/);
+});
+
+test("oficial: una recepción de solo vísceras (al costo de lista siempre) no bloquea por 'factor no aplicado'", () => {
+  const { bloqueos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [HIGADO, LENGUA],
+    tipo: TIPO_ENVIO.OFICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+  });
+  assert.ok(!bloqueos.some((b) => /igual al costo base/.test(b)), JSON.stringify(bloqueos));
+});

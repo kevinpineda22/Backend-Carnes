@@ -44,7 +44,12 @@ const ESCRIBIBLES = {
     "activo",
     "nombre_desposte",
   ],
-  viceras: ["bloque", "nombre", "precio", "orden", "activo"],
+  // `codigo_item` es OPCIONAL a propósito, a diferencia del de `items`: hay
+  // vísceras sin homólogo en SIESA (Viceras, Entrañita) y eso no bloquea el
+  // catálogo. `factor_novillo` es lo que decide si el recibidor la pesa (NULL)
+  // o se calcula sola desde `carnes_recepciones.novillos` — ver
+  // `shared/visceras.js`.
+  viceras: ["bloque", "nombre", "precio", "codigo_item", "unidad", "factor_novillo", "orden", "activo"],
   conceptos: ["nombre", "signo", "orden", "activo"],
 };
 

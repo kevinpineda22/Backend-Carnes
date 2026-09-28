@@ -136,6 +136,20 @@ export async function editarItem(req, res, next) {
 }
 
 /**
+ * PATCH /api/recepciones/:id/novillos
+ * El admin corrige los novillos (o canales, en cerdo) de una recepción cerrada.
+ * Recalcula las vísceras que se cuentan por novillo.
+ */
+export async function editarNovillos(req, res, next) {
+  try {
+    const data = await RecepcionModel.editarNovillos(req.params.id, req.body);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * PATCH /api/recepciones/:id/items/:itemId/homologar
  * Body: { codigo_item, costo_base, codigo_tabla?, descripcion? }
  *
@@ -211,6 +225,34 @@ export async function descartar(req, res, next) {
 export async function reabrir(req, res, next) {
   try {
     const data = await RecepcionModel.reabrir(req.params.id);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * DELETE /api/recepciones/:id/admin
+ * Borra de verdad una recepción cerrada que el admin identificó como prueba
+ * o carga de más. Ver `puedeEliminarRecepcion` en `shared/eliminacionAdmin.js`.
+ */
+export async function eliminarAdmin(req, res, next) {
+  try {
+    const data = await RecepcionModel.eliminarRecepcionAdmin(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/recepciones/:id/siesa-referencias
+ * Los envíos a SIESA de esta recepción —directos y los de la CEA consolidada
+ * que la incluye— para que el admin sepa qué anular allá antes de borrar acá.
+ */
+export async function siesaReferencias(req, res, next) {
+  try {
+    const data = await SiesaEnvio.enviosDeRecepcion(req.params.id);
     res.json({ ok: true, data });
   } catch (error) {
     next(error);

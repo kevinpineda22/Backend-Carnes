@@ -107,3 +107,18 @@ export async function anularOficiales(req, res, next) {
     next(error);
   }
 }
+
+/**
+ * DELETE /api/siesa/envios/:id
+ * El ADMIN borra un envío que quedó en `error`. Nunca llegó a crear un
+ * documento en SIESA, así que borrar la fila acá no deja nada huérfano allá.
+ * Cualquier otro estado devuelve 409 — ver `puedeEliminarEnvio`.
+ */
+export async function eliminarEnvio(req, res, next) {
+  try {
+    const data = await SiesaEnvio.eliminarEnvioAdmin(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}

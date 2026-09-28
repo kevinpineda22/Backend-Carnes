@@ -125,6 +125,21 @@ const viceraSchema = z.object({
   bloque: z.enum(["bonificacion", "informativo"]),
   nombre: z.string().trim().min(1, "El nombre es obligatorio"),
   precio: z.coerce.number().nonnegative().default(0),
+  // OPCIONAL, a diferencia del de `items`: Viceras y Entrañita no tienen
+  // homólogo en SIESA y eso no tiene que bloquear el catálogo — ver
+  // `vaASiesa` en `shared/visceras.js`. "" o ausente → null.
+  codigo_item: z
+    .union([z.string(), z.number()])
+    .nullable()
+    .optional()
+    .transform((v) => (v === null || v === undefined ? null : String(v).trim() || null)),
+  unidad: z.enum(["KL", "UND"], { errorMap: () => ({ message: "La unidad debe ser KL o UND." }) }).default("KL"),
+  // NULL = el recibidor la pesa/cuenta a mano. Con valor: se calcula sola como
+  // `factor_novillo × recepcion.novillos` (`shared/visceras.js`).
+  factor_novillo: z.preprocess(
+    (v) => (v === "" || v === undefined ? null : v),
+    z.coerce.number({ invalid_type_error: "El factor por novillo debe ser un número." }).nonnegative().nullable(),
+  ).optional(),
   orden: z.coerce.number().int().nonnegative().default(0),
   activo: z.coerce.boolean().default(true),
 });
@@ -314,6 +329,21 @@ export const validators = {
         .optional(),
       codigo_item: z.union([z.string(), z.number()]).transform((x) => String(x).trim()).optional(),
       descripcion: z.string().trim().min(1, "La descripción no puede quedar vacía.").max(200).optional(),
+      editado_por: correo("Falta el correo de quien edita."),
+    }),
+  ),
+
+  // El admin corrige los novillos (o canales, en cerdo) de una recepción ya
+  // cerrada. Dispara el recálculo de las vísceras que se cuentan por novillo
+  // (`shared/visceras.js`) — ver `editarNovillos` en `Recepcion.model.js`.
+  editarNovillos: validar(
+    z.object({
+      novillos: z.coerce
+        .number({
+          required_error: "Falta la cantidad.",
+          invalid_type_error: "La cantidad debe ser un número.",
+        })
+        .nonnegative("La cantidad no puede ser negativa."),
       editado_por: correo("Falta el correo de quien edita."),
     }),
   ),

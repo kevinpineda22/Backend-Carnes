@@ -32,6 +32,7 @@ import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { ESTADOS } from "../shared/estados.js";
 import { fallarSiFaltaMigracion } from "../shared/migraciones.js";
+import { puedeEliminarEnvio } from "../shared/eliminacionAdmin.js";
 import {
   armarEntradaDirecta,
   armarEntradaLiquidacion,
@@ -161,6 +162,31 @@ async function idsDeLiquidacion(liquidacionId) {
     .order("id");
   if (error) fallarSiFaltaMigracion(error, "Error al leer las recepciones", MIGRACIONES);
   return (data || []).map((r) => r.id);
+}
+
+/**
+ * Los envíos que tocan una recepción: los directos (`recepcion_id`) y los de
+ * la CEA consolidada que la incluye (`recepcion_ids`, ver sql/012).
+ *
+ * Lo usa `Recepcion.model.js#eliminarRecepcionAdmin` para decidir si se puede
+ * borrar, y el endpoint de solo lectura que le muestra al admin qué
+ * referencias de SIESA hay que anular allá antes de borrar acá.
+ */
+export async function enviosDeRecepcion(recepcionId) {
+  const [{ data: directos, error: e1 }, { data: consolidados, error: e2 }] = await Promise.all([
+    supabase
+      .from(TABLA)
+      .select("id, tipo, estado, referencia, enviado_at")
+      .eq("recepcion_id", recepcionId),
+    supabase
+      .from(TABLA)
+      .select("id, tipo, estado, referencia, enviado_at")
+      .is("recepcion_id", null)
+      .overlaps("recepcion_ids", [Number(recepcionId)]),
+  ]);
+  if (e1) fallarSiFaltaMigracion(e1, "Error al leer los envíos", MIGRACIONES);
+  if (e2) fallarSiFaltaMigracion(e2, "Error al leer los envíos", MIGRACIONES);
+  return [...(directos || []), ...(consolidados || [])];
 }
 
 /** Por qué no se puede mandar, dicho para una persona. */
@@ -1103,4 +1129,31 @@ export async function anularOficiales(liquidacionId, { por, motivo, inicialesAnu
     anulados: (anulados || []).map((e) => ({ id: e.id, tipo: e.tipo, referencia: e.referencia })),
     recepciones: (reabiertas || []).length,
   };
+}
+
+/**
+ * El ADMIN borra un envío que quedó en `error`.
+ *
+ * Solo ese estado: ver `puedeEliminarEnvio` en `shared/eliminacionAdmin.js`.
+ * No toca el candado de sql/010 —ese índice único solo cubre
+ * `enviando`/`ok`/`sin_confirmar`— así que un `error` nunca lo ocupaba y
+ * borrarlo no destraba ni traba nada.
+ */
+export async function eliminarEnvioAdmin(id) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("id, estado, referencia")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer el envío", MIGRACIONES);
+  if (!data) throw createError(404, "Envío no encontrado.");
+
+  const { ok, motivo } = puedeEliminarEnvio({ estado: data.estado });
+  if (!ok) throw createError(409, motivo);
+
+  const { error: errorBorrar } = await supabase.from(TABLA).delete().eq("id", id);
+  if (errorBorrar) fallarSiFaltaMigracion(errorBorrar, "No se pudo borrar el envío", MIGRACIONES);
+
+  console.log(`🗑️  Envío SIESA #${id} (${data.referencia}) eliminado por el admin.`);
+  return { eliminado: Number(id), referencia: data.referencia };
 }

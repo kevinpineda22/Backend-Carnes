@@ -583,6 +583,25 @@ export async function eliminar(recepcionId) {
   return { eliminado: true, recepcion_id: Number(recepcionId) };
 }
 
+/**
+ * Para cuando la recepción ENTERA se está borrando (ver
+ * `eliminarRecepcionAdmin` en `Recepcion.model.js`). La fila del informe la
+ * borra el `ON DELETE CASCADE`; el archivo no, así que se hace en dos pasos:
+ * leer la ruta ANTES de borrar la recepción (después el cascade ya se llevó la
+ * fila) y borrar el archivo DESPUÉS. En ese orden, si el borrado de la
+ * recepción falla, su guía sigue intacta; lo peor que puede pasar es un PDF
+ * huérfano en Storage, que no rompe nada.
+ */
+export async function archivoDeRecepcion(recepcionId) {
+  const informe = await obtenerInforme(recepcionId);
+  return informe?.archivo_path || null;
+}
+
+/** Best-effort: si falla, deja un aviso en el log y sigue. */
+export async function borrarArchivoHuerfano(ruta) {
+  await borrarArchivo(ruta);
+}
+
 // ─── Guía anticipada ───────────────────────────────────────────────────────
 
 const ES_FECHA = /^\d{4}-\d{2}-\d{2}$/;

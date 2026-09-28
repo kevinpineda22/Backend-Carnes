@@ -2,12 +2,16 @@ import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import * as SedeModel from "./Sede.model.js";
 import * as PlantillaModel from "./Plantilla.model.js";
+import * as SiesaEnvioModel from "./SiesaEnvio.model.js";
+import * as DesposteModel from "./Desposte.model.js";
 import {
   ESTADOS,
   validarTransicion,
   puedeEditarCantidades,
   puedeCorregirComoAdmin,
 } from "../shared/estados.js";
+import { puedeEliminarRecepcion } from "../shared/eliminacionAdmin.js";
+import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visceras.js";
 
 const TABLE = "carnes_recepciones";
 const TABLE_ITEMS = "carnes_recepcion_items";
@@ -99,7 +103,7 @@ export async function listar({
  * un vistazo QUÉ NO LLEGÓ: un renglón en cero es información; un renglón ausente
  * es una duda.
  */
-async function renglonesDesdePlantilla(especie) {
+async function renglonesDesdePlantilla(especie, novillos = 0) {
   const [items, viceras] = await Promise.all([
     PlantillaModel.listar("items", especie),
     PlantillaModel.listar("viceras", especie),
@@ -118,14 +122,26 @@ async function renglonesDesdePlantilla(especie) {
 
   // Solo el bloque de bonificación: el informativo no toca plata y en el Excel
   // se calcula por novillo, no se recibe renglón por renglón.
+  //
+  // `codigo_item` / `unidad` / `factor_novillo` se SNAPSHOTEAN acá, igual que
+  // `costo_base` — ver sql/016_visceras_siesa.sql. Si el catálogo cambia
+  // después, esta recepción ya cerrada no tiene que enterarse.
+  //
+  // Las que tienen factor arrancan con la cantidad YA calculada (si al abrir
+  // ya se conocen los novillos); el resto arranca en 0, como siempre, para que
+  // el recibidor las pese.
   for (const v of viceras.filter((v) => v.bloque === "bonificacion")) {
+    const tieneFactor = v.factor_novillo !== null && v.factor_novillo !== undefined;
     filas.push({
       tipo: "vicera",
       vicera_item_id: v.id,
       descripcion: v.nombre,
       orden: v.orden,
-      cantidad: 0,
+      cantidad: tieneFactor ? cantidadPorNovillo(v.factor_novillo, novillos) : 0,
       costo_base: v.precio,
+      codigo_item: v.codigo_item ?? null,
+      unidad: v.unidad || "KL",
+      factor_novillo: v.factor_novillo ?? null,
     });
   }
 
@@ -225,11 +241,33 @@ export async function abrir({
     .single();
   if (error) throw new Error(`Error al abrir la recepción: ${error.message}`);
 
-  const filas = await renglonesDesdePlantilla(especie);
+  const filas = await renglonesDesdePlantilla(especie, novillos);
   if (filas.length) {
-    const { error: errorItems } = await supabase
+    let { error: errorItems } = await supabase
       .from(TABLE_ITEMS)
       .insert(filas.map((f) => ({ ...f, recepcion_id: cabecera.id })));
+
+    // Tolerante a que sql/016_visceras_siesa.sql todavía no haya corrido: sin
+    // esto, CADA apertura de recepción —no solo las de vísceras nuevas—
+    // fallaría el día que este backend se despliegue antes que la migración.
+    // Se reintenta sin las columnas nuevas y se avisa en el log; la próxima
+    // vez que se guarde el borrador (o la migración corra) el cálculo por
+    // novillo se completa solo.
+    const faltaColumnaVicera =
+      errorItems &&
+      ["unidad", "factor_novillo"].some((c) => esColumnaFaltante(errorItems, c));
+    if (faltaColumnaVicera) {
+      console.warn(
+        "⚠️  Faltan columnas de sql/016_visceras_siesa.sql (unidad/factor_novillo) — " +
+          "corré la migración. Mientras tanto se abre sin código/unidad/factor en las vísceras.",
+      );
+      const sinColumnasNuevas = filas.map(({ unidad: _u, factor_novillo: _f, ...resto }) => resto);
+      const reintento = await supabase
+        .from(TABLE_ITEMS)
+        .insert(sinColumnasNuevas.map((f) => ({ ...f, recepcion_id: cabecera.id })));
+      errorItems = reintento.error;
+    }
+
     if (errorItems) {
       // La cabecera sin renglones es una pantalla vacía que no se puede usar y
       // que igual le aparece al admin. Se limpia acá porque no hay transacción:
@@ -328,6 +366,43 @@ export async function guardarBorrador(id, { novillos, observaciones, items = [] 
       costo_base: actual.costo_base,
       cantidad: Number(entrada.cantidad) || 0,
     });
+  }
+
+  // Las vísceras que se cuentan por novillo (Higado, Riñon, Corazon, Bofe,
+  // Pajarilla, Punta de falda hoy) NO las tipea el recibidor — la pantalla las
+  // muestra de solo lectura. Lo que haya llegado para ellas en `items` se PISA
+  // acá con `factor × novillos`: la fuente de verdad de esa cantidad es
+  // siempre el cálculo, nunca lo que haya viajado en el body. Corre en TODO
+  // guardado (no solo cuando cambia `novillos`) porque es idempotente y así se
+  // cubre también el caso de una versión vieja del front que no las manda.
+  //
+  // Tolerante sin sql/016: `item.factor_novillo` da `undefined` en cada renglón
+  // si la columna no existe todavía, así que el `continue` de abajo los salta a
+  // todos y el guardado sigue funcionando exactamente igual que antes.
+  const novillosVigentes =
+    novillos !== undefined ? Number(novillos) || 0 : Number(recepcion.novillos) || 0;
+  const porFilaId = new Map(filas.map((f) => [String(f.id), f]));
+  for (const item of recepcion.items) {
+    if (item.factor_novillo === null || item.factor_novillo === undefined) continue;
+    const cantidad = cantidadPorNovillo(item.factor_novillo, novillosVigentes);
+    const existente = porFilaId.get(String(item.id));
+    if (existente) {
+      existente.cantidad = cantidad;
+    } else {
+      filas.push({
+        id: item.id,
+        recepcion_id: recepcion.id,
+        tipo: item.tipo,
+        plantilla_item_id: item.plantilla_item_id,
+        vicera_item_id: item.vicera_item_id,
+        codigo_item: item.codigo_item,
+        codigo_tabla: item.codigo_tabla,
+        descripcion: item.descripcion,
+        orden: item.orden,
+        costo_base: item.costo_base,
+        cantidad,
+      });
+    }
   }
 
   if (filas.length) {
@@ -584,6 +659,77 @@ export async function editarItem(id, itemId, cambios, editadoPor) {
 }
 
 /**
+ * El ADMIN corrige los novillos (o canales, en cerdo) de una recepción ya
+ * cerrada.
+ *
+ * Mismo guard que `editarItem` (Recibido/Aprobado, nunca Borrador —es del
+ * recibidor— ni Costeado/Enviado_SIESA —hay que reabrir la liquidación o
+ * anular en SIESA primero). Existe porque el dato lo escribe el recibidor a
+ * ojo mientras cuenta la carne, y un novillo de más o de menos se nota recién
+ * cuando el admin revisa: sin este endpoint no había forma de corregirlo sin
+ * reabrir la recepción entera.
+ *
+ * Dispara el recálculo de las seis vísceras que se cuentan por novillo
+ * (`shared/visceras.js`) — es lo que hace que este número, a diferencia de
+ * `descripcion` o `costo_base`, no sea un dato suelto: cambiarlo mueve otros
+ * renglones.
+ *
+ * 503 y no un fallo silencioso si falta `sql/016_visceras_siesa.sql`: es un
+ * endpoint NUEVO, igual que `agregarRenglonAdmin` con la 015 — no hay una
+ * versión vieja del flujo a la que quede "tolerante".
+ */
+export async function editarNovillos(id, { novillos, editado_por }) {
+  const recepcion = await obtener(id);
+  exigirCorregibleComoAdmin(recepcion);
+
+  const nuevoValor = Number(novillos) || 0;
+
+  const { error } = await supabase.from(TABLE).update({ novillos: nuevoValor }).eq("id", id);
+  if (error) throw new Error(`Error al corregir los novillos: ${error.message}`);
+
+  const itemsRecalculados = recalcularVicerasPorNovillo(recepcion.items, nuevoValor);
+  const filas = itemsRecalculados
+    .filter((item, idx) => item.cantidad !== recepcion.items[idx].cantidad)
+    .map((item) => ({
+      id: item.id,
+      recepcion_id: recepcion.id,
+      tipo: item.tipo,
+      plantilla_item_id: item.plantilla_item_id,
+      vicera_item_id: item.vicera_item_id,
+      codigo_item: item.codigo_item,
+      codigo_tabla: item.codigo_tabla,
+      descripcion: item.descripcion,
+      orden: item.orden,
+      costo_base: item.costo_base,
+      cantidad: item.cantidad,
+      unidad: item.unidad,
+      factor_novillo: item.factor_novillo,
+    }));
+
+  if (filas.length) {
+    const { error: errorItems } = await supabase.from(TABLE_ITEMS).upsert(filas);
+    const faltaMigracion =
+      errorItems &&
+      ["unidad", "factor_novillo"].some((c) => esColumnaFaltante(errorItems, c));
+    if (faltaMigracion) {
+      throw createError(
+        503,
+        "A la base le falta la migración sql/016_visceras_siesa.sql. Corrala en Supabase y volvé a intentar.",
+      );
+    }
+    if (errorItems) {
+      throw new Error(`Error al recalcular las vísceras por novillo: ${errorItems.message}`);
+    }
+  }
+
+  // Sin columna propia para "quién corrigió los novillos" (a diferencia de
+  // `editado_por`/`editado_at` por renglón): el rastro de esta corrección
+  // puntual queda en el log del servidor.
+  console.log(`✏️  Recepción #${id}: novillos corregidos a ${nuevoValor} por ${editado_por || "?"}.`);
+  return obtener(id);
+}
+
+/**
  * El ADMIN agrega un corte que quedó FUERA de la plantilla, después de que la
  * recepción ya cerró.
  *
@@ -710,6 +856,62 @@ export async function descartar(id) {
   return { descartada: id };
 }
 
+/**
+ * Elimina de verdad una recepción YA CERRADA que el admin identificó como
+ * prueba o carga de más — no un borrador (eso es `descartar`, arriba) y no
+ * una que ya movió plata de verdad.
+ *
+ * La regla vive en `shared/eliminacionAdmin.js` (`puedeEliminarRecepcion`):
+ * ni Costeado ni Enviado_SIESA, sin liquidación vinculada, sin una oficial de
+ * SIESA para ella —de cualquier estado, esa sola es la prueba de que se
+ * intentó subir al ERP— y sin un envío sin resolver (`enviando` /
+ * `sin_confirmar`, porque SIESA puede haberlo creado y todavía no se sabe).
+ *
+ * El PDF de desposte se saca de Storage DESPUÉS de borrar la fila: el
+ * `ON DELETE CASCADE` de `carnes_desposte_informes` se lleva la fila del
+ * informe sola, nunca el archivo — ver `Desposte.model.js#archivoDeRecepcion`.
+ *
+ * Devuelve las referencias de las INICIALES que llegaron a `ok`: esa carne sí
+ * entró a SIESA (el envío inicial es automático al cerrar), y borrar la
+ * recepción de acá no anula ese documento allá. El admin tiene que anularlo
+ * a mano con esa referencia.
+ *
+ * @returns {{eliminada: number, inicialesOk: {referencia: string}[]}}
+ */
+export async function eliminarRecepcionAdmin(id) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("id, estado, liquidacion_id, sede:carnes_sedes ( nombre )")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Error al leer la recepción: ${error.message}`);
+  if (!data) throw createError(404, "Recepción no encontrada.");
+
+  const envios = await SiesaEnvioModel.enviosDeRecepcion(id);
+  const { ok, motivo } = puedeEliminarRecepcion({
+    estado: data.estado,
+    liquidacion_id: data.liquidacion_id,
+    envios,
+  });
+  if (!ok) throw createError(409, motivo);
+
+  const inicialesOk = envios
+    .filter((e) => e.tipo === "inicial" && e.estado === "ok")
+    .map((e) => ({ referencia: e.referencia }));
+
+  // La ruta de la guía se lee ANTES de borrar (el cascade se lleva su fila) y
+  // el archivo se borra DESPUÉS: ver `archivoDeRecepcion`.
+  const archivo = await DesposteModel.archivoDeRecepcion(id);
+
+  const { error: errorBorrar } = await supabase.from(TABLE).delete().eq("id", id);
+  if (errorBorrar) throw new Error(`Error al eliminar la recepción: ${errorBorrar.message}`);
+
+  if (archivo) await DesposteModel.borrarArchivoHuerfano(archivo);
+
+  console.log(`🗑️  Recepción #${id} (${data.sede?.nombre}) eliminada por el admin.`);
+  return { eliminada: Number(id), inicialesOk };
+}
+
 // ─── Transiciones de estado ────────────────────────────────────────────────
 
 /**
@@ -754,6 +956,23 @@ export async function finalizar(id, { recibido_por }) {
     throw createError(
       409,
       "No se puede cerrar una recepción sin cantidades. Digitá lo que llegó.",
+    );
+  }
+
+  // Sin novillos, las vísceras que se calculan por novillo (Higado, Riñon,
+  // Corazon, Bofe, Pajarilla, Punta de falda) quedan TODAS en 0 — no porque no
+  // llegaron, sino porque nadie cargó el dato del que dependen. Cerrar así deja
+  // esa carne sin costear y sin subir a SIESA, y nadie se entera hasta que
+  // alguien audite el consolidado. Tolerante sin sql/016: si `factor_novillo`
+  // no existe todavía en ningún renglón, este `some` da `false` y no bloquea.
+  const tieneViceraPorFactor = recepcion.items.some(
+    (i) => i.tipo === "vicera" && i.factor_novillo !== null && i.factor_novillo !== undefined,
+  );
+  if (tieneViceraPorFactor && !(Number(recepcion.novillos) > 0)) {
+    throw createError(
+      409,
+      "Falta la cantidad de novillos: sin ese dato las vísceras que se calculan " +
+        "por novillo quedan en cero.",
     );
   }
 

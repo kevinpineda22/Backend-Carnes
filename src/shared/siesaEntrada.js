@@ -34,7 +34,23 @@
  * enlacen entre sí en el mismo envío — no es el número que va a tener el
  * documento en SIESA. Por eso la referencia cruzada entre inicial y oficial
  * va por `PENDIENTE` y por las notas, que sí viajan tal cual.
+ *
+ * ─── Vísceras: van, con su propia unidad y SIN prorratear ─────────────────
+ *
+ * Desde `sql/016_visceras_siesa.sql`, nueve de las once vísceras de res tienen
+ * código de SIESA (ver `shared/visceras.js`). Van al documento igual que un
+ * producto, con tres diferencias:
+ *
+ *   · su UNIDAD_MEDIDA es la del renglón (`item.unidad`), no la fija de la
+ *     configuración — Lengua es UND, el resto KL.
+ *   · su precio es SIEMPRE `costo_base`, en la inicial y en la oficial: no
+ *     existe `costo_ajustado` para una víscera porque no se prorratea (no
+ *     entra en el costo teórico de `calcularCosteo`).
+ *   · sin código (Vísceras, Entrañita hoy) NO se manda y NO bloquea el resto
+ *     del documento — a diferencia de un producto sin homologar, que si
+ *     bloquea. Ver `vaASiesa` en `shared/visceras.js`.
  */
+import { esProducto, esVicera, tieneCodigoSiesa, vaASiesa } from "./visceras.js";
 
 /** Los dos tipos de envío, y cómo se leen en SIESA. */
 export const TIPO_ENVIO = {
@@ -105,13 +121,14 @@ const decimal = (n, decimales) => {
 };
 
 /**
- * Renglones que van a SIESA: carne y adicionales CON código, con cantidad > 0.
+ * Renglones que van a SIESA: productos (con o sin código — sin código
+ * BLOQUEA, ver abajo) y vísceras CON código, todos con cantidad > 0.
  *
- * Las vísceras no van: hoy el catálogo no tiene código de ítem. Si algún día
- * lo tiene, se saca este filtro y listo.
+ * Una víscera sin código se descarta acá mismo, en silencio: `vaASiesa`
+ * decide eso. Lo que queda tras este filtro es exactamente lo que sale en
+ * `Movimientos`.
  */
-const VA_A_SIESA = (i) =>
-  (i.tipo === "carne" || i.tipo === "adicional") && (Number(i.cantidad) || 0) > 0;
+const VA_A_SIESA = (i) => vaASiesa(i);
 
 /**
  * Arma el JSON del conector.
@@ -153,8 +170,14 @@ export function armarEntradaDirecta({
   const fecha = fechaSiesa(recepcion?.fecha_ingreso);
   if (!fecha) bloqueos.push("La recepción no tiene fecha de ingreso.");
 
-  const renglones = items.filter(VA_A_SIESA);
-  const sinCodigo = renglones.filter((i) => !String(i.codigo_item ?? "").trim());
+  // Sin código bloquea SOLO en productos: una víscera sin código (Vísceras,
+  // Entrañita hoy) no tiene cómo entrar al ERP y `VA_A_SIESA` ya la descartó en
+  // silencio más abajo — no es un renglón pendiente de homologar, simplemente
+  // no viaja.
+  const candidatosConCantidad = items.filter(
+    (i) => (esProducto(i) || esVicera(i)) && (Number(i.cantidad) || 0) > 0,
+  );
+  const sinCodigo = candidatosConCantidad.filter((i) => esProducto(i) && !tieneCodigoSiesa(i));
   if (sinCodigo.length) {
     bloqueos.push(
       `${sinCodigo.length} renglón(es) sin código de SIESA: ` +
@@ -162,6 +185,8 @@ export function armarEntradaDirecta({
         ". Homologalos antes de enviar.",
     );
   }
+
+  const renglones = items.filter(VA_A_SIESA);
   if (renglones.length === 0) bloqueos.push("La recepción no tiene renglones con cantidad.");
 
   // ─── El precio depende del tipo de entrada ───
@@ -170,7 +195,12 @@ export function armarEntradaDirecta({
   // el factor de la liquidación. Si se pide la oficial y el renglón no tiene
   // costo ajustado, es que la liquidación no se costeó: se bloquea, no se
   // manda el precio de lista como si fuera el real.
+  //
+  // Vísceras son la excepción: NO se prorratean (no entran en el costo teórico
+  // de `calcularCosteo`), así que no tienen `costo_ajustado` ni en la oficial.
+  // Van siempre a `costo_base`, inicial u oficial.
   const precioDe = (i) => {
+    if (esVicera(i)) return Number(i.costo_base) || 0;
     if (tipo === TIPO_ENVIO.OFICIAL) {
       if (i.costo_ajustado === null || i.costo_ajustado === undefined) return null;
       return Number(i.costo_ajustado);
@@ -185,16 +215,22 @@ export function armarEntradaDirecta({
     );
   }
 
-  // Oficial con TODOS los renglones al costo de lista: el factor de la
+  // Oficial con TODOS los PRODUCTOS al costo de lista: el factor de la
   // liquidación no se aplicó (costo teórico en cero, o un costeo que no
   // escribió). No existe una compra real donde lo pagado coincida al peso con
   // la lista en cada corte, así que no se manda: subiría como "liquidada" una
   // entrada que es la inicial con otro nombre.
+  //
+  // Solo productos: las vísceras SIEMPRE están "al costo de lista" (no se
+  // prorratean), así que si entraran acá, una recepción con solo dos vísceras
+  // y ningún producto bloquearía la entrada oficial sin que el factor tenga
+  // nada que ver.
+  const productosRenglones = renglones.filter(esProducto);
   if (
     tipo === TIPO_ENVIO.OFICIAL &&
-    renglones.length > 0 &&
+    productosRenglones.length > 0 &&
     sinCosteo.length === 0 &&
-    renglones.every((i) => Number(i.costo_ajustado) === Number(i.costo_base))
+    productosRenglones.every((i) => Number(i.costo_ajustado) === Number(i.costo_base))
   ) {
     bloqueos.push(
       "El costo liquidado es igual al costo base en todos los renglones: el factor de " +
@@ -251,7 +287,9 @@ export function armarEntradaDirecta({
       NRO_REGISTRO: String(n + 1),
       BODEGA: String(sede.bodega_siesa ?? ""),
       CO_MOVIMIENTO: co ?? "",
-      UNIDAD_MEDIDA: String(config.unidadMedida ?? ""),
+      // Del renglón si lo trae (Lengua es UND, el resto de vísceras KL); si no
+      // —todo lo que es carne/adicional— la fija de la configuración.
+      UNIDAD_MEDIDA: String(i.unidad || config.unidadMedida || ""),
       CANTIDAD: decimal(cantidad, config.decimalesCantidad),
       VALOR_BRUTO: decimal(bruto, config.decimalesValor),
       ITEM: String(i.codigo_item ?? "").trim(),

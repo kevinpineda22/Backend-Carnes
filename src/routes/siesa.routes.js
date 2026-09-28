@@ -10,6 +10,10 @@ router.get("/envios/:id", SiesaController.obtener);
 // Un envío sin confirmar (timeout, corte) bloquea el reintento hasta que una
 // persona mire en SIESA y diga si está o no.
 router.post("/envios/:id/resolver", SiesaController.resolver);
+// El ADMIN borra un envío que falló: nunca llegó a crear nada en SIESA. Ver
+// `puedeEliminarEnvio` en shared/eliminacionAdmin.js — cualquier otro estado
+// es 409.
+router.delete("/envios/:id", SiesaController.eliminarEnvio);
 
 // La inicial sale sola al cerrar la recepción (ver recepciones.controller).
 // Esto es el reintento manual cuando aquella falló.
