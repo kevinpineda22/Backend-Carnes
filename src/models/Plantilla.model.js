@@ -1,5 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
+import { cambiosDeFila } from "../shared/plantillaCambios.js";
 
 /* =============================================
    La plantilla que edita el admin.
@@ -184,16 +185,42 @@ export async function guardarLote(catalogo, especie, filas = []) {
     creados = nuevas.length;
   }
 
-  let actualizados = 0;
-  for (const fila of existentes) {
-    const limpio = limpiar(catalogo, fila);
-    if (Object.keys(limpio).length === 0) continue;
-    const { error } = await supabase.from(t).update(limpio).eq("id", fila.id);
-    if (error) {
-      throw new Error(`Error al actualizar ${catalogo} #${fila.id}: ${error.message}`);
-    }
-    actualizados++;
+  // Solo se actualiza lo que cambió (ver `shared/plantillaCambios.js`): la
+  // grilla manda la tabla entera, y un UPDATE por fila hacía que cambiar un
+  // costo tardara más que el timeout del front.
+  const actuales = new Map();
+  if (existentes.length) {
+    const { data, error } = await supabase
+      .from(t)
+      .select("*")
+      .in(
+        "id",
+        existentes.map((f) => f.id),
+      );
+    if (error) throw new Error(`Error al leer ${catalogo}: ${error.message}`);
+    for (const f of data || []) actuales.set(String(f.id), f);
   }
+
+  const pendientes = existentes
+    .map((fila) => ({
+      id: fila.id,
+      cambios: cambiosDeFila(limpiar(catalogo, fila), actuales.get(String(fila.id))),
+    }))
+    .filter(({ cambios }) => Object.keys(cambios).length > 0);
+
+  // En tandas chicas y no todas juntas: reordenar la grilla cambia `orden` en
+  // muchas filas a la vez, y 38 pedidos simultáneos a Supabase es buscarse un
+  // rate limit.
+  const TANDA = 6;
+  for (let i = 0; i < pendientes.length; i += TANDA) {
+    await Promise.all(
+      pendientes.slice(i, i + TANDA).map(async ({ id, cambios }) => {
+        const { error } = await supabase.from(t).update(cambios).eq("id", id);
+        if (error) throw new Error(`Error al actualizar ${catalogo} #${id}: ${error.message}`);
+      }),
+    );
+  }
+  const actualizados = pendientes.length;
 
   // Desactivar lo que el admin sacó de la grilla.
   const conservados = [...existentes.map((f) => f.id), ...idsNuevos];
