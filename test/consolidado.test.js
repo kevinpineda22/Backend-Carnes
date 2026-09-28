@@ -138,6 +138,74 @@ test("las vísceras restan solo en la sede que las recibió y con el toggle en S
   assert.equal(encendido.totalKilos, 782.51);
 });
 
+test("sql/017: las vísceras 'informativo' (por novillo) NUNCA descuentan, aunque el toggle esté en SI", () => {
+  const viceras = [
+    // Las 5 que sí descuentan — bloque explícito 'bonificacion'.
+    { descripcion: "Viceras", cantidad: 25.4, costo_base: 17000, bloque: "bonificacion" },
+    { descripcion: "Mondongo", cantidad: 16.8, costo_base: 18000, bloque: "bonificacion" },
+    // Las 6 que van a SIESA pero NO descuentan — bloque 'informativo' (sql/017).
+    {
+      descripcion: "Higado",
+      cantidad: 49.94,
+      costo_base: 18000,
+      bloque: "informativo",
+      codigo_item: "15159",
+      factor_novillo: 4.16167,
+    },
+    {
+      descripcion: "Riñon",
+      cantidad: 16,
+      costo_base: 11000,
+      bloque: "informativo",
+      codigo_item: "15188",
+      factor_novillo: 1.33333,
+    },
+  ];
+  const conViceras = () => [recepcion("Villahermosa", { viceras }), recepcion("Parque"), recepcion("Lopez")];
+
+  const encendido = consolidarLiquidacion({
+    recepciones: conViceras(),
+    gastos: GASTOS,
+    bonificacionViceras: true,
+  });
+
+  // Solo las 2 de bonificación entran al descuento — las 2 de novillo, con
+  // cantidades bien reales, quedan completamente afuera.
+  assert.equal(encendido.sedes[0].costeo.valorViceras, 25.4 * 17000 + 16.8 * 18000);
+});
+
+test("sql/017: un renglón viejo sin `bloque` (NULL/undefined) sigue descontando, como antes de la migración", () => {
+  const viceras = [{ descripcion: "Viceras", cantidad: 25.4, costo_base: 17000 }]; // sin bloque
+  const conViceras = () => [recepcion("Villahermosa", { viceras }), recepcion("Parque"), recepcion("Lopez")];
+
+  const encendido = consolidarLiquidacion({
+    recepciones: conViceras(),
+    gastos: GASTOS,
+    bonificacionViceras: true,
+  });
+
+  assert.equal(encendido.sedes[0].costeo.valorViceras, 25.4 * 17000);
+});
+
+test("sql/017: con el toggle en NO, ni las de bonificación ni las de novillo descuentan nada", () => {
+  const viceras = [
+    { descripcion: "Mondongo", cantidad: 16.8, costo_base: 18000, bloque: "bonificacion" },
+    {
+      descripcion: "Higado",
+      cantidad: 49.94,
+      costo_base: 18000,
+      bloque: "informativo",
+      codigo_item: "15159",
+      factor_novillo: 4.16167,
+    },
+  ];
+  const conViceras = () => [recepcion("Villahermosa", { viceras }), recepcion("Parque"), recepcion("Lopez")];
+
+  const apagado = consolidarLiquidacion({ recepciones: conViceras(), gastos: GASTOS });
+
+  assert.equal(apagado.sedes[0].costeo.valorViceras, 0);
+});
+
 test("los adicionales SÍ suman kilos: son producto que llegó", () => {
   const conExtra = [
     recepcion("Villahermosa", {

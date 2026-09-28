@@ -1,4 +1,5 @@
 import { calcularCosteo, repartirPorSede } from "./costeo.js";
+import { descuentaEnLiquidacion } from "./visceras.js";
 
 /**
  * Consolidado de una liquidación: reparte los gastos entre las sedes y costea
@@ -30,10 +31,20 @@ import { calcularCosteo, repartirPorSede } from "./costeo.js";
  *                   vísceras viven de la 44 para abajo)
  *   participación = kilos_sede / kilos_totales
  *   valor_factura = total_gastos × participación          → `Datos `!P25:P33 y hoja de sede F5
- *   vísceras      = Σ cantidad × precio (si el toggle está en SI)  → hoja de sede F6
- *   costo_real    = valor_factura − vísceras                       → hoja de sede F7
+ *   vísceras      = Σ cantidad × precio, SOLO bloque 'bonificacion'
+ *                   (si el toggle está en SI)                        → hoja de sede F6
+ *   costo_real    = valor_factura − vísceras                         → hoja de sede F7
  *
  * y de ahí sale el prorrateo normal de `calcularCosteo`.
+ *
+ * ─── Vísceras "por novillo" (sql/017) no entran acá ────────────────────────
+ *
+ * Higado, Riñon, Corazon, Bofe, Pajarilla y Punta de falda van a SIESA (ver
+ * `siesaEntrada.js`) pero NO se restan: `bloque = 'informativo'` en su
+ * renglón, y `descuentaEnLiquidacion` (`shared/visceras.js`) las saca de la
+ * lista que se manda a `calcularCosteo` como `viceras`. Solo Viceras,
+ * Mondongo, Lengua, Chunchulla y Entrañita — `bloque = 'bonificacion'` —
+ * siguen descontando, exactamente como antes de que existieran las otras seis.
  */
 
 /** Renglones que son producto y suman kilos: la carne y lo que llegó de más. */
@@ -106,8 +117,11 @@ export function consolidarLiquidacion({
   const sedes = recepciones.map((recepcion, idx) => {
     const items = recepcion.items || [];
     const productos = items.filter(ES_PRODUCTO);
+    // Solo bloque 'bonificacion' descuenta (ver `descuentaEnLiquidacion`,
+    // sql/017): las 6 que van a SIESA por factor de novillo quedan afuera de
+    // esta lista, así que `calcularCosteo` ni se entera de que existen.
     const viceras = items
-      .filter((i) => i.tipo === "vicera")
+      .filter((i) => i.tipo === "vicera" && descuentaEnLiquidacion(i))
       .map((i) => ({ nombre: i.descripcion, cantidad: i.cantidad, precio: i.costo_base }));
 
     // `valor_factura` entra como el único gasto de esta sede, y las vísceras se

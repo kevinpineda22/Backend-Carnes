@@ -9,6 +9,7 @@ import {
   esVicera,
   tieneCodigoSiesa,
   vaASiesa,
+  descuentaEnLiquidacion,
 } from "../src/shared/visceras.js";
 
 test("cantidadPorNovillo: factor × novillos, redondeado a 3 decimales", () => {
@@ -90,4 +91,27 @@ test("vaASiesa: víscera va SOLO con código y cantidad > 0", () => {
 test("vaASiesa: cualquier otro tipo no va", () => {
   assert.equal(vaASiesa({ tipo: "otra-cosa", cantidad: 5, codigo_item: "111" }), false);
   assert.equal(vaASiesa(undefined), false);
+});
+
+test("vaASiesa: NO depende de `bloque` — una víscera 'informativo' con código igual va", () => {
+  assert.equal(
+    vaASiesa({ tipo: "vicera", cantidad: 49.94, codigo_item: "15159", bloque: "informativo" }),
+    true,
+  );
+});
+
+// ─── descuentaEnLiquidacion (sql/017) ───────────────────────────────────────
+
+test("descuentaEnLiquidacion: bloque 'bonificacion' descuenta", () => {
+  assert.equal(descuentaEnLiquidacion({ bloque: "bonificacion" }), true);
+});
+
+test("descuentaEnLiquidacion: bloque 'informativo' NO descuenta", () => {
+  assert.equal(descuentaEnLiquidacion({ bloque: "informativo" }), false);
+});
+
+test("descuentaEnLiquidacion: sin bloque (renglón de antes de sql/017) se trata como 'bonificacion'", () => {
+  assert.equal(descuentaEnLiquidacion({ bloque: null }), true);
+  assert.equal(descuentaEnLiquidacion({ bloque: undefined }), true);
+  assert.equal(descuentaEnLiquidacion({}), true);
 });

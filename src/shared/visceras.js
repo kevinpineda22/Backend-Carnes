@@ -17,6 +17,17 @@
  * sigue pesando (o contando, Lengua es UND) el recibidor, exactamente igual
  * que antes de este cambio.
  *
+ * ─── SIESA y descuento son DOS preguntas distintas (sql/017) ───────────────
+ *
+ * Al principio (sql/016) las seis con factor viajaban con `bloque =
+ * 'bonificacion'` en el catálogo, porque ese era el único valor que hacía que
+ * `Recepcion.model.js#renglonesDesdePlantilla` les creara un renglón. El
+ * gerente corrigió la regla de negocio: esas seis SIGUEN yendo a SIESA
+ * (`vaASiesa` no mira `bloque` — solo código y cantidad), pero NO tienen que
+ * restar del costo real cuando el admin prende "Sumar Viceras". Por eso
+ * `bloque` volvió a su significado original ('informativo' para las seis,
+ * sql/017) y pasó a decidir UNA sola cosa: si `descuentaEnLiquidacion`.
+ *
  * Módulo PURO, como `costeo.js` y `siesaEntrada.js`: sin Supabase, sin Express.
  */
 
@@ -99,4 +110,26 @@ export function vaASiesa(item) {
   if (!(num(item?.cantidad) > 0)) return false;
   if (esVicera(item) && !tieneCodigoSiesa(item)) return false;
   return true;
+}
+
+/**
+ * ¿Este renglón de víscera resta del costo real de la sede cuando la
+ * liquidación tiene "Sumar Viceras" en SI?
+ *
+ * 'bonificacion' sí, 'informativo' no — es la mitad del significado que
+ * `bloque` siempre tuvo en el catálogo (la otra mitad, "va a SIESA", ahora la
+ * decide `vaASiesa` sola, sin mirar `bloque` para nada).
+ *
+ * `null`/`undefined` cuentan como 'bonificacion': son renglones de ANTES de
+ * sql/017 (o leídos antes de que esa migración corra) y, por construcción,
+ * las once vísceras de res estuvieron en 'bonificacion' hasta esa migración —
+ * tratarlos como 'informativo' les cambiaría, retroactivamente, un costo que
+ * ya se calculó así.
+ *
+ * No filtra por tipo a propósito — el llamador (`consolidado.js`) ya filtró
+ * `tipo === "vicera"` antes de preguntar esto; acá solo se decide bonificación
+ * vs. informativo.
+ */
+export function descuentaEnLiquidacion(item) {
+  return item?.bloque !== "informativo";
 }

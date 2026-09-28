@@ -120,17 +120,28 @@ async function renglonesDesdePlantilla(especie, novillos = 0) {
     costo_base: i.costo_base,
   }));
 
-  // Solo el bloque de bonificación: el informativo no toca plata y en el Excel
-  // se calcula por novillo, no se recibe renglón por renglón.
+  // Qué vísceras tienen renglón en la recepción (sql/017): las de bloque
+  // 'bonificacion' (se pesan/cuentan y descuentan — Viceras, Mondongo, Lengua,
+  // Chunchulla, Entrañita) Y las 'informativo' que IGUAL van a SIESA o tienen
+  // factor — hoy son las mismas seis (Higado, Riñon, Corazon, Bofe, Pajarilla,
+  // Punta de falda): tienen código y factor, así que se calculan solas y suben
+  // al ERP, pero no restan del costo real. Un 'informativo' sin código NI
+  // factor (no hay ninguno hoy, pero podría haberlo) no tendría nada que hacer
+  // acá: ni se pesa, ni se calcula, ni va a SIESA.
   //
-  // `codigo_item` / `unidad` / `factor_novillo` se SNAPSHOTEAN acá, igual que
-  // `costo_base` — ver sql/016_visceras_siesa.sql. Si el catálogo cambia
+  // `codigo_item` / `unidad` / `factor_novillo` / `bloque` se SNAPSHOTEAN acá,
+  // igual que `costo_base` — ver sql/016 y sql/017. Si el catálogo cambia
   // después, esta recepción ya cerrada no tiene que enterarse.
   //
   // Las que tienen factor arrancan con la cantidad YA calculada (si al abrir
   // ya se conocen los novillos); el resto arranca en 0, como siempre, para que
   // el recibidor las pese.
-  for (const v of viceras.filter((v) => v.bloque === "bonificacion")) {
+  const vaAlRenglon = (v) =>
+    v.bloque === "bonificacion" ||
+    Boolean(v.codigo_item) ||
+    (v.factor_novillo !== null && v.factor_novillo !== undefined);
+
+  for (const v of viceras.filter(vaAlRenglon)) {
     const tieneFactor = v.factor_novillo !== null && v.factor_novillo !== undefined;
     filas.push({
       tipo: "vicera",
@@ -142,6 +153,7 @@ async function renglonesDesdePlantilla(especie, novillos = 0) {
       codigo_item: v.codigo_item ?? null,
       unidad: v.unidad || "KL",
       factor_novillo: v.factor_novillo ?? null,
+      bloque: v.bloque || "bonificacion",
     });
   }
 
@@ -247,24 +259,27 @@ export async function abrir({
       .from(TABLE_ITEMS)
       .insert(filas.map((f) => ({ ...f, recepcion_id: cabecera.id })));
 
-    // Tolerante a que sql/016_visceras_siesa.sql todavía no haya corrido: sin
-    // esto, CADA apertura de recepción —no solo las de vísceras nuevas—
-    // fallaría el día que este backend se despliegue antes que la migración.
-    // Se reintenta sin las columnas nuevas y se avisa en el log; la próxima
-    // vez que se guarde el borrador (o la migración corra) el cálculo por
-    // novillo se completa solo.
-    const faltaColumnaVicera =
-      errorItems &&
-      ["unidad", "factor_novillo"].some((c) => esColumnaFaltante(errorItems, c));
-    if (faltaColumnaVicera) {
+    // Tolerante a que sql/016_visceras_siesa.sql y/o sql/017_visceras_informativas.sql
+    // todavía no hayan corrido: sin esto, CADA apertura de recepción —no solo
+    // las de vísceras nuevas— fallaría el día que este backend se despliegue
+    // antes que esas migraciones. Postgres/PostgREST reportan UNA columna
+    // faltante por error, así que se reintenta sacando esa columna puntual —
+    // una vez si falta solo 017 (bloque), dos si falta también 016 (unidad,
+    // factor_novillo)— y se avisa en el log. Cuando la migración corra, el
+    // dato se completa solo en el próximo guardado.
+    const COLUMNAS_NUEVAS_VICERA = ["unidad", "factor_novillo", "bloque"];
+    let filasAEnviar = filas;
+    for (let intento = 0; intento < COLUMNAS_NUEVAS_VICERA.length && errorItems; intento++) {
+      const faltante = COLUMNAS_NUEVAS_VICERA.find((c) => esColumnaFaltante(errorItems, c));
+      if (!faltante) break;
       console.warn(
-        "⚠️  Faltan columnas de sql/016_visceras_siesa.sql (unidad/factor_novillo) — " +
-          "corré la migración. Mientras tanto se abre sin código/unidad/factor en las vísceras.",
+        `⚠️  Falta la columna "${faltante}" de sql/016/017 (vísceras) — corré la migración. ` +
+          "Mientras tanto se abre sin ese dato en las vísceras.",
       );
-      const sinColumnasNuevas = filas.map(({ unidad: _u, factor_novillo: _f, ...resto }) => resto);
+      filasAEnviar = filasAEnviar.map(({ [faltante]: _omitida, ...resto }) => resto);
       const reintento = await supabase
         .from(TABLE_ITEMS)
-        .insert(sinColumnasNuevas.map((f) => ({ ...f, recepcion_id: cabecera.id })));
+        .insert(filasAEnviar.map((f) => ({ ...f, recepcion_id: cabecera.id })));
       errorItems = reintento.error;
     }
 
