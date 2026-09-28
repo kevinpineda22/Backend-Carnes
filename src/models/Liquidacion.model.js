@@ -5,6 +5,7 @@ import {
   puedeCerrarCosteo,
 } from "../shared/consolidado.js";
 import { ESTADOS } from "../shared/estados.js";
+import { calcularValorGasto } from "../shared/gastos.js";
 import {
   fallarSiFaltaMigracion,
   esMigracionFaltante,
@@ -206,6 +207,12 @@ export async function actualizar(id, cambios) {
  * `concepto` y `signo` se COPIAN del catálogo a la fila. Si mañana alguien
  * cambia el signo de "Retomas Desposte", una liquidación vieja tiene que seguir
  * sumando lo que sumó el día que se cerró.
+ *
+ * `peso` y `precio_kilo` son opcionales. Cuando llegan los dos cargados, acá —
+ * y no en el navegador — se recalcula `valor = peso × precio_kilo` con
+ * `calcularValorGasto` (ver `shared/gastos.js`): el cliente no es una fuente
+ * confiable para el número que después arma el costeo. Si falta cualquiera de
+ * los dos, `valor` es el que tipeó el admin, igual que siempre.
  */
 export async function guardarGastos(id, filas = []) {
   await exigirEditable(id);
@@ -218,7 +225,9 @@ export async function guardarGastos(id, filas = []) {
     concepto_id: f.concepto_id ?? null,
     concepto: f.concepto,
     signo: f.signo === -1 ? -1 : 1,
-    valor: Number(f.valor) || 0,
+    peso: f.peso ?? null,
+    precio_kilo: f.precio_kilo ?? null,
+    valor: calcularValorGasto(f),
     observaciones: f.observaciones ?? null,
   });
 

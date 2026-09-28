@@ -183,6 +183,19 @@ const correo = (mensaje) =>
     .email(mensaje)
     .max(150);
 
+/**
+ * Número opcional y no negativo, para campos donde "no cargado" tiene que
+ * quedar en `null` y no en `0` (Peso y Precio KL de un gasto, ver
+ * `guardarGastos`). `""` es lo que manda un `<input type="number">` vacío, y
+ * `z.coerce.number()` lo convierte en `0` en vez de fallar — por eso el
+ * `preprocess` intercepta la cadena vacía ANTES de que `coerce` la toque.
+ */
+const numeroOpcionalNoNegativo = (mensaje) =>
+  z.preprocess(
+    (v) => (v === "" || v === undefined ? null : v),
+    z.coerce.number({ invalid_type_error: mensaje }).nonnegative(mensaje).nullable(),
+  ).optional();
+
 const abrirRecepcionSchema = z.object({
   especie: z.enum(ESPECIES, { errorMap: () => ({ message: "Elegí Res o Cerdo." }) }),
   // Opcional: la sede sale del QR, que es único por sede. Se sigue aceptando
@@ -344,6 +357,13 @@ export const validators = {
             // Se permite negativo: así es como el admin carga hoy las retomas de
             // res, que en el Excel suman con el valor en negativo.
             valor: z.coerce.number({ invalid_type_error: "El valor debe ser un número." }),
+            // Peso y Precio KL son OPCIONALES: cuando ambos vienen cargados, el
+            // modelo recalcula `valor` a partir de ellos (ver `shared/gastos.js`)
+            // y le gana a lo que haya tipeado el cliente. "" o ausente → null,
+            // no 0 — un 0 sí dispararía el cálculo si el otro campo también
+            // viniera en 0, y acá lo que se pide es "no cargado".
+            peso: numeroOpcionalNoNegativo("El peso no puede ser negativo."),
+            precio_kilo: numeroOpcionalNoNegativo("El precio por kilo no puede ser negativo."),
             observaciones: z.string().trim().max(500).nullable().optional(),
           }),
         )
