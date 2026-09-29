@@ -129,20 +129,23 @@ export function tieneCodigoSiesa(item) {
 /**
  * ¿Este renglón se manda a SIESA?
  *
- * Producto: sí, siempre que tenga cantidad — CON o SIN código (sin código se
- * manda igual y es `siesaEntrada.js` quien bloquea el envío entero, para que
- * el admin lo homologue; no desaparece en silencio).
+ * Solo productos (carne o adicional) con cantidad — CON o SIN código: sin
+ * código se manda igual y es `siesaEntrada.js` quien bloquea el envío entero,
+ * para que el admin lo homologue; no desaparece en silencio.
  *
- * Víscera: solo si tiene cantidad Y código. Una víscera sin código de SIESA
- * (Vísceras, Entrañita) NO tiene cómo entrar al ERP — y a diferencia de un
- * producto sin homologar, eso no es un error de nadie: simplemente no hay
- * ítem del otro lado. Se omite sin bloquear el resto del documento.
+ * Las vísceras NUNCA van en la entrada (inicial ni oficial), tengan código o
+ * no. Lo definió el negocio el 29/09/2026, con el Excel de referencia en la
+ * mano: la entrada de SIESA es la factura, y en la "Plantilla de ingreso a
+ * SIESA" de cada sede solo hay cortes. Las vísceras "son solo para costear
+ * mejor" (el SI/NO de bonificación) y entran al inventario por un documento de
+ * ajuste aparte, que se hace a mano en SIESA. SIESA además no acepta renglones
+ * en $0, así que tampoco pueden viajar como bonificación dentro de la entrada.
+ *
+ * Mandarlas sumaba su valor encima de la factura: TC OFI L10 salió por
+ * $184.856.964 contra una factura de $173.197.064.
  */
 export function vaASiesa(item) {
-  if (!(esProducto(item) || esVicera(item))) return false;
-  if (!(num(item?.cantidad) > 0)) return false;
-  if (esVicera(item) && !tieneCodigoSiesa(item)) return false;
-  return true;
+  return esProducto(item) && num(item?.cantidad) > 0;
 }
 
 /**

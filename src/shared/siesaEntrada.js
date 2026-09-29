@@ -52,7 +52,6 @@
  */
 import {
   esProducto,
-  esVicera,
   tieneCodigoSiesa,
   vaASiesa,
   ajustarCantidadAUnidad,
@@ -206,14 +205,11 @@ export function armarEntradaDirecta({
   const fecha = fechaSiesa(recepcion?.fecha_ingreso);
   if (!fecha) bloqueos.push("La recepción no tiene fecha de ingreso.");
 
-  // Sin código bloquea SOLO en productos: una víscera sin código (Vísceras,
-  // Entrañita hoy) no tiene cómo entrar al ERP y `VA_A_SIESA` ya la descartó en
-  // silencio más abajo — no es un renglón pendiente de homologar, simplemente
-  // no viaja.
-  const candidatosConCantidad = items.filter(
-    (i) => (esProducto(i) || esVicera(i)) && (Number(i.cantidad) || 0) > 0,
+  // Sin código bloquea: un producto sin homologar no puede entrar al ERP. Las
+  // vísceras no viajan nunca (`vaASiesa`), así que no cuentan acá.
+  const sinCodigo = items.filter(
+    (i) => esProducto(i) && (Number(i.cantidad) || 0) > 0 && !tieneCodigoSiesa(i),
   );
-  const sinCodigo = candidatosConCantidad.filter((i) => esProducto(i) && !tieneCodigoSiesa(i));
   if (sinCodigo.length) {
     bloqueos.push(
       `${sinCodigo.length} renglón(es) sin código de SIESA: ` +
@@ -231,12 +227,7 @@ export function armarEntradaDirecta({
   // el factor de la liquidación. Si se pide la oficial y el renglón no tiene
   // costo ajustado, es que la liquidación no se costeó: se bloquea, no se
   // manda el precio de lista como si fuera el real.
-  //
-  // Vísceras son la excepción: NO se prorratean (no entran en el costo teórico
-  // de `calcularCosteo`), así que no tienen `costo_ajustado` ni en la oficial.
-  // Van siempre a `costo_base`, inicial u oficial.
   const precioDe = (i) => {
-    if (esVicera(i)) return Number(i.costo_base) || 0;
     if (tipo === TIPO_ENVIO.OFICIAL) {
       if (i.costo_ajustado === null || i.costo_ajustado === undefined) return null;
       return Number(i.costo_ajustado);

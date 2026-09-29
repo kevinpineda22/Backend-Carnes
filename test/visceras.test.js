@@ -84,22 +84,18 @@ test("vaASiesa: producto sin cantidad no va", () => {
   assert.equal(vaASiesa({ tipo: "carne", cantidad: 0, codigo_item: "111" }), false);
 });
 
-test("vaASiesa: víscera va SOLO con código y cantidad > 0", () => {
-  assert.equal(vaASiesa({ tipo: "vicera", cantidad: 5, codigo_item: "15159" }), true);
+test("vaASiesa: una víscera nunca va, con o sin código, con o sin bloque", () => {
+  assert.equal(vaASiesa({ tipo: "vicera", cantidad: 5, codigo_item: "15159" }), false);
   assert.equal(vaASiesa({ tipo: "vicera", cantidad: 5, codigo_item: null }), false);
-  assert.equal(vaASiesa({ tipo: "vicera", cantidad: 0, codigo_item: "15159" }), false);
+  assert.equal(
+    vaASiesa({ tipo: "vicera", cantidad: 49.94, codigo_item: "15159", bloque: "informativo" }),
+    false,
+  );
 });
 
 test("vaASiesa: cualquier otro tipo no va", () => {
   assert.equal(vaASiesa({ tipo: "otra-cosa", cantidad: 5, codigo_item: "111" }), false);
   assert.equal(vaASiesa(undefined), false);
-});
-
-test("vaASiesa: NO depende de `bloque` — una víscera 'informativo' con código igual va", () => {
-  assert.equal(
-    vaASiesa({ tipo: "vicera", cantidad: 49.94, codigo_item: "15159", bloque: "informativo" }),
-    true,
-  );
 });
 
 // ─── descuentaEnLiquidacion (sql/017) ───────────────────────────────────────
