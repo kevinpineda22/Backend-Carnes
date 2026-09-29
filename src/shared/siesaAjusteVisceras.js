@@ -503,3 +503,29 @@ export function guardaAjustesPorSede(filas = [], sedes = new Map()) {
     ],
   };
 }
+
+// ─── Varios envíos dentro del mismo pedido (ajuste + compensaciones) ────────
+
+/** Espera mínima para arrancar el reenvío del ajuste de vísceras (81 renglones). */
+export const ESPERA_MINIMA_AJUSTE_MS = 60_000;
+/** Espera máxima de una compensación por faltante: es un documento chico. */
+export const ESPERA_MAXIMA_COMPENSACION_MS = 90_000;
+
+/**
+ * Cuánto puede esperar a SIESA el PRÓXIMO envío de un pedido que ya hizo otros,
+ * o null si ya no queda tiempo seguro para arrancarlo.
+ *
+ * A diferencia de `esperaParaSede` (que corta a los 40 s y sirve para el primer
+ * envío), acá se pueden encadenar varios: el ajuste rechazado, sus
+ * compensaciones y el reenvío. La regla es solo el margen: la espera se recorta
+ * para terminar antes del límite de la función, y si queda menos que la mínima que
+ * ese envío necesita, no se arranca — se prefiere parar y pedir "volvé a enviar"
+ * que arrancar un POST que se corte y deje un `sin_confirmar`.
+ *
+ * @param {number} transcurridoMs  desde el INICIO del pedido
+ * @param {{maxEsperaMs: number, minimoMs: number}} p
+ */
+export function esperaParaEnvio(transcurridoMs, { maxEsperaMs, minimoMs }) {
+  const espera = Math.min(maxEsperaMs, LIMITE_FUNCION_MS - transcurridoMs);
+  return espera < minimoMs ? null : espera;
+}

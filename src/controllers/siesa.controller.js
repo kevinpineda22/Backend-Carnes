@@ -6,6 +6,7 @@ import {
   conexionSiesa,
   DOCUMENTO_CARNES,
   DOCUMENTO_AJUSTE_VISCERAS,
+  DOCUMENTO_AJUSTE_FALTANTE,
 } from "../config/siesa.js";
 
 /** GET /api/siesa/envios */
@@ -44,6 +45,7 @@ export async function estado(_req, res) {
     idSistema: c.idSistema,
     documento: DOCUMENTO_CARNES,
     documentoAjusteVisceras: DOCUMENTO_AJUSTE_VISCERAS,
+    documentoAjusteFaltante: DOCUMENTO_AJUSTE_FALTANTE,
   });
 }
 

@@ -24,6 +24,12 @@
  *            el admin con la entrada oficial ya en SIESA. No cierra nada: la
  *            liquidación ya está cerrada. (Hasta sql/019 era uno por sede.)
  *
+ *  ajuste_faltante
+ *            si SIESA rechaza el ajuste de vísceras solo por "Item sin cantidad
+ *            disponible", se manda un ajuste de inventario (CPE) por lo que
+ *            falta, uno por bodega, y se reenvía el ajuste de vísceras (sql/021).
+ *            Lo dispara el mismo botón de enviar el ajuste de vísceras.
+ *
  * Todo intento —bueno o malo— deja una fila en `carnes_siesa_envios`.
  *
  * ─── El candado ───────────────────────────────────────────────────────────
@@ -38,7 +44,7 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { ESTADOS } from "../shared/estados.js";
-import { fallarSiFaltaMigracion } from "../shared/migraciones.js";
+import { fallarSiFaltaMigracion, esMigracionFaltante } from "../shared/migraciones.js";
 import { puedeEliminarEnvio } from "../shared/eliminacionAdmin.js";
 import {
   armarEntradaDirecta,
@@ -52,10 +58,24 @@ import {
   coberturaOficial,
   viscerasEnCea,
   esperaParaSede,
+  esperaParaEnvio,
+  ESPERA_MINIMA_AJUSTE_MS,
+  ESPERA_MAXIMA_COMPENSACION_MS,
   TIPO_AJUSTE_VISCERAS,
 } from "../shared/siesaAjusteVisceras.js";
 import {
+  parsearFaltantes,
+  soloFaltantes,
+  armarAjusteFaltante,
+  subirCantidadPorFaltante,
+  faltantesQueNoBajaron,
+  MAX_REINTENTOS_AJUSTE,
+  TIPO_AJUSTE_FALTANTE,
+} from "../shared/siesaFaltantes.js";
+import {
   DOCUMENTO_AJUSTE_VISCERAS,
+  DOCUMENTO_AJUSTE_FALTANTE,
+  bloqueoAjusteFaltante,
   documentoSiesa,
   siesaConfigurado,
   siesaActivo,
@@ -95,6 +115,7 @@ const MIGRACIONES = [
   "sql/012_siesa_cea_liquidacion.sql",
   "sql/019_ajuste_visceras.sql",
   "sql/020_ajuste_visceras_liquidacion.sql",
+  "sql/021_ajuste_faltante.sql",
 ];
 
 /**
@@ -226,11 +247,21 @@ export async function enviosDeRecepcion(recepcionId) {
 const faltaMigracion019 = (error, tipo) =>
   tipo === TIPO_AJUSTE_VISCERAS && ["22001", "23514"].includes(error?.code);
 
-const errorFaltaMigracion019 = () =>
-  createError(
-    503,
-    "A la base le falta sql/019_ajuste_visceras.sql. Corrélo en Supabase y volvé a intentar.",
-  );
+/**
+ * Lo mismo para el ajuste por faltante (sql/021): 'ajuste_faltante' mide 15 y
+ * cabe en la columna que dejó sql/019, así que sin sql/021 falla el CHECK
+ * (23514); si además faltara sql/019, sería 22001. Una columna que no existe
+ * (`bodega`, `envio_origen_id`) la traduce `fallarSiFaltaMigracion`.
+ */
+const archivoMigracionFaltante = (error, tipo) => {
+  if (faltaMigracion019(error, tipo)) return "sql/019_ajuste_visceras.sql";
+  if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "22001") return "sql/019_ajuste_visceras.sql";
+  if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "23514") return "sql/021_ajuste_faltante.sql";
+  return null;
+};
+
+const errorFaltaMigracion = (archivo) =>
+  createError(503, `A la base le falta ${archivo}. Corrélo en Supabase y volvé a intentar.`);
 
 /** Por qué no se puede mandar, dicho para una persona. */
 function motivoVigente(envio) {
@@ -268,25 +299,33 @@ async function ultimoEnvio(recepcionId, tipo, soloOk = true) {
  * @param {{tipo?, estado?, recepcion_id?, liquidacion_id?, limite?}} f
  */
 export async function listar(f = {}) {
-  let q = supabase
-    .from(TABLA)
-    .select(
-      "id, recepcion_id, liquidacion_id, tipo, estado, referencia, consecutivo, tipo_docto, " +
-        "http_status, error, renglones, total_kilos, total_valor, enviado_por, enviado_at, aviso_anulacion, " +
-        "recepcion_ids, " +
-        "recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) ), " +
-        // La oficial consolidada no tiene recepción: la especie y la fecha
-        // salen de la liquidación.
-        "liquidacion:carnes_liquidaciones ( id, especie, fecha, estado )",
-    )
-    .order("enviado_at", { ascending: false })
-    .limit(Math.min(Number(f.limite) || 100, 500));
-  if (f.tipo) q = q.eq("tipo", f.tipo);
-  if (f.estado) q = q.eq("estado", f.estado);
-  if (f.recepcion_id) q = q.eq("recepcion_id", f.recepcion_id);
-  if (f.liquidacion_id) q = q.eq("liquidacion_id", f.liquidacion_id);
+  const columnas = (conBodega) =>
+    "id, recepcion_id, liquidacion_id, tipo, estado, referencia, consecutivo, tipo_docto, " +
+    "http_status, error, renglones, total_kilos, total_valor, enviado_por, enviado_at, aviso_anulacion, " +
+    "recepcion_ids, " +
+    // `bodega` y `envio_origen_id` son de sql/021 (el ajuste por faltante).
+    (conBodega ? "bodega, envio_origen_id, " : "") +
+    "recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) ), " +
+    // La oficial consolidada no tiene recepción: la especie y la fecha
+    // salen de la liquidación.
+    "liquidacion:carnes_liquidaciones ( id, especie, fecha, estado )";
+  const consulta = (conBodega) => {
+    let q = supabase
+      .from(TABLA)
+      .select(columnas(conBodega))
+      .order("enviado_at", { ascending: false })
+      .limit(Math.min(Number(f.limite) || 100, 500));
+    if (f.tipo) q = q.eq("tipo", f.tipo);
+    if (f.estado) q = q.eq("estado", f.estado);
+    if (f.recepcion_id) q = q.eq("recepcion_id", f.recepcion_id);
+    if (f.liquidacion_id) q = q.eq("liquidacion_id", f.liquidacion_id);
+    return q;
+  };
 
-  const { data, error } = await q;
+  let { data, error } = await consulta(true);
+  // Sin sql/021 las columnas nuevas no existen: el panel sigue mostrando lo de
+  // antes en vez de caerse.
+  if (error && esMigracionFaltante(error)) ({ data, error } = await consulta(false));
   if (error)
     fallarSiFaltaMigracion(error, "Error al listar envíos", [
       "sql/007_siesa.sql",
@@ -329,9 +368,10 @@ export async function obtener(id) {
         ? await idsDeLiquidacion(data.liquidacion_id)
         : [];
 
-  // El ajuste de vísceras se explica con los renglones de VÍSCERA; la CEA, con
-  // los de carne y adicionales.
-  const esAjuste = data.tipo === TIPO_AJUSTE_VISCERAS;
+  // El ajuste de vísceras y su compensación por faltante se explican con los
+  // renglones de VÍSCERA; la CEA, con los de carne y adicionales.
+  const esFaltante = data.tipo === TIPO_AJUSTE_FALTANTE;
+  const esAjuste = data.tipo === TIPO_AJUSTE_VISCERAS || esFaltante;
   let items = [];
   const sedeDe = new Map();
   if (idsRecepciones.length) {
@@ -356,7 +396,10 @@ export async function obtener(id) {
   const milesimas = (n) => Math.round((Number(n) || 0) * 1000);
   const usados = new Set();
   const renglonDe = (m) => {
-    const codigo = String(m.ITEM ?? "").trim();
+    // El ajuste por faltante hoy manda el ítem sin ceros (conector 257784); se
+    // siguen quitando por si hay filas viejas guardadas con el formato de 7.
+    const crudo = String(m.ITEM ?? "").trim();
+    const codigo = esFaltante ? crudo.replace(/^0+/, "") : crudo;
     const bodega = String(m.BODEGA ?? "").trim();
     const candidatos = items.filter(
       (i) =>
@@ -387,7 +430,8 @@ export async function obtener(id) {
     const renglon = renglonDe(m);
     return {
       ...m,
-      NRO_REGISTRO: m.NRO_REGISTRO ?? String(n + 1),
+      ...(esFaltante ? { ITEM: String(m.ITEM ?? "").replace(/^0+/, "") } : {}),
+      NRO_REGISTRO: m.NRO_REGISTRO ?? String(m.f470_nro_registro ?? n + 1),
       CO_MOVIMIENTO: m.CO_MOVIMIENTO ?? m["C.O MOVIMIENTO"] ?? "",
       sede: renglon ? sedeDe.get(renglon.recepcion_id)?.nombre ?? null : null,
       descripcion: renglon?.descripcion ?? null,
@@ -487,7 +531,8 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
       .insert({ ...fila, estado: "error", error: noSale })
       .select("*")
       .single();
-    if (faltaMigracion019(error, tipo)) throw errorFaltaMigracion019();
+    const faltaNoSale = archivoMigracionFaltante(error, tipo);
+    if (faltaNoSale) throw errorFaltaMigracion(faltaNoSale);
     if (error) fallarSiFaltaMigracion(error, "No se pudo registrar el envío", MIGRACIONES);
     console.error(`🔴 SIESA ${etiqueta}: ${noSale}`);
     return data;
@@ -510,8 +555,10 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
       };
     }
     // Sin sql/019 el tipo `ajuste_visceras` no cabe (22001) o no está en el
-    // CHECK (23514); sin sql/010 el CHECK viejo no conoce `enviando`.
-    if (faltaMigracion019(errorReserva, tipo)) throw errorFaltaMigracion019();
+    // CHECK (23514); sin sql/021 `ajuste_faltante` no está en el CHECK; sin
+    // sql/010 el CHECK viejo no conoce `enviando`.
+    const faltaReserva = archivoMigracionFaltante(errorReserva, tipo);
+    if (faltaReserva) throw errorFaltaMigracion(faltaReserva);
     if (errorReserva.code === "23514") {
       throw createError(
         503,
@@ -1341,7 +1388,19 @@ async function evaluarAjuste(liquidacionId) {
   }
 
   const cobertura = coberturaOficial({ ids, consolidada, porSede: porSede.data || [] });
-  return { liq, ids, recepciones, armado, vigente, ultimo, previos, cobertura, anteriores: anteriores.data || [] };
+  const compensaciones = await compensacionesDeLiquidacion(liquidacionId);
+  return {
+    liq,
+    ids,
+    recepciones,
+    armado,
+    vigente,
+    ultimo,
+    previos,
+    cobertura,
+    anteriores: anteriores.data || [],
+    compensaciones,
+  };
 }
 
 /** Lo que el front necesita de un envío de ajuste. */
@@ -1446,6 +1505,16 @@ function construirPrevia(ev) {
       for (const b of s.bloqueos) bloqueos.push(`${s.sede ?? `Recepción #${s.recepcion_id}`}: ${b}`);
     }
     bloqueos.push(...guarda.bloqueos);
+    // Un ajuste por faltante en curso o sin confirmar: no se sabe si su saldo ya
+    // está en SIESA, y reenviar sin saberlo compensaría dos veces.
+    for (const c of ev.compensaciones.filter((x) => ["enviando", "sin_confirmar"].includes(x.estado))) {
+      bloqueos.push(
+        `El ajuste por faltante ${c.referencia} (bodega ${c.bodega}) está ${
+          c.estado === "enviando" ? "en curso" : "sin confirmar"
+        }: SIESA pudo haberlo creado. Buscalo en SIESA por bodega, fecha e ítem y marcalo desde ` +
+          "Envíos a SIESA antes de volver a enviar.",
+      );
+    }
   }
 
   const anteriores = sedes
@@ -1478,6 +1547,12 @@ function construirPrevia(ev) {
     anteriores,
     // El consolidado: el vigente si lo hay; si no, el último intento.
     envio: resumenAjuste(vigente || ultimo),
+    // Los ajustes por faltante (compensaciones) de esta liquidación, y si el
+    // conector para mandarlos está configurado. No bloquea el envío: el ajuste
+    // de vísceras puede entrar sin compensar; solo importa si SIESA rechaza por
+    // faltante.
+    compensaciones: ev.compensaciones,
+    compensacionBloqueo: bloqueoAjusteFaltante(),
     enviado,
     enCurso,
     pendiente,
@@ -1496,17 +1571,305 @@ export async function previsualizarAjusteVisceras(liquidacionId) {
   return construirPrevia(await evaluarAjuste(liquidacionId));
 }
 
+// ─── Compensación por faltante de inventario ───────────────────────────────
+//
+// Si SIESA rechaza el ajuste de vísceras SOLO por "Item sin cantidad disponible"
+// (la bodega no tiene el saldo que el documento exige), se manda un ajuste de
+// inventario CPE por exactamente lo que falta —uno por bodega— y se REENVÍA el
+// ajuste de vísceras. Es el remedio de siesa-pos-sync (`ajustarInventario`) con
+// un conector propio de carnes (`DOCUMENTO_AJUSTE_FALTANTE`, sql/021).
+//
+// ─── Cómo retoma un segundo clic ────────────────────────────────────────────
+//
+// Cada `enviar` empieza otra vez por el ajuste de vísceras, no por las
+// compensaciones de un rechazo anterior. Es a propósito: el "Faltante Inv." que
+// devuelve SIESA es lo que TODAVÍA falta ahora, así que las compensaciones que ya
+// entraron (`ok`) no reaparecen —su saldo ya está en SIESA— y nunca se repiten,
+// mientras que reusar las de un origen viejo podía inyectar inventario por un
+// faltante que alguien ya arregló a mano. Lo que sí se cuida por origen es que
+// dos pedidos simultáneos no compensen lo mismo dos veces: el índice de sql/021 es
+// único por (envío rechazado, bodega). Un ajuste por faltante en curso o sin
+// confirmar bloquea el reenvío hasta resolverlo, porque no se sabe si su saldo ya
+// está en SIESA.
+
+/** Cuántas veces se reenvía el ajuste de vísceras en un mismo pedido. */
+const MAX_RONDAS_AJUSTE = 3;
+
+/** Lo que el front necesita de una compensación (con lo que se mandó, del payload). */
+const resumenCompensacion = (f) => ({
+  id: f.id,
+  estado: f.estado,
+  referencia: f.referencia,
+  bodega: f.bodega ?? null,
+  envio_origen_id: f.envio_origen_id ?? null,
+  enviado_at: f.enviado_at,
+  error: f.error ?? null,
+  items: (f.payload?.Movimientos || []).map((m) => ({
+    item: String(m.ITEM ?? "").replace(/^0+/, ""),
+    cantidad: Number(m.CANTIDAD) || 0,
+    unidad: String(m.UNIDAD_MEDIDA ?? "").trim(),
+  })),
+});
+
+/**
+ * Las compensaciones de una liquidación, de la más nueva a la más vieja. Sin
+ * sql/021 devuelve []: la vista previa no tiene por qué caerse por eso.
+ */
+async function compensacionesDeLiquidacion(liquidacionId) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select(
+      "id, estado, referencia, bodega, envio_origen_id, enviado_at, error, renglones, total_valor, payload",
+    )
+    .eq("liquidacion_id", liquidacionId)
+    .eq("tipo", TIPO_AJUSTE_FALTANTE)
+    .order("enviado_at", { ascending: false });
+  if (error) {
+    if (esMigracionFaltante(error)) return [];
+    fallarSiFaltaMigracion(error, "Error al leer los ajustes por faltante", MIGRACIONES);
+  }
+  return (data || []).map(resumenCompensacion);
+}
+
+/** La compensación que ocupa el lugar de este origen y bodega, o null. */
+async function compensacionVigente(origenId, bodega) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("*")
+    .eq("tipo", TIPO_AJUSTE_FALTANTE)
+    .eq("envio_origen_id", origenId)
+    .eq("bodega", bodega)
+    .in("estado", VIGENTES)
+    .order("enviado_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer el ajuste por faltante", MIGRACIONES);
+  return data || null;
+}
+
+/**
+ * Manda la compensación de UNA bodega. Si SIESA la rechaza otra vez por faltante,
+ * SUBE la cantidad (anterior + faltante) y reintenta, hasta MAX_REINTENTOS_AJUSTE.
+ *
+ * @returns {{ ok: boolean, pendiente?: boolean, registros: object[], detalle?: string }}
+ */
+async function compensarBodega({ documento, origen, liquidacionId, por, inicio }) {
+  const registros = [];
+  let actual = documento;
+
+  for (let intento = 1; intento <= MAX_REINTENTOS_AJUSTE; intento++) {
+    const espera = esperaParaEnvio(Date.now() - inicio, {
+      maxEsperaMs: ESPERA_MAXIMA_COMPENSACION_MS,
+      minimoMs: 30_000,
+    });
+    if (espera === null) {
+      return {
+        ok: false,
+        pendiente: true,
+        registros,
+        detalle: `No queda tiempo seguro para compensar la bodega ${actual.bodega}.`,
+      };
+    }
+
+    const fila = await registrarYEnviar({
+      armado: { payload: actual.payload, resumen: actual.resumen, bloqueos: [] },
+      base: {
+        recepcion_id: null,
+        liquidacion_id: Number(liquidacionId),
+        tipo: TIPO_AJUSTE_FALTANTE,
+        consecutivo: null,
+        tipo_docto: DOCUMENTO_AJUSTE_FALTANTE.tipoDocto,
+        envio_origen_id: origen.id,
+        bodega: actual.bodega,
+      },
+      por,
+      vigente: () => compensacionVigente(origen.id, actual.bodega),
+      etiqueta: `ajuste por faltante liquidación #${liquidacionId} bodega ${actual.bodega}`,
+      documento: DOCUMENTO_AJUSTE_FALTANTE,
+      timeoutMs: espera,
+    });
+    registros.push({ ...resumenCompensacion(fila), intento });
+
+    // Otro pedido la reservó primero: no es un envío de este.
+    if (fila.repetido) return { ok: false, registros, detalle: motivoVigente(fila) };
+    if (fila.estado === "ok") return { ok: true, registros };
+
+    if (fila.estado === "error" && soloFaltantes(fila.respuesta) && intento < MAX_REINTENTOS_AJUSTE) {
+      const subida = subirCantidadPorFaltante({
+        documento: actual,
+        faltantes: parsearFaltantes(fila.respuesta),
+        config: DOCUMENTO_AJUSTE_FALTANTE,
+        liquidacionId,
+      });
+      if (!subida.documento) {
+        return {
+          ok: false,
+          registros,
+          detalle:
+            `SIESA volvió a reportar faltante en la bodega ${actual.bodega} de un ítem que no ` +
+            "está en el ajuste por faltante. Revisalo en SIESA.",
+        };
+      }
+      actual = subida.documento;
+      continue;
+    }
+
+    // Otro error, sin confirmar, o los reintentos se acabaron.
+    return {
+      ok: false,
+      registros,
+      detalle:
+        fila.estado === "sin_confirmar"
+          ? `El ajuste por faltante ${fila.referencia} quedó sin confirmar: SIESA pudo haberlo creado.`
+          : (fila.error ?? "SIESA no recibió el ajuste por faltante."),
+    };
+  }
+  return { ok: false, registros, detalle: "SIESA siguió reportando faltante tras subir la cantidad." };
+}
+
+/**
+ * Manda el ajuste de vísceras y, si SIESA lo rechaza solo por faltantes,
+ * compensa y reenvía (hasta MAX_RONDAS_AJUSTE envíos del ajuste).
+ *
+ * Se detiene —sin seguir— ante cualquier otra cosa: un error que no es un
+ * faltante, un `sin_confirmar`, una compensación que falla, un conector de
+ * compensación sin configurar, un faltante que no baja después de compensar, o
+ * falta de tiempo para el próximo POST. Lo que quedó a medias se retoma con otro
+ * clic (ver el comentario de arriba).
+ */
+async function ejecutarAjuste({ ev, liquidacionId, por, inicio }) {
+  const compensaciones = [];
+  let fila = null;
+  let faltantesPrevios = null;
+  let rondas = 0;
+
+  const resultado = (extra = {}) => ({
+    completo: fila?.estado === "ok",
+    repetido: Boolean(fila?.repetido) || undefined,
+    envio: {
+      ...resumenEnvio(fila),
+      // Otro pedido la reservó primero: no es un envío de este.
+      error: fila?.repetido ? motivoVigente(fila) : (fila?.error ?? null),
+    },
+    compensaciones,
+    rondas,
+    ...extra,
+  });
+
+  for (let ronda = 1; ronda <= MAX_RONDAS_AJUSTE; ronda++) {
+    rondas = ronda;
+    let espera;
+    if (ronda === 1) {
+      // El primer envío conserva la regla de siempre: si leer tardó demasiado, no se arranca.
+      espera = esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS);
+      if (espera === null) {
+        throw createError(
+          503,
+          "Leer la liquidación tardó demasiado para mandar el ajuste con margen. Volvé a intentar.",
+        );
+      }
+    } else {
+      espera = esperaParaEnvio(Date.now() - inicio, {
+        maxEsperaMs: TIMEOUT_OFICIAL_MS,
+        minimoMs: ESPERA_MINIMA_AJUSTE_MS,
+      });
+      if (espera === null) {
+        return resultado({
+          pendiente: true,
+          detalle:
+            "Las compensaciones por faltante ya entraron, pero no queda tiempo seguro para " +
+            "reenviar el ajuste de vísceras. Pendiente: volvé a enviar.",
+        });
+      }
+    }
+
+    fila = await registrarYEnviar({
+      armado: ev.armado,
+      base: {
+        recepcion_id: null,
+        liquidacion_id: Number(liquidacionId),
+        recepcion_ids: ev.armado.recepcion_ids,
+        tipo: TIPO_AJUSTE_VISCERAS,
+        consecutivo: consecutivoAjusteLiquidacion(liquidacionId),
+        tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+      },
+      por,
+      vigente: () => ajusteDeLiquidacion(liquidacionId),
+      etiqueta: `ajuste vísceras liquidación #${liquidacionId}${ronda > 1 ? ` (ronda ${ronda})` : ""}`,
+      documento: DOCUMENTO_AJUSTE_VISCERAS,
+      timeoutMs: espera,
+    });
+
+    // ok, sin confirmar, reservado por otro: no hay nada que compensar.
+    if (fila.estado !== "error" || fila.repetido) return resultado();
+    // Un error que no es solo faltante: compensar no lo arregla.
+    if (!soloFaltantes(fila.respuesta)) return resultado();
+
+    const faltantes = parsearFaltantes(fila.respuesta);
+
+    // El conector propio de carnes todavía no está: se dice qué falta.
+    const sinConector = bloqueoAjusteFaltante();
+    if (sinConector) return resultado({ detalle: sinConector });
+
+    // Si compensar no bajó el faltante, el ajuste no está sumando inventario (por
+    // ejemplo, si SIESA lo tomara como una salida): seguir solo lo empeoraría.
+    const sinBajar = faltantesQueNoBajaron(faltantesPrevios, faltantes);
+    if (sinBajar.length) {
+      return resultado({
+        detalle:
+          "El ajuste por faltante no está sumando inventario: " +
+          sinBajar
+            .map((f) => `ítem ${f.item} bodega ${f.bodega} seguía con ${f.antes} y ahora ${f.ahora}`)
+            .join("; ") +
+          ". No se sigue compensando. Revisá en SIESA el movimiento del ajuste (naturaleza).",
+      });
+    }
+    faltantesPrevios = faltantes;
+
+    if (ronda === MAX_RONDAS_AJUSTE) {
+      return resultado({
+        detalle: `SIESA sigue reportando faltantes después de ${MAX_RONDAS_AJUSTE} envíos del ajuste.`,
+      });
+    }
+
+    const { documentos, bloqueos } = armarAjusteFaltante({
+      faltantes,
+      movimientosCei: ev.armado.payload.Movimientos,
+      config: DOCUMENTO_AJUSTE_FALTANTE,
+      fecha: ev.armado.payload.Documentos[0]?.FECHA_DOCTO,
+      liquidacionId,
+    });
+    if (bloqueos.length) return resultado({ detalle: bloqueos.join(" ") });
+
+    for (const documento of documentos) {
+      const r = await compensarBodega({ documento, origen: fila, liquidacionId, por, inicio });
+      compensaciones.push(...r.registros);
+      if (!r.ok) {
+        return resultado({
+          pendiente: r.pendiente || undefined,
+          detalle: r.pendiente ? `${r.detalle} Pendiente: volvé a enviar.` : r.detalle,
+        });
+      }
+    }
+    // Todas las bodegas compensadas: se reenvía el ajuste de vísceras.
+  }
+  return resultado();
+}
+
 /**
  * Manda el ajuste de vísceras de la liquidación: UN documento con todas las
- * sedes, en un solo POST.
+ * sedes.
  *
  * Si ya está ok no manda nada (un segundo clic). Con un envío en curso o sin
  * confirmar, o con cualquier bloqueo, responde 409: el documento se contabiliza
  * al entrar y no hay forma de mandarlo a medias.
  *
- * Como la oficial, no lanza por SIESA: devuelve el resultado en `envio`.
+ * Si SIESA lo rechaza por inventario insuficiente, compensa y reenvía (ver
+ * `ejecutarAjuste`). Como la oficial, no lanza por SIESA: devuelve el resultado
+ * en `envio`, y lo que se compensó en `compensaciones`.
  *
- * @returns {{ completo: boolean, repetido?: boolean, envio: object }}
+ * @returns {{ completo: boolean, repetido?: boolean, envio: object,
+ *   compensaciones?: object[], rondas?: number, pendiente?: boolean, detalle?: string }}
  */
 export async function enviarAjusteVisceras(liquidacionId, por) {
   // El reloj arranca ANTES de leer: cargar las recepciones también gasta función.
@@ -1523,40 +1886,7 @@ export async function enviarAjusteVisceras(liquidacionId, por) {
   }
   if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
 
-  const espera = esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS);
-  if (espera === null) {
-    throw createError(
-      503,
-      "Leer la liquidación tardó demasiado para mandar el ajuste con margen. Volvé a intentar.",
-    );
-  }
-
-  const fila = await registrarYEnviar({
-    armado: ev.armado,
-    base: {
-      recepcion_id: null,
-      liquidacion_id: Number(liquidacionId),
-      recepcion_ids: ev.armado.recepcion_ids,
-      tipo: TIPO_AJUSTE_VISCERAS,
-      consecutivo: consecutivoAjusteLiquidacion(liquidacionId),
-      tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
-    },
-    por,
-    vigente: () => ajusteDeLiquidacion(liquidacionId),
-    etiqueta: `ajuste vísceras liquidación #${liquidacionId}`,
-    documento: DOCUMENTO_AJUSTE_VISCERAS,
-    timeoutMs: espera,
-  });
-
-  return {
-    completo: fila.estado === "ok",
-    repetido: Boolean(fila.repetido) || undefined,
-    envio: {
-      ...resumenEnvio(fila),
-      // Otro pedido la reservó primero: no es un envío de este.
-      error: fila.repetido ? motivoVigente(fila) : (fila.error ?? null),
-    },
-  };
+  return ejecutarAjuste({ ev, liquidacionId, por, inicio });
 }
 
 /**

@@ -121,6 +121,74 @@ export const DOCUMENTO_AJUSTE_VISCERAS = {
   decimalesValor: DOCUMENTO_CARNES.decimalesValor,
 };
 
+// ─── Constantes del documento AJUSTE_INVENTARIO (compensación por faltante) ──
+//
+// Cuando SIESA rechaza el ajuste de vísceras con "Item sin cantidad disponible"
+// —la bodega tiene menos saldo del que el documento exige, por ventas del POS
+// sin stock—, se manda PRIMERO un ajuste de inventario CPE por exactamente lo que
+// falta y DESPUÉS se reenvía el ajuste de vísceras. Es el mismo remedio que usa
+// `siesa-pos-sync` (syncVentas.js, `ajustarInventario`) con sus facturas.
+//
+// ─── El conector NO es el de siesa-pos-sync ─────────────────────────────────
+//
+// `siesa-pos-sync` usa el conector 241913 AJUSTE_INVENTARIO_DEV, que tiene FIJOS
+// del lado de SIESA el tipo CPE, la clase 61, el concepto 601, el motivo "17" y
+// la nota "AJUSTE FACTURACIÓN", y que corre cada hora en producción para las
+// ventas. NO SE TOCA. Carnes necesita su propia copia, con el motivo "03" fijo y
+// las MISMAS variables; el negocio la crea aparte.
+//
+// Hasta que esa copia exista, `idDocumento` y `nombreDocumento` son `null`: el
+// ajuste por faltante NO se manda y el envío del ajuste de vísceras se detiene,
+// con un mensaje que dice qué falta, en vez de compensar contra el conector de
+// otro módulo (que registraría el motivo 17). Cuando la copia esté, se escriben
+// acá los dos valores, tal como salen de la pantalla "Apis Dinámicas".
+//
+// El JSON tiene las MISMAS claves que el de siesa-pos-sync (ver
+// `shared/siesaFaltantes.js`): así la copia funciona sin cambiar nada.
+export const DOCUMENTO_AJUSTE_FALTANTE = {
+  /**
+   * Conector PROPIO de carnes, creado el 29/09/2026 como copia del de
+   * requisiciones (250295). No se usa el 241913 AJUSTE_INVENTARIO_DEV de
+   * siesa-pos-sync ni el 250295: los dos tienen el motivo FIJO (17 y 18) y son de
+   * otros módulos; cambiarlos rompería flujos que hoy funcionan.
+   *
+   * Fijo en SIESA: CPE, clase 61, concepto 601, MOTIVO 03, CO 001, consecutivo
+   * automático, estado 1 = contabilizado. Variables: Documentos FECHA_DOCTO y
+   * BODEGA; Movimientos consec_docto, nro_registro, BODEGA, "C.O MOVIMIENTO",
+   * UNIDAD_MEDIDA, CANTIDAD, COSTO_PROMEDIO, ITEM, UNIDAD_NEGOCIO.
+   */
+  idDocumento: "257784",
+  nombreDocumento: "AJUSTE_DESARROLLO_CARNES_ERRORES",
+
+  /** Fijo en el conector; se conserva para rotular el envío en el panel. */
+  tipoDocto: "CPE",
+  /** Motivo fijo en el conector. Informativo: SIESA no lo lee del JSON. */
+  motivo: "03",
+  /** CO del documento, fijo en el conector. Se exige configurado como el resto. */
+  coDocumento: "001",
+  /** Decimales de la moneda para COSTO_PROMEDIO, igual que la CEA y la CEI. */
+  decimalesValor: 0,
+};
+
+/**
+ * Qué falta para poder mandar el ajuste por faltante, dicho para una persona.
+ * `null` si está todo. Mismo patrón que `faltantesSiesa()`: lo que es `null` en
+ * este archivo se escribe acá, no en Vercel.
+ */
+export function bloqueoAjusteFaltante() {
+  const faltan = ["idDocumento", "nombreDocumento"].filter(
+    (k) => !String(DOCUMENTO_AJUSTE_FALTANTE[k] ?? "").trim(),
+  );
+  if (!faltan.length) return null;
+  return (
+    "Falta configurar el conector del ajuste por faltante: " +
+    faltan.map((k) => `${k} (src/config/siesa.js → DOCUMENTO_AJUSTE_FALTANTE)`).join(", ") +
+    ". SIESA rechazó el ajuste de vísceras por inventario insuficiente y hace falta compensarlo " +
+    "con un ajuste de inventario propio de carnes (motivo 03); no se usa el conector de " +
+    "siesa-pos-sync porque registraría el motivo 17."
+  );
+}
+
 /**
  * Con qué tercero puede entrar la entrada oficial.
  *
