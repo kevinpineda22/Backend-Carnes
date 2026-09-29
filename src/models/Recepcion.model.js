@@ -148,7 +148,7 @@ async function renglonesDesdePlantilla(especie, novillos = 0) {
       vicera_item_id: v.id,
       descripcion: v.nombre,
       orden: v.orden,
-      cantidad: tieneFactor ? cantidadPorNovillo(v.factor_novillo, novillos) : 0,
+      cantidad: tieneFactor ? cantidadPorNovillo(v.factor_novillo, novillos, v.unidad) : 0,
       costo_base: v.precio,
       codigo_item: v.codigo_item ?? null,
       unidad: v.unidad || "KL",
@@ -399,7 +399,7 @@ export async function guardarBorrador(id, { novillos, observaciones, items = [] 
   const porFilaId = new Map(filas.map((f) => [String(f.id), f]));
   for (const item of recepcion.items) {
     if (item.factor_novillo === null || item.factor_novillo === undefined) continue;
-    const cantidad = cantidadPorNovillo(item.factor_novillo, novillosVigentes);
+    const cantidad = cantidadPorNovillo(item.factor_novillo, novillosVigentes, item.unidad);
     const existente = porFilaId.get(String(item.id));
     if (existente) {
       existente.cantidad = cantidad;

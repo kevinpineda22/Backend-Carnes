@@ -10,6 +10,8 @@ import {
   tieneCodigoSiesa,
   vaASiesa,
   descuentaEnLiquidacion,
+  ajustarCantidadAUnidad,
+  decimalesDeUnidad,
 } from "../src/shared/visceras.js";
 
 test("cantidadPorNovillo: factor × novillos, redondeado a 3 decimales", () => {
@@ -114,4 +116,40 @@ test("descuentaEnLiquidacion: sin bloque (renglón de antes de sql/017) se trata
   assert.equal(descuentaEnLiquidacion({ bloque: null }), true);
   assert.equal(descuentaEnLiquidacion({ bloque: undefined }), true);
   assert.equal(descuentaEnLiquidacion({}), true);
+});
+
+// ─── Decimales por unidad (SIESA rechazó 5,333 UND el 29/09/2026) ─────────
+
+test("UND se trunca a dos decimales, como lo definió el encargado", () => {
+  assert.equal(ajustarCantidadAUnidad(5.333, "UND"), 5.33);
+  assert.equal(ajustarCantidadAUnidad(2.667, "UND"), 2.66);
+  assert.equal(ajustarCantidadAUnidad(14.667, "UND"), 14.66);
+});
+
+test("truncar no convierte 4,000 en 3,99 por el ruido de coma flotante", () => {
+  // 1,33333 × 3 = 3,99999: se redondea a 3 decimales ANTES de truncar.
+  assert.equal(cantidadPorNovillo(1.33333, 3, "UND"), 4);
+  assert.equal(cantidadPorNovillo(1.33333, 4, "UND"), 5.33);
+  assert.equal(cantidadPorNovillo(1.33333, 2, "UND"), 2.66);
+  assert.equal(cantidadPorNovillo(1.33333, 11, "UND"), 14.66);
+});
+
+test("KL y sin unidad siguen con tres decimales", () => {
+  assert.equal(cantidadPorNovillo(4.16167, 3, "KL"), 12.485);
+  assert.equal(cantidadPorNovillo(4.16167, 3), 12.485);
+  assert.equal(decimalesDeUnidad("KL"), 3);
+  assert.equal(decimalesDeUnidad(undefined), 3);
+  assert.equal(decimalesDeUnidad("UND"), 2);
+});
+
+test("recalcularVicerasPorNovillo usa la unidad de cada renglón", () => {
+  const [rinon, higado] = recalcularVicerasPorNovillo(
+    [
+      { tipo: "vicera", factor_novillo: 1.33333, unidad: "UND", cantidad: 0 },
+      { tipo: "vicera", factor_novillo: 4.16167, unidad: "KL", cantidad: 0 },
+    ],
+    4,
+  );
+  assert.equal(rinon.cantidad, 5.33);
+  assert.equal(higado.cantidad, 16.647);
 });

@@ -50,7 +50,14 @@
  *     del documento — a diferencia de un producto sin homologar, que si
  *     bloquea. Ver `vaASiesa` en `shared/visceras.js`.
  */
-import { esProducto, esVicera, tieneCodigoSiesa, vaASiesa } from "./visceras.js";
+import {
+  esProducto,
+  esVicera,
+  tieneCodigoSiesa,
+  vaASiesa,
+  ajustarCantidadAUnidad,
+  decimalesDeUnidad,
+} from "./visceras.js";
 
 /** Los dos tipos de envío, y cómo se leen en SIESA. */
 export const TIPO_ENVIO = {
@@ -306,7 +313,12 @@ export function armarEntradaDirecta({
   let totalKilos = 0;
   let totalValor = 0;
   const movimientos = renglones.map((i, n) => {
-    const cantidad = Number(i.cantidad) || 0;
+    // Con unidad propia (vísceras: UND o KL) la cantidad se lleva a los
+    // decimales que SIESA acepta para esa unidad, y el valor se calcula
+    // sobre ESA cantidad: si no, SIESA recibiría 2,66 UND valorizadas como 2,667.
+    const cantidad = i.unidad
+      ? ajustarCantidadAUnidad(i.cantidad, i.unidad)
+      : Number(i.cantidad) || 0;
     const precio = precioDe(i) ?? 0;
     // Se redondea a los MISMOS decimales que se van a reportar: si se redondea
     // a 2 y se imprime con 4, los dos últimos son ceros inventados.
@@ -323,7 +335,10 @@ export function armarEntradaDirecta({
       // Del renglón si lo trae (Lengua es UND, el resto de vísceras KL); si no
       // —todo lo que es carne/adicional— la fija de la configuración.
       UNIDAD_MEDIDA: String(i.unidad || config.unidadMedida || ""),
-      CANTIDAD: decimal(cantidad, config.decimalesCantidad),
+      CANTIDAD: decimal(
+        cantidad,
+        i.unidad ? decimalesDeUnidad(i.unidad) : config.decimalesCantidad,
+      ),
       VALOR_BRUTO: decimal(bruto, config.decimalesValor),
       ITEM: String(i.codigo_item ?? "").trim(),
       UNIDAD_NEGOCIO: String(config.unidadNegocio ?? ""),

@@ -46,14 +46,47 @@ function num(valor) {
 }
 
 /**
- * `cantidad = factor × novillos`, redondeada a 3 decimales.
+ * Decimales que SIESA acepta en la cantidad, según la unidad del renglón.
+ *
+ * UND: 2. El 29/09/2026 la oficial TC OFI L10 volvió con "la cantidad de
+ * decimales de la cantidad base deben ser iguales a la cantidad de decimales de
+ * la unidad de medida" en los Riñones de 5,333 / 2,667 / 14,667 UND (los de
+ * 4,000 pasaron). El encargado definió dos decimales. Si SIESA rechazara también
+ * los de dos, este número es el único que hay que tocar.
+ */
+export const DECIMALES_POR_UNIDAD = { KL: DECIMALES_CANTIDAD, UND: 2 };
+
+export function decimalesDeUnidad(unidad) {
+  return DECIMALES_POR_UNIDAD[unidad] ?? DECIMALES_CANTIDAD;
+}
+
+/**
+ * Deja una cantidad con los decimales de su unidad, TRUNCANDO, no redondeando:
+ * así lo pidió el encargado (2,667 → 2,66 y 14,667 → 14,66, no 2,67 / 14,67).
+ *
+ * Se trunca sobre la cantidad YA redondeada a 3 decimales, nunca sobre el
+ * producto crudo: 1,33333 × 3 da 3,99999, que truncado directo sería 3,99
+ * cuando la cantidad de siempre es 4,000.
+ */
+export function ajustarCantidadAUnidad(cantidad, unidad) {
+  const base = redondear(num(cantidad), DECIMALES_CANTIDAD);
+  const d = decimalesDeUnidad(unidad);
+  if (d >= DECIMALES_CANTIDAD) return base;
+  const paso = 10 ** (DECIMALES_CANTIDAD - d);
+  const milesimas = Math.trunc(Math.round(base * 10 ** DECIMALES_CANTIDAD) / paso) * paso;
+  return redondear(milesimas / 10 ** DECIMALES_CANTIDAD, d);
+}
+
+/**
+ * `cantidad = factor × novillos`, redondeada a 3 decimales y llevada a los
+ * decimales de la unidad (`ajustarCantidadAUnidad`).
  *
  * Sin factor o sin novillos da 0 — no `NaN`. Un renglón en 0 es información (no
  * llegaron novillos todavía, o esta víscera no tiene factor); un `NaN` se
  * arrastraría al costeo y al total de kilos sin que nada lo explique.
  */
-export function cantidadPorNovillo(factor, novillos) {
-  return redondear(num(factor) * num(novillos), DECIMALES_CANTIDAD);
+export function cantidadPorNovillo(factor, novillos, unidad) {
+  return ajustarCantidadAUnidad(num(factor) * num(novillos), unidad);
 }
 
 /** ¿Este renglón de vísceras se calcula solo, o lo pesa/cuenta el recibidor? */
@@ -73,7 +106,7 @@ export function esViceraPorFactor(item) {
 export function recalcularVicerasPorNovillo(items = [], novillos) {
   return items.map((item) =>
     esViceraPorFactor(item)
-      ? { ...item, cantidad: cantidadPorNovillo(item.factor_novillo, novillos) }
+      ? { ...item, cantidad: cantidadPorNovillo(item.factor_novillo, novillos, item.unidad) }
       : item,
   );
 }
