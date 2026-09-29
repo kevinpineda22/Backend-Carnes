@@ -21,9 +21,16 @@
  * consecutivo automático, clase 61 (entrada), concepto 601, motivo 04, notas y
  * estado 1 = Aprobado/Contabilizado. Variables:
  *
- *   Documentos   FECHA_DOCTO (AAAAMMDD), BODEGA
- *   Movimientos  "C.O.", BODEGA, "C.O MOVIMIENTO", UNIDAD_MEDIDA, CANTIDAD,
- *                COSTO_PROMEDIO, ITEM, UNIDAD_NEGOCIO
+ *   Documentos   CONSECUTIVO_DOCTO, FECHA_DOCTO (AAAAMMDD), BODEGA
+ *   Movimientos  NRO_DOCTO, NRO_REGISTRO, "C.O.", BODEGA, "C.O MOVIMIENTO",
+ *                UNIDAD_MEDIDA, CANTIDAD, COSTO_PROMEDIO, ITEM, UNIDAD_NEGOCIO
+ *
+ * CONSECUTIVO_DOCTO / NRO_DOCTO / NRO_REGISTRO: aunque el consecutivo es
+ * automático, el plano exige f350_consec_docto, f470_consec_docto y
+ * f470_nro_registro. El primer envío (29/09/2026) volvió con 400 "el campo
+ * obligatorio … no fue enviado". Se mandan con los MISMOS nombres de variable
+ * que usa el conector de la CEA; SIESA recalcula el consecutivo. Si el
+ * conector todavía no tiene mapeadas esas variables, las ignora.
  *
  * Las claves "C.O." y "C.O MOVIMIENTO" llevan punto y espacio TAL CUAL: así las
  * define el conector. No se normalizan.
@@ -98,7 +105,7 @@ const decimal = (n, decimales) => {
  *   `vacio`: no hay ninguna víscera para ajustar. No es un bloqueo: no hay nada
  *   que corregir, simplemente esta sede no genera documento.
  */
-export function armarAjusteVisceras({ recepcion, items = [], config = {} }) {
+export function armarAjusteVisceras({ recepcion, items = [], config = {}, consecutivo }) {
   const bloqueos = [];
   const sede = recepcion?.sede || {};
   const dv = Number.isInteger(config.decimalesValor) ? config.decimalesValor : 0;
@@ -168,8 +175,14 @@ export function armarAjusteVisceras({ recepcion, items = [], config = {} }) {
   }
 
   const referencia = referenciaAjusteVisceras(recepcion?.id);
+  // Mismo esquema que `consecutivoDe` de la CEA (id × 10 + 1 inicial, + 2
+  // oficial): + 3 para el ajuste. Es solo para que el campo viaje; con el
+  // consecutivo automático, SIESA asigna el número real.
+  const consec = String(consecutivo ?? Number(recepcion?.id) * 10 + 3);
 
-  const movimientos = renglones.map((r) => ({
+  const movimientos = renglones.map((r, n) => ({
+    NRO_DOCTO: consec,
+    NRO_REGISTRO: String(n + 1),
     "C.O.": String(config.coDocumento ?? ""),
     BODEGA: bodega,
     "C.O MOVIMIENTO": co ?? "",
@@ -185,7 +198,7 @@ export function armarAjusteVisceras({ recepcion, items = [], config = {} }) {
 
   return {
     payload: {
-      Documentos: [{ FECHA_DOCTO: fecha ?? "", BODEGA: bodega }],
+      Documentos: [{ CONSECUTIVO_DOCTO: consec, FECHA_DOCTO: fecha ?? "", BODEGA: bodega }],
       Movimientos: movimientos,
     },
     resumen: {

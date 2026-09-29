@@ -72,11 +72,16 @@ test("solo las vísceras con código y cantidad; los cortes no entran", () => {
   assert.equal(resumen.renglones, 2);
 });
 
-test("la cabecera lleva solo fecha y bodega, y las claves del movimiento son las del conector", () => {
+test("la cabecera lleva consecutivo, fecha y bodega, y las claves del movimiento son las del conector", () => {
   const { payload } = armar();
-  assert.deepEqual(payload.Documentos, [{ FECHA_DOCTO: "20260923", BODEGA: "00201" }]);
-  // Nada de TIPO_DOCTO ni consecutivo: son fijos en SIESA.
+  // El consecutivo viaja aunque sea automático: SIESA rechazó el plano sin él
+  // (29/09/2026, "f350_consec_docto no fue enviado"). TIPO_DOCTO sigue fijo en SIESA.
+  assert.deepEqual(Object.keys(payload.Documentos[0]), ["CONSECUTIVO_DOCTO", "FECHA_DOCTO", "BODEGA"]);
+  assert.equal(payload.Documentos[0].FECHA_DOCTO, "20260923");
+  assert.equal(payload.Documentos[0].BODEGA, "00201");
   assert.deepEqual(Object.keys(payload.Movimientos[0]), [
+    "NRO_DOCTO",
+    "NRO_REGISTRO",
     "C.O.",
     "BODEGA",
     "C.O MOVIMIENTO",
@@ -269,10 +274,9 @@ test("referencia: pasada la recepción #9999 cae a la forma compacta, sin cortar
   assert.notEqual(referenciaAjusteVisceras(12345), referenciaAjusteVisceras(12346));
 });
 
-test("el payload no lleva Descuentos ni consecutivo", () => {
+test("el payload no lleva Descuentos", () => {
   const { payload } = armar();
   assert.deepEqual(Object.keys(payload), ["Documentos", "Movimientos"]);
-  assert.ok(!("CONSECUTIVO_DOCTO" in payload.Documentos[0]));
 });
 
 // ─── Cobertura de la entrada oficial ────────────────────────────────────────
@@ -425,4 +429,18 @@ test("las constantes del presupuesto son las acordadas", () => {
   assert.equal(LIMITE_FUNCION_MS, 285_000);
   assert.equal(PRESUPUESTO_NUEVA_SEDE_MS, 40_000);
   assert.equal(ESPERA_MINIMA_MS, 30_000);
+});
+
+test("el plano lleva consecutivo y número de registro (f350/f470_consec_docto, f470_nro_registro)", () => {
+  const { payload } = armarAjusteVisceras({
+    recepcion: { id: 12, fecha_ingreso: "2026-09-27", sede: { nombre: "Llano", codigo_co: "00401", bodega_siesa: "00401" } },
+    items: [
+      { tipo: "vicera", codigo_item: "15159", descripcion: "Higado", cantidad: 12.485, costo_base: 18000, unidad: "KL" },
+      { tipo: "vicera", codigo_item: "15192", descripcion: "Lengua", cantidad: 3, costo_base: 20000, unidad: "UND" },
+    ],
+    config: { coDocumento: "001", unidadNegocio: "003", decimalesValor: 0 },
+  });
+  assert.equal(payload.Documentos[0].CONSECUTIVO_DOCTO, "123");
+  assert.deepEqual(payload.Movimientos.map((m) => m.NRO_DOCTO), ["123", "123"]);
+  assert.deepEqual(payload.Movimientos.map((m) => m.NRO_REGISTRO), ["1", "2"]);
 });
