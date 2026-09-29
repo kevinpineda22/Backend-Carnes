@@ -82,6 +82,45 @@ export const DOCUMENTO_CARNES = {
   unidadNegocio: "003",
 };
 
+// ─── Constantes del documento AJUSTE_INV_VISCERAS (vísceras de res) ────────
+//
+// Las vísceras no entran en la CEA (ver `vaASiesa` en shared/visceras.js): el
+// inventario las recibe por un documento propio, un ajuste de inventario CEI.
+// Va UN documento por recepción (sede): la cabecera lleva una sola bodega.
+//
+// Lo que el conector 257135 tiene FIJO del lado de SIESA y por eso NO viaja en
+// el JSON: compañía 001, CO del documento 001, tipo CEI, consecutivo automático
+// (F_CONSEC_AUTO_REG = 1, no se manda consecutivo), clase 61 (entrada), concepto
+// 601, motivo 04, notas "TALLER DE CARNES (VÍSCERAS)".
+//
+// ATENCIÓN: el estado fijo es 1 = Aprobado/Contabilizado. A diferencia de la
+// CEA, que queda en elaboración, este documento se CONTABILIZA al importarse y
+// no hay nadie que lo revise antes. Por eso solo se manda con la entrada oficial
+// ya en SIESA y detrás de una confirmación explícita en pantalla.
+export const DOCUMENTO_AJUSTE_VISCERAS = {
+  /** Id del conector en SIESA, tal como está en la pantalla "Apis Dinámicas". */
+  idDocumento: "257135",
+  nombreDocumento: "AJUSTE_INV_VISCERAS",
+
+  /** Código del tipo de documento (f350_id_tipo_docto). CEI = ajuste de inventario. */
+  tipoDocto: "CEI",
+  /**
+   * Valor de la variable "C.O." de cada movimiento: el CO del DOCUMENTO.
+   *
+   * SUPUESTO POR VERIFICAR con el primer envío real: se asume que es el mismo
+   * "001" fijo del documento (no el CO de la sede, que va en "C.O MOVIMIENTO").
+   * Si SIESA lo rechaza o lo lee distinto, este es el único lugar que se toca.
+   */
+  coDocumento: "001",
+  /** Unidad de negocio del movimiento: la misma de la CEA (003 = Carnes). */
+  unidadNegocio: DOCUMENTO_CARNES.unidadNegocio,
+  /**
+   * Decimales del costo unitario (`COSTO_PROMEDIO`): los de la moneda, igual que
+   * el valor de la CEA. El conector exige que coincidan con los del ERP.
+   */
+  decimalesValor: DOCUMENTO_CARNES.decimalesValor,
+};
+
 /**
  * Con qué tercero puede entrar la entrada oficial.
  *

@@ -17,6 +17,13 @@
  *            si alguna sigue vigente bloquea la consolidada: mandar la
  *            consolidada encima de oficiales por sede duplicaría la carne.
  *
+ *  ajuste_visceras
+ *            las vísceras entran al inventario por un documento aparte (CEI,
+ *            conector AJUSTE_INV_VISCERAS), UNO por recepción, y SIESA lo
+ *            CONTABILIZA al importarlo. Lo dispara el admin con la entrada
+ *            oficial ya en SIESA (sql/019). No cierra nada: la liquidación ya
+ *            está cerrada.
+ *
  * Todo intento —bueno o malo— deja una fila en `carnes_siesa_envios`.
  *
  * ─── El candado ───────────────────────────────────────────────────────────
@@ -39,6 +46,14 @@ import {
   TIPO_ENVIO,
 } from "../shared/siesaEntrada.js";
 import {
+  armarAjusteVisceras,
+  coberturaOficial,
+  viscerasEnCea,
+  esperaParaSede,
+  TIPO_AJUSTE_VISCERAS,
+} from "../shared/siesaAjusteVisceras.js";
+import {
+  DOCUMENTO_AJUSTE_VISCERAS,
   documentoSiesa,
   siesaConfigurado,
   siesaActivo,
@@ -64,7 +79,8 @@ const VIGENTES = ["enviando", "ok", "sin_confirmar"];
 /**
  * Un `enviando` más viejo que esto es un envío cuya función murió en el medio.
  * Tiene que quedar POR ENCIMA de la espera más larga a SIESA
- * (TIMEOUT_OFICIAL_MS, 4 min) y del maxDuration de Vercel (5 min): un envío
+ * (TIMEOUT_OFICIAL_MS, 4 min) y del límite de la función en Vercel (300 s, el
+ * default de Fluid compute; vercel.json no lleva bloque `functions`): un envío
  * vivo nunca puede verse abandonado, o alguien lo reenvía mientras corre.
  */
 const ENVIANDO_ABANDONADO_MS = 6 * 60 * 1000;
@@ -75,6 +91,7 @@ const MIGRACIONES = [
   "sql/010_siesa_candado.sql",
   "sql/011_siesa_anulacion.sql",
   "sql/012_siesa_cea_liquidacion.sql",
+  "sql/019_ajuste_visceras.sql",
 ];
 
 /**
@@ -195,6 +212,23 @@ export async function enviosDeRecepcion(recepcionId) {
   return [...(directos || []), ...(consolidados || [])];
 }
 
+/**
+ * ¿El insert del ajuste falló porque a la base le falta sql/019?
+ *
+ * En una base sin migrar `tipo` es VARCHAR(10): 'ajuste_visceras' (15) no
+ * cabe y Postgres responde 22001 (valor demasiado largo), no el CHECK. Con la
+ * columna ya ensanchada pero sin el CHECK nuevo sería 23514. Los dos significan
+ * lo mismo: falta correr la migración.
+ */
+const faltaMigracion019 = (error, tipo) =>
+  tipo === TIPO_AJUSTE_VISCERAS && ["22001", "23514"].includes(error?.code);
+
+const errorFaltaMigracion019 = () =>
+  createError(
+    503,
+    "A la base le falta sql/019_ajuste_visceras.sql. Corrélo en Supabase y volvé a intentar.",
+  );
+
 /** Por qué no se puede mandar, dicho para una persona. */
 function motivoVigente(envio) {
   if (envio.estado === "ok") return `Ya está en SIESA (${envio.referencia}).`;
@@ -292,6 +326,9 @@ export async function obtener(id) {
         ? await idsDeLiquidacion(data.liquidacion_id)
         : [];
 
+  // El ajuste de vísceras se explica con los renglones de VÍSCERA; la CEA, con
+  // los de carne y adicionales.
+  const esAjuste = data.tipo === TIPO_AJUSTE_VISCERAS;
   let items = [];
   const sedeDe = new Map();
   if (idsRecepciones.length) {
@@ -300,7 +337,7 @@ export async function obtener(id) {
         .from("carnes_recepcion_items")
         .select("id, recepcion_id, codigo_item, descripcion, cantidad, costo_base, costo_ajustado")
         .in("recepcion_id", idsRecepciones)
-        .in("tipo", ["carne", "adicional"])
+        .in("tipo", esAjuste ? ["vicera"] : ["carne", "adicional"])
         .gt("cantidad", 0)
         .order("recepcion_id")
         .order("orden"),
@@ -335,18 +372,29 @@ export async function obtener(id) {
   };
 
   const numero = (v) => (v === null || v === undefined ? null : Number(v));
-  const movimientos = (data.payload?.Movimientos || []).map((m) => {
+  const movimientos = (data.payload?.Movimientos || []).map((m, n) => {
     const cantidad = Number(m.CANTIDAD) || 0;
-    const bruto = Number(m.VALOR_BRUTO) || 0;
+    // El ajuste no manda VALOR_BRUTO sino el costo UNITARIO (COSTO_PROMEDIO), con
+    // las claves "C.O." y "C.O MOVIMIENTO" del conector. Se lleva a la forma de
+    // la CEA para que la pantalla lea los dos igual.
+    const costoUnitario = esAjuste ? Number(m.COSTO_PROMEDIO) || 0 : null;
+    const bruto = esAjuste
+      ? Math.round(cantidad * costoUnitario * 100) / 100
+      : Number(m.VALOR_BRUTO) || 0;
     const renglon = renglonDe(m);
     return {
       ...m,
+      NRO_REGISTRO: m.NRO_REGISTRO ?? String(n + 1),
+      CO_MOVIMIENTO: m.CO_MOVIMIENTO ?? m["C.O MOVIMIENTO"] ?? "",
       sede: renglon ? sedeDe.get(renglon.recepcion_id)?.nombre ?? null : null,
       descripcion: renglon?.descripcion ?? null,
       cantidad,
       valor_bruto: bruto,
-      precio_unitario:
-        cantidad > 0 ? Math.round((bruto / cantidad) * 100) / 100 : null,
+      precio_unitario: esAjuste
+        ? costoUnitario
+        : cantidad > 0
+          ? Math.round((bruto / cantidad) * 100) / 100
+          : null,
       costo_base: numero(renglon?.costo_base),
       costo_ajustado: numero(renglon?.costo_ajustado),
     };
@@ -400,15 +448,20 @@ async function ejecutarEnvio({
  * @param {string}   [p.por]
  * @param {Function} p.vigente   () => el envío que ocupa el lugar, o null
  * @param {string}   p.etiqueta  para los logs
+ * @param {{idDocumento: string, nombreDocumento: string}} [p.documento]
+ *        conector destino; sin él, la CEA de carnes
+ * @param {number}   [p.timeoutMs]  espera a SIESA; sin él, según el tipo
  */
-async function registrarYEnviar({ armado, base, por, vigente, etiqueta }) {
+async function registrarYEnviar({ armado, base, por, vigente, etiqueta, documento, timeoutMs }) {
   const { payload, resumen, bloqueos } = armado;
   const tipo = base.tipo;
 
   const fila = {
     ...base,
     referencia: resumen.referencia,
-    tipo_docto: payload.Documentos[0]?.TIPO_DOCTO || null,
+    // El ajuste de vísceras no manda TIPO_DOCTO (es fijo en el conector): el
+    // tipo, si hay, lo trae `base`.
+    tipo_docto: payload.Documentos[0]?.TIPO_DOCTO || base.tipo_docto || null,
     payload,
     renglones: resumen.renglones,
     total_kilos: resumen.totalKilos,
@@ -431,6 +484,7 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta }) {
       .insert({ ...fila, estado: "error", error: noSale })
       .select("*")
       .single();
+    if (faltaMigracion019(error, tipo)) throw errorFaltaMigracion019();
     if (error) fallarSiFaltaMigracion(error, "No se pudo registrar el envío", MIGRACIONES);
     console.error(`🔴 SIESA ${etiqueta}: ${noSale}`);
     return data;
@@ -452,7 +506,9 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta }) {
         repetido: true,
       };
     }
-    // Sin sql/010, el CHECK viejo no conoce `enviando`.
+    // Sin sql/019 el tipo `ajuste_visceras` no cabe (22001) o no está en el
+    // CHECK (23514); sin sql/010 el CHECK viejo no conoce `enviando`.
+    if (faltaMigracion019(errorReserva, tipo)) throw errorFaltaMigracion019();
     if (errorReserva.code === "23514") {
       throw createError(
         503,
@@ -463,7 +519,9 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta }) {
   }
 
   const resultado = await enviarASiesa(payload, {
-    timeoutMs: tipo === TIPO_ENVIO.OFICIAL ? TIMEOUT_OFICIAL_MS : TIMEOUT_INICIAL_MS,
+    timeoutMs:
+      timeoutMs ?? (tipo === TIPO_ENVIO.OFICIAL ? TIMEOUT_OFICIAL_MS : TIMEOUT_INICIAL_MS),
+    ...(documento ? { documento } : {}),
   });
   const estado = resultado.ok ? "ok" : resultado.incierto ? "sin_confirmar" : "error";
 
@@ -1164,4 +1222,398 @@ export async function eliminarEnvioAdmin(id) {
 
   console.log(`🗑️  Envío SIESA #${id} (${data.referencia}) eliminado por el admin.`);
   return { eliminado: Number(id), referencia: data.referencia };
+}
+
+// ─── Ajuste de inventario de vísceras (CEI) ────────────────────────────────
+//
+// Un documento por recepción, con las vísceras de esa sede (ver
+// `shared/siesaAjusteVisceras.js`). Se manda DESPUÉS de la entrada oficial, y
+// SIESA lo contabiliza al importar: no hay etapa de elaboración donde alguien lo
+// revise. Por eso el candado es el mismo de las demás (una vigente por
+// recepción y tipo, sql/010) y por eso `enviarAjusteVisceras` para al primer
+// fallo o duda en vez de seguir con las demás sedes.
+
+// El tiempo que hay para mandar sedes se decide en `esperaParaSede`
+// (shared/siesaAjusteVisceras.js): cada envío espera a SIESA hasta
+// TIMEOUT_OFICIAL_MS (4 min) y la función de Vercel vive 300 s. Pasados 40 s desde
+// el INICIO del pedido no se arranca otra sede, y la espera de cada una se recorta
+// para terminar antes del límite. Lo que quedó pendiente se manda apretando de
+// nuevo: las sedes que ya están ok se saltan solas.
+
+/** Las recepciones de una liquidación, con su ajuste armado. */
+async function armarAjustes(liquidacionId) {
+  const ids = await idsDeLiquidacion(liquidacionId);
+  const porSede = [];
+  for (const id of ids) {
+    const recepcion = await cargarRecepcion(id);
+    porSede.push({
+      recepcion,
+      armado: armarAjusteVisceras({
+        recepcion,
+        items: recepcion.items,
+        config: DOCUMENTO_AJUSTE_VISCERAS,
+      }),
+    });
+  }
+  return { ids, porSede };
+}
+
+/**
+ * Los envíos de ajuste de estas recepciones y, por recepción, la entrada
+ * oficial ya en SIESA que la cubre (`cobertura`, ver `coberturaOficial`).
+ *
+ * La consolidada cubre solo las recepciones con las que salió; una vinculada
+ * después no cuenta. Las oficiales por sede del esquema anterior cubren la
+ * recepción a la que pertenecen. La cobertura trae el payload guardado de esa
+ * CEA, para saber si ya llevaba las vísceras.
+ */
+async function estadoAjustes(liquidacionId, ids) {
+  if (!ids.length) return { ajustes: new Map(), cobertura: new Map() };
+  const [ajustes, consolidada, porSede] = await Promise.all([
+    supabase
+      .from(TABLA)
+      .select("id, recepcion_id, estado, referencia, enviado_at, error, renglones, total_valor")
+      .in("recepcion_id", ids)
+      .eq("tipo", TIPO_AJUSTE_VISCERAS)
+      .order("enviado_at", { ascending: false }),
+    oficialDeLiquidacion(liquidacionId),
+    supabase
+      .from(TABLA)
+      .select("recepcion_id, payload")
+      .in("recepcion_id", ids)
+      .eq("tipo", TIPO_ENVIO.OFICIAL)
+      .eq("estado", "ok"),
+  ]);
+  if (ajustes.error) {
+    fallarSiFaltaMigracion(ajustes.error, "Error al leer los ajustes de vísceras", MIGRACIONES);
+  }
+  if (porSede.error) fallarSiFaltaMigracion(porSede.error, "Error al leer los envíos", MIGRACIONES);
+
+  // Por recepción: el vigente si lo hay (es el que ocupa el lugar) y, si no, el
+  // último intento, para mostrar qué pasó.
+  const mapa = new Map();
+  for (const a of ajustes.data || []) {
+    const previo = mapa.get(a.recepcion_id) || { vigente: null, ultimo: null };
+    if (!previo.ultimo) previo.ultimo = a;
+    if (!previo.vigente && VIGENTES.includes(a.estado)) previo.vigente = a;
+    mapa.set(a.recepcion_id, previo);
+  }
+
+  const cobertura = coberturaOficial({ ids, consolidada, porSede: porSede.data || [] });
+  return { ajustes: mapa, cobertura };
+}
+
+/** Lo que el front necesita de un envío de ajuste. */
+const resumenAjuste = (a) =>
+  a
+    ? {
+        id: a.id,
+        estado: a.estado,
+        referencia: a.referencia,
+        enviado_at: a.enviado_at,
+        error: a.error ?? null,
+      }
+    : null;
+
+/**
+ * Qué pasaría al mandar el ajuste de vísceras de una liquidación, sin mandar
+ * nada: por sede, el documento, los renglones y qué lo bloquea.
+ *
+ * Por cada sede:
+ *   pendiente   tiene vísceras para ajustar y no hay envío vigente
+ *   enviado     ya está en SIESA (ok)
+ *   enCurso     hay uno enviando o sin confirmar: hasta resolverlo no se manda
+ *               nada más
+ *   vacio       no tiene ninguna víscera con código y cantidad
+ */
+export async function previsualizarAjusteVisceras(liquidacionId) {
+  const { data: liq, error } = await supabase
+    .from("carnes_liquidaciones")
+    .select("id, estado, especie")
+    .eq("id", liquidacionId)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer la liquidación", MIGRACIONES);
+  if (!liq) throw createError(404, "Liquidación no encontrada.");
+
+  const { ids, porSede: armados } = await armarAjustes(liquidacionId);
+  const { ajustes, cobertura } = await estadoAjustes(liquidacionId, ids);
+
+  const sedes = armados.map(({ recepcion, armado }) => {
+    const { vigente, ultimo } = ajustes.get(recepcion.id) || {};
+    const enviado = vigente?.estado === "ok";
+    const enCurso = Boolean(vigente) && !enviado;
+    const pendiente = !armado.vacio && !vigente;
+
+    // Lo que solo importa si todavía se va a mandar algo de esta sede.
+    const extra = [];
+    if (pendiente && cobertura.size > 0) {
+      const cubre = cobertura.get(recepcion.id);
+      if (!cubre) {
+        // Hay entrada oficial en SIESA, pero salió sin esta recepción: se la
+        // vinculó después. Sus vísceras entrarían sin la carne que las trajo.
+        extra.push(
+          "Esta recepción no está en la entrada oficial que ya está en SIESA (se vinculó " +
+            "después de enviarla). El ajuste se manda cuando su carne esté en SIESA.",
+        );
+      } else {
+        // Las CEA anteriores al 29/09/2026 llevaban las vísceras como un renglón
+        // más: mandar el ajuste las entraría dos veces, y contabilizado.
+        const yaEstan = viscerasEnCea({
+          payload: cubre.payload,
+          items: recepcion.items,
+          bodega: recepcion.sede?.bodega_siesa,
+        });
+        if (yaEstan.length) {
+          extra.push(
+            `La entrada oficial que ya está en SIESA trae estas vísceras: ${yaEstan.join(", ")}. ` +
+              "Mandar el ajuste las entraría dos veces. Anulá esa entrada oficial y volvela a " +
+              "enviar (ya sin vísceras) antes de hacer el ajuste.",
+          );
+        }
+      }
+    }
+    return {
+      recepcion_id: recepcion.id,
+      sede: recepcion.sede?.nombre ?? null,
+      fecha: recepcion.fecha_ingreso ?? null,
+      resumen: armado.resumen,
+      renglones: armado.renglones,
+      bloqueos: [...armado.bloqueos, ...extra],
+      vacio: armado.vacio,
+      // El vigente si lo hay; si no, el último intento (un error, una anulación).
+      envio: resumenAjuste(vigente || ultimo),
+      enviado,
+      enCurso,
+      pendiente,
+    };
+  });
+
+  const configurado = siesaConfigurado();
+  const bloqueosGlobales = [];
+  if (!ids.length) {
+    bloqueosGlobales.push("La liquidación no tiene recepciones.");
+  } else if (cobertura.size === 0) {
+    // Ninguna sede tiene su entrada oficial en SIESA. Si solo faltan algunas, el
+    // bloqueo es de cada una (arriba).
+    bloqueosGlobales.push(
+      "La entrada oficial todavía no está en SIESA. El ajuste de vísceras se manda después de ella.",
+    );
+  }
+  if (!siesaActivo()) {
+    bloqueosGlobales.push("El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
+  }
+  if (!configurado) {
+    bloqueosGlobales.push(`SIESA no está configurado. Faltan: ${faltantesSiesa().join(", ")}.`);
+  }
+
+  const pendientes = sedes.filter((s) => s.pendiente);
+  const conDocumento = sedes.filter((s) => !s.vacio);
+  const suma = (lista, k) => lista.reduce((a, s) => a + (Number(s.resumen[k]) || 0), 0);
+
+  return {
+    liquidacion: liq,
+    documento: {
+      nombre: DOCUMENTO_AJUSTE_VISCERAS.nombreDocumento,
+      tipoDocto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+    },
+    configurado,
+    activo: siesaActivo(),
+    bloqueos: bloqueosGlobales,
+    sedes,
+    totales: {
+      sedes: conDocumento.length,
+      renglones: suma(conDocumento, "renglones"),
+      totalValor: Math.round(suma(conDocumento, "totalValor") * 100) / 100,
+      pendientes: pendientes.length,
+      pendientesValor: Math.round(suma(pendientes, "totalValor") * 100) / 100,
+    },
+    puedeEnviar:
+      bloqueosGlobales.length === 0 &&
+      pendientes.length > 0 &&
+      pendientes.every((s) => s.bloqueos.length === 0) &&
+      !sedes.some((s) => s.enCurso),
+  };
+}
+
+/**
+ * Manda el ajuste de vísceras de cada sede pendiente, UNA a la vez.
+ *
+ * Se detiene en la primera que no salga ok —error, sin confirmar, o un envío
+ * que otro dejó reservado—: el documento se contabiliza al entrar, y seguir con
+ * las demás sobre una duda solo agranda lo que hay que revisar en SIESA. Las que
+ * no se intentaron quedan `pendiente` y se mandan al volver a apretar; las que
+ * ya están ok se saltan.
+ *
+ * @returns {{ completo: boolean, enviadas: number, resultados: object[] }}
+ */
+export async function enviarAjusteVisceras(liquidacionId, por) {
+  // El reloj arranca ANTES de previsualizar: leer las nueve recepciones también
+  // gasta función.
+  const inicio = Date.now();
+  const previa = await previsualizarAjusteVisceras(liquidacionId);
+  if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
+
+  const enCurso = previa.sedes.filter((s) => s.enCurso);
+  if (enCurso.length) {
+    throw createError(
+      409,
+      enCurso.map((s) => `${s.sede}: ${motivoVigente(s.envio)}`).join(" "),
+    );
+  }
+  const bloqueadas = previa.sedes.filter((s) => s.pendiente && s.bloqueos.length);
+  if (bloqueadas.length) {
+    // Todo o nada ANTES de empezar: si una sede no puede salir, no se manda
+    // ninguna, para no dejar el ajuste a medias por algo que se sabía.
+    throw createError(
+      409,
+      bloqueadas.map((s) => `${s.sede}: ${s.bloqueos.join(" ")}`).join(" "),
+    );
+  }
+
+  const resultados = [];
+  let detenida = false;
+  let enviadas = 0;
+
+  const anotar = (s, extra) =>
+    resultados.push({
+      recepcion_id: s.recepcion_id,
+      sede: s.sede,
+      referencia: s.resumen.referencia,
+      renglones: s.resumen.renglones,
+      total_valor: s.resumen.totalValor,
+      error: null,
+      ...extra,
+    });
+
+  for (const s of previa.sedes) {
+    if (s.vacio) {
+      anotar(s, { estado: "sin_renglones" });
+      continue;
+    }
+    if (s.enviado) {
+      anotar(s, { estado: "ok", repetido: true, referencia: s.envio.referencia });
+      continue;
+    }
+    if (detenida || esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS) === null) {
+      detenida = true;
+      anotar(s, { estado: "pendiente" });
+      continue;
+    }
+
+    // Se arma de nuevo con los datos de este instante: entre la previsualización
+    // y esta sede pueden haber pasado segundos u otros envíos.
+    const recepcion = await cargarRecepcion(s.recepcion_id);
+    const armado = armarAjusteVisceras({
+      recepcion,
+      items: recepcion.items,
+      config: DOCUMENTO_AJUSTE_VISCERAS,
+    });
+    if (armado.vacio || armado.bloqueos.length) {
+      detenida = true;
+      anotar(s, {
+        estado: "error",
+        error: armado.vacio
+          ? "La recepción ya no tiene vísceras para ajustar."
+          : armado.bloqueos.join(" "),
+      });
+      continue;
+    }
+
+    // Se mide de nuevo justo antes de mandar: armar esta sede también tomó tiempo.
+    const espera = esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS);
+    if (espera === null) {
+      detenida = true;
+      anotar(s, { estado: "pendiente" });
+      continue;
+    }
+
+    const fila = await registrarYEnviar({
+      armado,
+      base: {
+        recepcion_id: recepcion.id,
+        liquidacion_id: Number(liquidacionId),
+        tipo: TIPO_AJUSTE_VISCERAS,
+        consecutivo: null,
+        tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+      },
+      por,
+      vigente: () => envioVigente(recepcion.id, TIPO_AJUSTE_VISCERAS),
+      etiqueta: `ajuste vísceras recepción #${recepcion.id}`,
+      documento: DOCUMENTO_AJUSTE_VISCERAS,
+      timeoutMs: espera,
+    });
+
+    if (fila.estado === "ok" && !fila.repetido) enviadas += 1;
+    else detenida = true;
+    anotar(s, {
+      estado: fila.estado,
+      referencia: fila.referencia,
+      renglones: fila.renglones ?? s.resumen.renglones,
+      total_valor: fila.total_valor ?? s.resumen.totalValor,
+      // Otro pedido la reservó primero: no es un envío de este.
+      repetido: Boolean(fila.repetido) || undefined,
+      error: fila.repetido ? motivoVigente(fila) : (fila.error ?? null),
+    });
+  }
+
+  const completo = resultados.every((r) => r.estado === "ok" || r.estado === "sin_renglones");
+  return { completo, enviadas, resultados };
+}
+
+/**
+ * El ajuste de UNA sede se anuló en SIESA: se refleja acá y se libera el lugar
+ * para mandarlo de nuevo.
+ *
+ * Es por sede a propósito: el ajuste de cada una es un documento distinto, y
+ * liberar los de todas haría que el reenvío duplicara las que siguen vivas en
+ * SIESA. No toca SIESA: la anulación allá la hace una persona.
+ *
+ * Solo se anula un `ok`, un `sin_confirmar` o un `enviando` ya abandonado; uno
+ * en vuelo de verdad todavía puede terminar ok.
+ *
+ * @param {number|string} liquidacionId
+ * @param {{ recepcionId: number|string, por?: string, motivo?: string }} p
+ */
+export async function anularAjusteVisceras(liquidacionId, { recepcionId, por, motivo } = {}) {
+  if (!recepcionId) throw createError(400, "Falta recepcion_id: el ajuste se anula sede por sede.");
+
+  const ids = await idsDeLiquidacion(liquidacionId);
+  if (!ids.includes(Number(recepcionId))) {
+    throw createError(404, "Esa recepción no está en esta liquidación.");
+  }
+
+  const marca = {
+    estado: "anulado",
+    anulado_por: por || null,
+    anulado_at: new Date().toISOString(),
+    motivo_anulacion: String(motivo ?? "").trim() || null,
+  };
+  const limite = new Date(Date.now() - ENVIANDO_ABANDONADO_MS).toISOString();
+  const base = () =>
+    supabase
+      .from(TABLA)
+      .update(marca)
+      .eq("recepcion_id", recepcionId)
+      .eq("tipo", TIPO_AJUSTE_VISCERAS);
+
+  const [cerrados, abandonados] = await Promise.all([
+    base().in("estado", ["ok", "sin_confirmar"]).select("id, referencia"),
+    // La condición va en la misma consulta que lo cambia: un envío reservado
+    // entre un chequeo y el update no se anula estando vivo.
+    base().eq("estado", "enviando").lt("enviado_at", limite).select("id, referencia"),
+  ]);
+  const e = cerrados.error || abandonados.error;
+  if (e) fallarSiFaltaMigracion(e, "No se pudo anular el ajuste de vísceras", MIGRACIONES);
+
+  const anulados = [...(cerrados.data || []), ...(abandonados.data || [])];
+  if (!anulados.length) {
+    throw createError(409, "Esa sede no tiene un ajuste de vísceras para anular (o está en curso).");
+  }
+
+  console.log(
+    `↩️  Ajuste de vísceras recepción #${recepcionId}: ${anulados
+      .map((a) => a.referencia)
+      .join(", ")} anulado por ${por || "—"}.`,
+  );
+  return { anulados: anulados.map((a) => ({ id: a.id, referencia: a.referencia })) };
 }

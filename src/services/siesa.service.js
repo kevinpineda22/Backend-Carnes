@@ -10,13 +10,16 @@
  * campo rechazó— y tiene que quedar en la tabla, no perderse en un throw.
  *
  * `incierto: true` cuando no se sabe si SIESA lo creó: el POST salió pero la
- * respuesta no llegó (timeout, corte de red, 504 del gateway). Tratarlo como
+ * respuesta no llegó (timeout, corte de red, 502/503/504 del gateway). Tratarlo como
  * error invita a reintentar, y el reintento duplica si SIESA sí lo había
  * creado. El modelo lo guarda como `sin_confirmar`.
  */
 
 /** Errores de red que garantizan que el pedido NO salió. */
 const NO_SALIO = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+
+/** Respuestas del gateway que no dicen si el conector llegó a crear el documento. */
+const ESTADOS_DE_GATEWAY = new Set([502, 503, 504]);
 
 import { conexionSiesa, DOCUMENTO_CARNES } from "../config/siesa.js";
 
@@ -30,8 +33,10 @@ import { conexionSiesa, DOCUMENTO_CARNES } from "../config/siesa.js";
  * `sin_confirmar` que puede ser un documento creado.
  *
  * Esta espera tiene que quedar DEBAJO de dos límites, o el remedio es peor:
- *   · `maxDuration` de la función en vercel.json (300 s): si Vercel mata la
- *     función antes, el envío queda colgado en 'enviando'.
+ *   · el límite de la función en Vercel (300 s, el default de Fluid compute:
+ *     vercel.json NO lleva bloque `functions` a propósito, agregarlo rompió el
+ *     enrutado): si Vercel mata la función antes, el envío queda colgado en
+ *     'enviando'.
  *   · `ENVIANDO_ABANDONADO_MS` (6 min, backend y front): si un envío vivo se
  *     viera "abandonado", alguien lo resolvería y reenviaría mientras corre.
  *
@@ -45,17 +50,23 @@ export const TIMEOUT_OFICIAL_MS = 240_000;
  * POST al conector.
  *
  * @param {object} payload  { Documentos, Descuentos, Movimientos }
- * @param {{timeoutMs?: number}} [opciones]  ver TIMEOUT_INICIAL_MS / TIMEOUT_OFICIAL_MS
+ * @param {{timeoutMs?: number, documento?: {idDocumento: string, nombreDocumento: string}}} [opciones]
+ *        `timeoutMs`: ver TIMEOUT_INICIAL_MS / TIMEOUT_OFICIAL_MS.
+ *        `documento`: qué conector recibe el POST. Sin él, la CEA de carnes
+ *        (`DOCUMENTO_CARNES`); el ajuste de vísceras pasa el suyo.
  * @returns {Promise<{ok: boolean, status: number|null, respuesta: any, error: string|null}>}
  */
-export async function enviarASiesa(payload, { timeoutMs = TIMEOUT_INICIAL_MS } = {}) {
+export async function enviarASiesa(
+  payload,
+  { timeoutMs = TIMEOUT_INICIAL_MS, documento = DOCUMENTO_CARNES } = {},
+) {
   const c = conexionSiesa();
 
   const url =
     `${c.url}?idCompania=${encodeURIComponent(c.idCompania)}` +
     `&idSistema=${encodeURIComponent(c.idSistema)}` +
-    `&idDocumento=${encodeURIComponent(DOCUMENTO_CARNES.idDocumento)}` +
-    `&nombreDocumento=${encodeURIComponent(DOCUMENTO_CARNES.nombreDocumento)}`;
+    `&idDocumento=${encodeURIComponent(documento.idDocumento)}` +
+    `&nombreDocumento=${encodeURIComponent(documento.nombreDocumento)}`;
 
   const controlador = new AbortController();
   const temporizador = setTimeout(() => controlador.abort(), timeoutMs);
@@ -84,16 +95,19 @@ export async function enviarASiesa(payload, { timeoutMs = TIMEOUT_INICIAL_MS } =
     }
 
     if (!r.ok) {
-      // 504: el gateway se cansó de esperar, pero el conector puede haber
-      // terminado detrás. Es un "no sé", no un rechazo.
-      const incierto = r.status === 504;
+      // 502/503/504: lo dice el gateway, no el conector. El pedido pudo llegar y
+      // el conector terminar detrás (un 504 es el clásico, pero un 502 o un 503
+      // cuando el upstream se reinicia a mitad de camino también). Es un "no
+      // sé", no un rechazo: tratarlo como error invita a reintentar y duplicar.
+      // Un 400/401/404 sí es del conector y sí es un rechazo.
+      const incierto = ESTADOS_DE_GATEWAY.has(r.status);
       return {
         ok: false,
         incierto,
         status: r.status,
         respuesta,
         error: incierto
-          ? `SIESA no respondió a tiempo (HTTP 504). Puede haberlo creado: verificalo antes de reintentar.`
+          ? `SIESA no respondió a tiempo (HTTP ${r.status}). Puede haberlo creado: verificalo antes de reintentar.`
           : `SIESA respondió ${r.status}: ${resumirError(respuesta)}`,
       };
     }

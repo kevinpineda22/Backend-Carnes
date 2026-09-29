@@ -40,6 +40,24 @@ test("504 del gateway: no se sabe si SIESA lo creó", async () => {
   assert.equal(r.incierto, true);
 });
 
+test("502 y 503 del gateway también son un no-sé: el conector pudo haber terminado", async () => {
+  for (const status of [502, 503]) {
+    globalThis.fetch = responder(status);
+    const r = await enviarASiesa({});
+    assert.equal(r.ok, false, `HTTP ${status}`);
+    assert.equal(r.incierto, true, `HTTP ${status}`);
+    assert.match(r.error, new RegExp(`HTTP ${status}`));
+  }
+});
+
+test("400, 401, 404 y 500 del conector siguen siendo rechazos, no un no-sé", async () => {
+  for (const status of [400, 401, 404, 500]) {
+    globalThis.fetch = responder(status, { mensaje: "no" });
+    const r = await enviarASiesa({});
+    assert.equal(r.incierto, false, `HTTP ${status}`);
+  }
+});
+
 test("timeout: no se sabe si SIESA lo creó", async () => {
   const e = new Error("aborted");
   e.name = "AbortError";
@@ -63,4 +81,21 @@ test("corte de red a mitad de camino: no se sabe", async () => {
   globalThis.fetch = fallar(e);
   const r = await enviarASiesa({});
   assert.equal(r.incierto, true);
+});
+
+test("sin `documento` el POST va al conector de la CEA; con él, al que se le indique", async () => {
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    return new Response(JSON.stringify({ codigo: 0 }), { status: 200 });
+  };
+
+  await enviarASiesa({});
+  await enviarASiesa(
+    {},
+    { documento: { idDocumento: "257135", nombreDocumento: "AJUSTE_INV_VISCERAS" } },
+  );
+
+  assert.match(urls[0], /idDocumento=256783&nombreDocumento=ENTRADA_DIRECTA_ALMACEN/);
+  assert.match(urls[1], /idDocumento=257135&nombreDocumento=AJUSTE_INV_VISCERAS/);
 });

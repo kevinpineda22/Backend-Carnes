@@ -25,4 +25,14 @@ router.post("/liquidaciones/:id/enviar", SiesaController.enviarOficial);
 // Se anularon en SIESA: vuelve a Costeada para corregir y reenviar.
 router.post("/liquidaciones/:id/anular", SiesaController.anularOficiales);
 
+// Las vísceras entran al inventario por un ajuste CEI aparte, una por sede, que
+// SIESA contabiliza al importar. Solo con la oficial ya en SIESA.
+router.get(
+  "/liquidaciones/:id/ajuste-visceras/previsualizar",
+  SiesaController.previsualizarAjusteVisceras,
+);
+router.post("/liquidaciones/:id/ajuste-visceras/enviar", SiesaController.enviarAjusteVisceras);
+// Se anuló en SIESA el ajuste de UNA sede: se libera para mandarlo de nuevo.
+router.post("/liquidaciones/:id/ajuste-visceras/anular", SiesaController.anularAjusteVisceras);
+
 export default router;

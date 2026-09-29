@@ -1,5 +1,12 @@
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
-import { siesaConfigurado, siesaActivo, faltantesSiesa, conexionSiesa, DOCUMENTO_CARNES } from "../config/siesa.js";
+import {
+  siesaConfigurado,
+  siesaActivo,
+  faltantesSiesa,
+  conexionSiesa,
+  DOCUMENTO_CARNES,
+  DOCUMENTO_AJUSTE_VISCERAS,
+} from "../config/siesa.js";
 
 /** GET /api/siesa/envios */
 export async function listar(req, res, next) {
@@ -36,6 +43,7 @@ export async function estado(_req, res) {
     idCompania: c.idCompania || null,
     idSistema: c.idSistema,
     documento: DOCUMENTO_CARNES,
+    documentoAjusteVisceras: DOCUMENTO_AJUSTE_VISCERAS,
   });
 }
 
@@ -69,6 +77,48 @@ export async function enviarOficial(req, res, next) {
     );
     // 207: algunas sedes salieron y otras no. El front muestra el detalle.
     res.status(data.cerrada ? 200 : 207).json({ ok: data.cerrada, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** GET /api/siesa/liquidaciones/:id/ajuste-visceras/previsualizar */
+export async function previsualizarAjusteVisceras(req, res, next) {
+  try {
+    const data = await SiesaEnvio.previsualizarAjusteVisceras(req.params.id);
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/siesa/liquidaciones/:id/ajuste-visceras/enviar
+ *
+ * Manda el ajuste de cada sede pendiente, una a una. 200 si quedó todo; 207 si
+ * alguna sede no salió o quedó pendiente (el detalle va en `resultados`).
+ */
+export async function enviarAjusteVisceras(req, res, next) {
+  try {
+    const data = await SiesaEnvio.enviarAjusteVisceras(req.params.id, req.body?.enviado_por);
+    res.status(data.completo ? 200 : 207).json({ ok: data.completo, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/siesa/liquidaciones/:id/ajuste-visceras/anular
+ * { recepcion_id, por, motivo } — el ajuste de esa sede ya se anuló en SIESA.
+ */
+export async function anularAjusteVisceras(req, res, next) {
+  try {
+    const data = await SiesaEnvio.anularAjusteVisceras(req.params.id, {
+      recepcionId: req.body?.recepcion_id,
+      por: req.body?.por,
+      motivo: req.body?.motivo,
+    });
+    res.json({ ok: true, ...data });
   } catch (error) {
     next(error);
   }
