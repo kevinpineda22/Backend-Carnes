@@ -7,6 +7,10 @@ import {
   coberturaOficial,
   viscerasEnCea,
   esperaParaSede,
+  armarAjusteViscerasLiquidacion,
+  consecutivoAjusteLiquidacion,
+  referenciaAjusteLiquidacion,
+  guardaAjustesPorSede,
   LIMITE_FUNCION_MS,
   PRESUPUESTO_NUEVA_SEDE_MS,
   ESPERA_MINIMA_MS,
@@ -443,4 +447,273 @@ test("el plano lleva consecutivo y número de registro (f350/f470_consec_docto, 
   assert.equal(payload.Documentos[0].CONSECUTIVO_DOCTO, "123");
   assert.deepEqual(payload.Movimientos.map((m) => m.NRO_DOCTO), ["123", "123"]);
   assert.deepEqual(payload.Movimientos.map((m) => m.NRO_REGISTRO), ["1", "2"]);
+});
+
+// ─── El documento consolidado de la liquidación ─────────────────────────────
+
+const sedeRec = (id, nombre, co, bodega, items, extra = {}) => ({
+  id,
+  fecha_ingreso: "2026-09-27",
+  sede_id: id,
+  sede: { id, nombre, codigo_co: co, bodega_siesa: bodega },
+  items,
+  ...extra,
+});
+
+const LLANO = sedeRec(12, "Girardota Llano", "04", "00401", [
+  viscera("Mondongo", "15168", 20, 18000),
+  viscera("Riñon", "15188", 4, 11000, "UND"),
+  viscera("Vísceras", null, 9, 1000),
+]);
+const BARBOSA = sedeRec(13, "Carnes Barbosa", "05", "00501", [
+  viscera("Mondongo", "15168", 26, 18000),
+  viscera("Riñon", "15188", 5.333, 11000, "UND"),
+]);
+const SIN_VISCERAS = sedeRec(14, "Sin vísceras", "07", "00701", [carne("15139", 10, 16800)]);
+
+const armarLiq = (recepciones = [LLANO, BARBOSA], config = CONFIG, extra = {}) =>
+  armarAjusteViscerasLiquidacion({ liquidacionId: 10, recepciones, config, ...extra });
+
+test("consolidado: UNA cabecera con la BODEGA vacía, y el consecutivo de la liquidación", () => {
+  const { payload, bloqueos } = armarLiq();
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Documentos.length, 1);
+  assert.deepEqual(payload.Documentos[0], {
+    CONSECUTIVO_DOCTO: "104",
+    FECHA_DOCTO: "20260927",
+    BODEGA: "",
+  });
+});
+
+test("consolidado: los movimientos de todas las sedes, numerados de corrido", () => {
+  const { payload, resumen } = armarLiq();
+  assert.equal(payload.Movimientos.length, 4);
+  assert.deepEqual(
+    payload.Movimientos.map((m) => m.NRO_REGISTRO),
+    ["1", "2", "3", "4"],
+  );
+  // Todos apuntan a la MISMA cabecera.
+  assert.ok(payload.Movimientos.every((m) => m.NRO_DOCTO === "104"));
+  assert.equal(resumen.renglones, 4);
+  assert.equal(resumen.sedes, 2);
+});
+
+test("consolidado: cada movimiento conserva la bodega y el CO de SU sede", () => {
+  const { payload } = armarLiq();
+  const [m1, m2, m3, m4] = payload.Movimientos;
+  assert.equal(m1.BODEGA, "00401");
+  assert.equal(m1["C.O MOVIMIENTO"], "004");
+  assert.equal(m2.BODEGA, "00401");
+  assert.equal(m3.BODEGA, "00501");
+  assert.equal(m3["C.O MOVIMIENTO"], "005");
+  assert.equal(m4.BODEGA, "00501");
+  assert.ok(payload.Movimientos.every((m) => m["C.O."] === "001"));
+});
+
+test("consolidado: Riñón 5,333 UND sale como 5.33 y 4 UND como 4.00", () => {
+  const { payload } = armarLiq();
+  const rinones = payload.Movimientos.filter((m) => m.ITEM === "15188");
+  assert.deepEqual(
+    rinones.map((m) => m.CANTIDAD),
+    ["4.00", "5.33"],
+  );
+  assert.ok(rinones.every((m) => m.UNIDAD_MEDIDA === "UND"));
+});
+
+test("consolidado: total valor y kilos suman las sedes (kilos solo de lo que se pesa)", () => {
+  const { resumen } = armarLiq();
+  // Llano: 20×18000 + 4×11000 = 404.000; Barbosa: 26×18000 + 5,33×11000 = 526.630
+  assert.equal(resumen.totalValor, 930630);
+  assert.equal(resumen.totalKilos, 46);
+});
+
+test("consolidado: una sede sin vísceras no aporta ni bloquea", () => {
+  const { payload, bloqueos, resumen, porSede } = armarLiq([LLANO, SIN_VISCERAS, BARBOSA]);
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Movimientos.length, 4);
+  assert.equal(resumen.sedes, 2);
+  assert.equal(porSede.length, 3);
+  assert.equal(porSede.find((s) => s.recepcion_id === 14).vacio, true);
+});
+
+test("consolidado: lo que sin código no viaja queda dicho en el resumen", () => {
+  const { resumen } = armarLiq();
+  assert.deepEqual(resumen.sinCodigo, ["Vísceras"]);
+});
+
+test("consolidado, TODO O NADA: el bloqueo de UNA sede bloquea el documento", () => {
+  const sinBodega = sedeRec(13, "Carnes Barbosa", "05", null, BARBOSA.items);
+  const { bloqueos } = armarLiq([LLANO, sinBodega]);
+  assert.equal(bloqueos.length, 1);
+  assert.match(bloqueos[0], /Carnes Barbosa.*bodega/);
+});
+
+test("consolidado: sin CO, sin costo y sin fecha, cada uno con el nombre de la sede", () => {
+  const sinCo = sedeRec(13, "Carnes Barbosa", "", "00501", BARBOSA.items);
+  assert.match(armarLiq([LLANO, sinCo]).bloqueos[0], /centro de operación/);
+
+  const sinCosto = sedeRec(13, "Carnes Barbosa", "05", "00501", [viscera("Bofe", "15134", 2, 0)]);
+  const b = armarLiq([LLANO, sinCosto]).bloqueos;
+  assert.equal(b.length, 1);
+  assert.match(b[0], /^Carnes Barbosa: 1 víscera\(s\) sin costo: Bofe/);
+
+  const sinFecha = sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, {
+    fecha_ingreso: null,
+  });
+  assert.match(
+    armarLiq([LLANO, sinFecha]).bloqueos[0],
+    /Carnes Barbosa: La recepción no tiene fecha/,
+  );
+});
+
+test("consolidado: la configuración que falta se dice UNA vez, no una por sede", () => {
+  const { bloqueos } = armarLiq([LLANO, BARBOSA], { decimalesValor: 0, coDocumento: "" });
+  assert.equal(bloqueos.length, 1);
+  assert.match(bloqueos[0], /coDocumento, unidadNegocio/);
+});
+
+test("consolidado: fechas distintas entre las sedes que aportan bloquean (misma regla de la CEA)", () => {
+  const otraFecha = sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, {
+    fecha_ingreso: "2026-09-28",
+  });
+  const { bloqueos } = armarLiq([LLANO, otraFecha]);
+  assert.equal(bloqueos.length, 1);
+  assert.match(bloqueos[0], /fechas distintas \(20260927, 20260928\)/);
+});
+
+test("consolidado: la fecha de una sede SIN vísceras no cuenta", () => {
+  const otraFecha = sedeRec(14, "Sin vísceras", "07", "00701", [carne("15139", 10, 16800)], {
+    fecha_ingreso: "2026-09-30",
+  });
+  const { bloqueos, payload } = armarLiq([LLANO, otraFecha]);
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Documentos[0].FECHA_DOCTO, "20260927");
+});
+
+test("consolidado: sin recepciones bloquea; sin ninguna víscera, vacío y sin bloqueos", () => {
+  const nada = armarLiq([]);
+  assert.equal(nada.vacio, true);
+  assert.deepEqual(nada.bloqueos, ["La liquidación no tiene recepciones."]);
+
+  const solo = armarLiq([SIN_VISCERAS]);
+  assert.equal(solo.vacio, true);
+  assert.deepEqual(solo.bloqueos, []);
+  assert.equal(solo.payload.Movimientos.length, 0);
+});
+
+test("consolidado: recepcion_ids son las que aportan renglones", () => {
+  assert.deepEqual(armarLiq([LLANO, SIN_VISCERAS, BARBOSA]).recepcion_ids, [12, 13]);
+});
+
+test("consolidado: los renglones traen sede y recepción, para el desglose", () => {
+  const { renglones } = armarLiq();
+  assert.equal(renglones.length, 4);
+  assert.deepEqual([...new Set(renglones.map((r) => r.recepcion_id))], [12, 13]);
+  assert.equal(renglones[0].sede, "Girardota Llano");
+});
+
+test("consolidado: el payload no lleva Descuentos, y la cabecera tiene solo tres claves", () => {
+  const { payload } = armarLiq();
+  assert.deepEqual(Object.keys(payload), ["Documentos", "Movimientos"]);
+  assert.deepEqual(Object.keys(payload.Documentos[0]), [
+    "CONSECUTIVO_DOCTO",
+    "FECHA_DOCTO",
+    "BODEGA",
+  ]);
+});
+
+test("consecutivo del consolidado: id × 10 + 4, distinto de los de la CEA (+1, +2, +3)", () => {
+  assert.equal(consecutivoAjusteLiquidacion(10), 104);
+  assert.equal(
+    armarLiq([LLANO], CONFIG, { consecutivo: 777 }).payload.Documentos[0].CONSECUTIVO_DOCTO,
+    "777",
+  );
+  // Con id 99999 sigue cabiendo en 8 dígitos.
+  assert.ok(String(consecutivoAjusteLiquidacion(99999)).length <= 8);
+  // La CEA consolidada de la liquidación 10 usa 103 (`id × 10 + 3`).
+  assert.notEqual(consecutivoAjusteLiquidacion(10), 10 * 10 + 3);
+});
+
+test("referencia del consolidado: TC VIS L + liquidación, y cabe en 12", () => {
+  assert.equal(referenciaAjusteLiquidacion(10), "TC VIS L10");
+  assert.equal(referenciaAjusteLiquidacion(9999), "TC VIS L9999");
+  assert.equal(referenciaAjusteLiquidacion(9999).length, 12);
+  assert.equal(armarLiq().resumen.referencia, "TC VIS L10");
+});
+
+test("referencia del consolidado: pasada la #9999 cae a la compacta sin cortar dígitos", () => {
+  assert.equal(referenciaAjusteLiquidacion(12345), "TCVL12345");
+  assert.ok(referenciaAjusteLiquidacion(123456789).length <= 12);
+  assert.notEqual(referenciaAjusteLiquidacion(12345), referenciaAjusteLiquidacion(12346));
+  // Y no se confunde con la de una recepción con el mismo número.
+  assert.notEqual(referenciaAjusteLiquidacion(12), referenciaAjusteVisceras(12));
+});
+
+// ─── El guardia contra los ajustes por sede de antes ────────────────────────
+
+const previo = (recepcion_id, estado, referencia = `TC VIS R${recepcion_id}`) => ({
+  id: recepcion_id * 100,
+  recepcion_id,
+  estado,
+  referencia,
+});
+const NOMBRES = new Map([
+  [12, "Girardota Llano"],
+  [13, "Carnes Barbosa"],
+]);
+
+test("guardia: un ajuste por sede ok bloquea, con la sede y la referencia", () => {
+  const { bloqueos, vigentes } = guardaAjustesPorSede([previo(12, "ok")], NOMBRES);
+  assert.equal(vigentes.length, 1);
+  assert.equal(bloqueos.length, 1);
+  assert.match(bloqueos[0], /Girardota Llano \(TC VIS R12, en SIESA\)/);
+  assert.match(bloqueos[0], /Se anuló en SIESA/);
+  assert.match(bloqueos[0], /dos veces/);
+});
+
+test("guardia: enviando y sin_confirmar también bloquean", () => {
+  const { bloqueos } = guardaAjustesPorSede(
+    [previo(12, "enviando"), previo(13, "sin_confirmar")],
+    NOMBRES,
+  );
+  assert.equal(bloqueos.length, 1);
+  assert.match(bloqueos[0], /enviándose/);
+  assert.match(bloqueos[0], /sin confirmar/);
+});
+
+test("guardia: error y anulado no bloquean (ya no ocupan el lugar)", () => {
+  const { bloqueos, vigentes } = guardaAjustesPorSede(
+    [previo(12, "anulado"), previo(13, "error")],
+    NOMBRES,
+  );
+  assert.deepEqual(bloqueos, []);
+  assert.equal(vigentes.length, 0);
+});
+
+test("guardia: el envío consolidado (sin recepción) no cuenta como uno por sede", () => {
+  const consolidado = { id: 1, recepcion_id: null, estado: "ok", referencia: "TC VIS L10" };
+  assert.deepEqual(guardaAjustesPorSede([consolidado], NOMBRES).bloqueos, []);
+});
+
+test("guardia: sin filas no bloquea; una sede sin nombre conocido se nombra por su recepción", () => {
+  assert.deepEqual(guardaAjustesPorSede([], NOMBRES).bloqueos, []);
+  const { bloqueos } = guardaAjustesPorSede([previo(99, "ok")], NOMBRES);
+  assert.match(bloqueos[0], /Recepción #99 \(TC VIS R99, en SIESA\)/);
+});
+
+test("guardia: con cuatro ok (#12 a #15) los nombra a todos en un solo mensaje", () => {
+  const nombres = new Map([
+    [12, "Llano"],
+    [13, "Carnes Barbosa"],
+    [14, "Super Barbosa"],
+    [15, "San Juan"],
+  ]);
+  const { bloqueos } = guardaAjustesPorSede(
+    [12, 13, 14, 15].map((id) => previo(id, "ok")),
+    nombres,
+  );
+  assert.equal(bloqueos.length, 1);
+  for (const n of ["Llano", "Carnes Barbosa", "Super Barbosa", "San Juan"]) {
+    assert.match(bloqueos[0], new RegExp(n));
+  }
 });

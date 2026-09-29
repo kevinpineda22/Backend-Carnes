@@ -95,8 +95,9 @@ export async function previsualizarAjusteVisceras(req, res, next) {
 /**
  * POST /api/siesa/liquidaciones/:id/ajuste-visceras/enviar
  *
- * Manda el ajuste de cada sede pendiente, una a una. 200 si quedó todo; 207 si
- * alguna sede no salió o quedó pendiente (el detalle va en `resultados`).
+ * Manda UN ajuste con las vísceras de todas las sedes (un solo POST, todo o
+ * nada). 200 si quedó en SIESA; 207 si no (error o sin confirmar: el detalle va
+ * en `envio`). 409 si algo lo bloquea, sin mandar nada.
  */
 export async function enviarAjusteVisceras(req, res, next) {
   try {
@@ -109,7 +110,9 @@ export async function enviarAjusteVisceras(req, res, next) {
 
 /**
  * POST /api/siesa/liquidaciones/:id/ajuste-visceras/anular
- * { recepcion_id, por, motivo } — el ajuste de esa sede ya se anuló en SIESA.
+ * { recepcion_id?, por, motivo } — el ajuste ya se anuló en SIESA. Con
+ * `recepcion_id`, el ajuste por sede del esquema anterior de esa recepción; sin
+ * él, el consolidado de la liquidación.
  */
 export async function anularAjusteVisceras(req, res, next) {
   try {

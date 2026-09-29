@@ -10,10 +10,18 @@
  * factura y solo lleva cortes. El inventario de vísceras entra por un ajuste de
  * inventario aparte, después de que la entrada oficial ya está en SIESA.
  *
- * ─── Una recepción, un documento ──────────────────────────────────────────
+ * ─── Un documento por LIQUIDACIÓN ─────────────────────────────────────────
  *
- * La cabecera del conector lleva UNA bodega, así que va un documento por sede.
- * Cada movimiento repite la bodega y lleva además el CO de la sede.
+ * Primero fue un documento por sede, y el 30/09/2026 la quinta sede (#16 Villa
+ * Hermosa) volvió con 400 "Item sin cantidad disponible": el CEI es una ENTRADA
+ * de inventario, y con cuatro sedes ya anuladas en SIESA el saldo de la bodega
+ * no alcanzaba para ese ítem. El negocio decidió UN documento con todas las
+ * sedes, como la CEA consolidada, y la BODEGA de la cabecera VACÍA: la bodega y
+ * el CO de cada sede viajan en cada movimiento.
+ *
+ * `armarAjusteVisceras` sigue armando UNA recepción —es la lógica de renglones—
+ * y `armarAjusteViscerasLiquidacion` junta las sedes en un solo documento, todo
+ * o nada: si una sede tiene un bloqueo, no sale el documento.
  *
  * ─── Lo que el conector tiene FIJO y lo que espera VARIABLE ───────────────
  *
@@ -317,4 +325,181 @@ export function esperaParaSede(transcurridoMs, maxEsperaMs) {
   if (transcurridoMs > PRESUPUESTO_NUEVA_SEDE_MS) return null;
   const espera = Math.min(maxEsperaMs, LIMITE_FUNCION_MS - transcurridoMs);
   return espera < ESPERA_MINIMA_MS ? null : espera;
+}
+
+// ─── El documento consolidado de una liquidación ────────────────────────────
+
+/**
+ * Consecutivo propio del ajuste consolidado: `id × 10 + 4`.
+ *
+ * No choca con los de la CEA (`recepción × 10 + 1/2`, `liquidación × 10 + 3`, ver
+ * `SiesaEnvio.model.js`). Con el consecutivo automático SIESA asigna el número
+ * real; este es solo para que el campo viaje (el plano lo exige) y para que
+ * cabecera y movimientos se enlacen. Cabe en 8 dígitos.
+ */
+export const consecutivoAjusteLiquidacion = (liquidacionId) => Number(liquidacionId) * 10 + 4;
+
+/**
+ * Referencia del ajuste consolidado: `TC VIS L10`.
+ *
+ * `L` y no `R`, para distinguirla en la lista de envíos de las viejas por sede
+ * (`TC VIS R12`, que quedan como historial). Igual que las demás: entra legible
+ * hasta la liquidación #9999 y de ahí pasa a `TCVL12345`, sin cortar dígitos.
+ */
+export function referenciaAjusteLiquidacion(liquidacionId) {
+  const legible = `TC VIS L${liquidacionId}`;
+  return legible.length <= LARGO_REFERENCIA
+    ? legible
+    : `TCVL${liquidacionId}`.slice(0, LARGO_REFERENCIA);
+}
+
+/**
+ * Arma UN ajuste de vísceras con todas las sedes de la liquidación.
+ *
+ * Cabecera: `{ CONSECUTIVO_DOCTO, FECHA_DOCTO, BODEGA: "" }`. La bodega va vacía
+ * porque el documento abarca varias; cada movimiento lleva la suya y el CO de su
+ * sede. Los movimientos de todas las sedes se numeran de corrido: `NRO_REGISTRO`
+ * es la posición dentro del documento, no dentro de la sede.
+ *
+ * La fecha es UNA, con la misma regla de la CEA consolidada: todas las
+ * recepciones de una liquidación llegan el mismo día, y si no, se bloquea en vez
+ * de elegir una por las otras. Cuentan solo las sedes que aportan renglones.
+ *
+ * Todo o nada: el bloqueo de UNA sede (sin bodega, sin CO, sin costo, sin fecha)
+ * bloquea el documento entero. Una sede sin vísceras no aporta ni bloquea.
+ *
+ * @param {object} p
+ * @param {number|string} p.liquidacionId
+ * @param {Array}  p.recepciones  filas de `carnes_recepciones` con `sede` e `items`
+ * @param {object} p.config       { coDocumento, unidadNegocio, decimalesValor }
+ * @param {number} [p.consecutivo]
+ * @returns {{
+ *   payload: object, resumen: object, renglones: object[], bloqueos: string[],
+ *   vacio: boolean, porSede: object[], recepcion_ids: number[],
+ * }}
+ */
+export function armarAjusteViscerasLiquidacion({
+  liquidacionId,
+  recepciones = [],
+  config = {},
+  consecutivo,
+}) {
+  const bloqueos = [];
+  const consec = String(consecutivo ?? consecutivoAjusteLiquidacion(liquidacionId));
+  const referencia = referenciaAjusteLiquidacion(liquidacionId);
+
+  if (recepciones.length === 0) bloqueos.push("La liquidación no tiene recepciones.");
+
+  const porSede = recepciones.map((recepcion) => {
+    const armado = armarAjusteVisceras({
+      recepcion,
+      items: recepcion.items || [],
+      config,
+      consecutivo: consec,
+    });
+    const sede = recepcion.sede?.nombre ?? null;
+    return {
+      recepcion_id: recepcion.id,
+      sede,
+      fecha: recepcion.fecha_ingreso ?? null,
+      movimientos: armado.payload.Movimientos,
+      renglones: armado.renglones,
+      resumen: armado.resumen,
+      // "Falta configurar" es igual para todas: se dice una vez, abajo.
+      bloqueos: armado.bloqueos.filter((b) => !b.startsWith("Falta configurar en SIESA")),
+      vacio: armado.vacio,
+      faltaConfig: armado.bloqueos.find((b) => b.startsWith("Falta configurar en SIESA")),
+    };
+  });
+
+  const faltaConfig = porSede.find((s) => s.faltaConfig)?.faltaConfig;
+  if (faltaConfig) bloqueos.push(faltaConfig);
+
+  // Un bloqueo de cualquier sede es del documento. Con el nombre de la sede si el
+  // mensaje no lo trae ya.
+  for (const s of porSede) {
+    for (const b of s.bloqueos) {
+      const nombre = s.sede ?? `Recepción #${s.recepcion_id}`;
+      bloqueos.push(b.includes(nombre) ? b : `${nombre}: ${b}`);
+    }
+  }
+
+  const aportan = porSede.filter((s) => !s.vacio);
+  const fechas = [...new Set(aportan.map((s) => fechaSiesa(s.fecha)).filter(Boolean))];
+  if (fechas.length > 1) {
+    bloqueos.push(
+      `Las recepciones tienen fechas distintas (${fechas.join(", ")}). El ajuste lleva una sola ` +
+        "fecha: revisá la fecha de ingreso de cada recepción.",
+    );
+  }
+  // Sin ninguna fecha, cada sede ya lo dijo en su bloqueo.
+  const fecha = fechas.length === 1 ? fechas[0] : null;
+
+  const movimientos = aportan
+    .flatMap((s) => s.movimientos)
+    .map((m, n) => ({ ...m, NRO_DOCTO: consec, NRO_REGISTRO: String(n + 1) }));
+
+  const renglones = aportan.flatMap((s) =>
+    s.renglones.map((r) => ({ ...r, recepcion_id: s.recepcion_id, sede: s.sede })),
+  );
+
+  const totalKilos = aportan.reduce((a, s) => a + s.resumen.totalKilos, 0);
+  const totalValor = aportan.reduce((a, s) => a + s.resumen.totalValor, 0);
+  const sinCodigo = [...new Set(porSede.flatMap((s) => s.resumen.sinCodigo || []))];
+
+  return {
+    payload: {
+      Documentos: [{ CONSECUTIVO_DOCTO: consec, FECHA_DOCTO: fecha ?? "", BODEGA: "" }],
+      Movimientos: movimientos,
+    },
+    resumen: {
+      tipo: TIPO_AJUSTE_VISCERAS,
+      referencia,
+      renglones: movimientos.length,
+      sedes: aportan.length,
+      totalKilos: Math.round(totalKilos * 1000) / 1000,
+      totalValor: Math.round(totalValor * 100) / 100,
+      fecha,
+      consecutivo: consec,
+      sinCodigo,
+    },
+    renglones,
+    bloqueos,
+    vacio: movimientos.length === 0,
+    recepcion_ids: aportan.map((s) => s.recepcion_id),
+    porSede: porSede.map(({ movimientos: _m, faltaConfig: _f, ...s }) => s),
+  };
+}
+
+/**
+ * Los ajustes por SEDE del esquema anterior que todavía ocupan el lugar
+ * (enviando, ok o sin_confirmar).
+ *
+ * Mientras alguno siga vigente no se manda el consolidado: esa víscera ya está en
+ * SIESA en OTRO documento, contabilizado, y el consolidado la entraría dos veces.
+ * Hay que registrar su anulación —después de anularlo en SIESA— antes.
+ *
+ * @param {Array} filas  envíos de ajuste con `recepcion_id` (las viejas por sede)
+ * @param {Map<number,string>} [sedes]  recepcion_id → nombre de la sede
+ * @returns {{ bloqueos: string[], vigentes: object[] }}
+ */
+export function guardaAjustesPorSede(filas = [], sedes = new Map()) {
+  // Por recepción, para que el mensaje se lea en orden.
+  const vigentes = filas
+    .filter((f) => f.recepcion_id && ["enviando", "ok", "sin_confirmar"].includes(f.estado))
+    .sort((a, b) => Number(a.recepcion_id) - Number(b.recepcion_id));
+  if (!vigentes.length) return { bloqueos: [], vigentes };
+
+  const detalle = (f) =>
+    `${sedes.get(f.recepcion_id) ?? `Recepción #${f.recepcion_id}`} ` +
+    `(${f.referencia}, ${f.estado === "ok" ? "en SIESA" : f.estado === "enviando" ? "enviándose" : "sin confirmar"})`;
+  return {
+    vigentes,
+    bloqueos: [
+      `Hay ajustes de vísceras por sede del esquema anterior todavía vigentes: ` +
+        `${vigentes.map(detalle).join("; ")}. Mandar el ajuste de la liquidación entraría ` +
+        "esas vísceras dos veces. Anulalos en SIESA y registrá la anulación de cada uno " +
+        "(«Se anuló en SIESA») antes de enviar.",
+    ],
+  };
 }
