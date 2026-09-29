@@ -46,7 +46,11 @@ import {
   terceroCarnes,
   TERCEROS_CARNES,
 } from "../config/siesa.js";
-import { enviarASiesa } from "../services/siesa.service.js";
+import {
+  enviarASiesa,
+  TIMEOUT_INICIAL_MS,
+  TIMEOUT_OFICIAL_MS,
+} from "../services/siesa.service.js";
 import {
   notificarAnularInicial,
   notificarAnularIniciales,
@@ -58,10 +62,12 @@ const TABLA = "carnes_siesa_envios";
 const VIGENTES = ["enviando", "ok", "sin_confirmar"];
 
 /**
- * Un `enviando` más viejo que esto es un envío cuya función murió en el medio:
- * el POST a SIESA tiene un timeout de 45 s, así que nadie legítimo sigue ahí.
+ * Un `enviando` más viejo que esto es un envío cuya función murió en el medio.
+ * Tiene que quedar POR ENCIMA de la espera más larga a SIESA
+ * (TIMEOUT_OFICIAL_MS, 4 min) y del maxDuration de Vercel (5 min): un envío
+ * vivo nunca puede verse abandonado, o alguien lo reenvía mientras corre.
  */
-const ENVIANDO_ABANDONADO_MS = 2 * 60 * 1000;
+const ENVIANDO_ABANDONADO_MS = 6 * 60 * 1000;
 
 const MIGRACIONES = [
   "sql/007_siesa.sql",
@@ -456,7 +462,9 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta }) {
     fallarSiFaltaMigracion(errorReserva, "No se pudo registrar el envío", MIGRACIONES);
   }
 
-  const resultado = await enviarASiesa(payload);
+  const resultado = await enviarASiesa(payload, {
+    timeoutMs: tipo === TIPO_ENVIO.OFICIAL ? TIMEOUT_OFICIAL_MS : TIMEOUT_INICIAL_MS,
+  });
   const estado = resultado.ok ? "ok" : resultado.incierto ? "sin_confirmar" : "error";
 
   const cierre = {

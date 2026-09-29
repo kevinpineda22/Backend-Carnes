@@ -20,16 +20,35 @@ const NO_SALIO = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
 
 import { conexionSiesa, DOCUMENTO_CARNES } from "../config/siesa.js";
 
-/** El conector puede tardar: valida cada movimiento contra maestros. */
-const TIMEOUT_MS = 45_000;
+/**
+ * Cuánto se espera la respuesta del conector, según el envío.
+ *
+ * El conector valida cada movimiento contra maestros, y el tiempo crece con los
+ * renglones. La inicial (~35, una sede) vuelve en segundos; la oficial
+ * consolidada de una liquidación son cientos: TC OFI L10 (403 renglones, 9
+ * sedes) pasó dos veces los 45 s de antes el 29/09/2026, y cada corte deja un
+ * `sin_confirmar` que puede ser un documento creado.
+ *
+ * Esta espera tiene que quedar DEBAJO de dos límites, o el remedio es peor:
+ *   · `maxDuration` de la función en vercel.json (300 s): si Vercel mata la
+ *     función antes, el envío queda colgado en 'enviando'.
+ *   · `ENVIANDO_ABANDONADO_MS` (6 min, backend y front): si un envío vivo se
+ *     viera "abandonado", alguien lo resolvería y reenviaría mientras corre.
+ *
+ * La inicial se queda en 45 s a propósito: sale cuando el recibidor cierra, y
+ * no puede tenerlo minutos mirando la pantalla por algo que es best-effort.
+ */
+export const TIMEOUT_INICIAL_MS = 45_000;
+export const TIMEOUT_OFICIAL_MS = 240_000;
 
 /**
  * POST al conector.
  *
  * @param {object} payload  { Documentos, Descuentos, Movimientos }
+ * @param {{timeoutMs?: number}} [opciones]  ver TIMEOUT_INICIAL_MS / TIMEOUT_OFICIAL_MS
  * @returns {Promise<{ok: boolean, status: number|null, respuesta: any, error: string|null}>}
  */
-export async function enviarASiesa(payload) {
+export async function enviarASiesa(payload, { timeoutMs = TIMEOUT_INICIAL_MS } = {}) {
   const c = conexionSiesa();
 
   const url =
@@ -39,7 +58,7 @@ export async function enviarASiesa(payload) {
     `&nombreDocumento=${encodeURIComponent(DOCUMENTO_CARNES.nombreDocumento)}`;
 
   const controlador = new AbortController();
-  const temporizador = setTimeout(() => controlador.abort(), TIMEOUT_MS);
+  const temporizador = setTimeout(() => controlador.abort(), timeoutMs);
 
   try {
     const r = await fetch(url, {
@@ -95,7 +114,7 @@ export async function enviarASiesa(payload) {
         status: null,
         respuesta: null,
         error:
-          `SIESA no respondió en ${TIMEOUT_MS / 1000} s. Puede haberlo creado: ` +
+          `SIESA no respondió en ${timeoutMs / 1000} s. Puede haberlo creado: ` +
           "verificalo en SIESA antes de reintentar.",
       };
     }
