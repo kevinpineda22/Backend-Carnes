@@ -256,8 +256,33 @@ const guardarBorradorSchema = z.object({
     .default([]),
 });
 
+// ─── Proveedores (recibidor de facturas) ───────────────────────────────────
+
+/** `:id` de la URL. Sin esto, "abc" llega a Postgres y vuelve como un 500. */
+const idParamSchema = z.object({
+  id: z.coerce
+    .number({ invalid_type_error: "El id no es válido." })
+    .int("El id no es válido.")
+    .positive("El id no es válido.")
+    .safe("El id no es válido."),
+});
+
+// `con_plantilla=1` es la forma en que lo manda el front; "true" se acepta porque
+// es lo que escribiría cualquiera probando la URL a mano.
+const listarProveedoresQuerySchema = z.object({
+  con_plantilla: z
+    // Solo `errorMap`: zod lanza si se combina con `invalid_type_error`.
+    .enum(["1", "true", "0", "false"], {
+      errorMap: () => ({ message: "con_plantilla debe ser 1 o 0." }),
+    })
+    .optional(),
+});
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
+
+  listarProveedores: validar(listarProveedoresQuerySchema, "query"),
+  idParam: validar(idParamSchema, "params"),
 
   abrirRecepcion: validar(abrirRecepcionSchema),
   guardarBorrador: validar(guardarBorradorSchema),
