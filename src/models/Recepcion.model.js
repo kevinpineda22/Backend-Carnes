@@ -118,6 +118,13 @@ async function renglonesDesdePlantilla(especie, novillos = 0) {
     orden: i.orden,
     cantidad: 0,
     costo_base: i.costo_base,
+    // Explícitos, NO por el default de la columna: estas filas se insertan en el
+    // mismo lote que las vísceras, que sí traen `unidad` y `factor_novillo`.
+    // En un insert de varias filas Supabase arma la unión de las columnas y a la
+    // fila a la que le falta una le manda NULL —no el DEFAULT 'KL'—, y
+    // `unidad` es NOT NULL: abrir una recepción fallaba con un 500.
+    unidad: "KL",
+    factor_novillo: null,
   }));
 
   // Qué vísceras tienen renglón en la recepción (sql/017): las de bloque
