@@ -278,11 +278,82 @@ const listarProveedoresQuerySchema = z.object({
     .optional(),
 });
 
+// ─── Recepción de proveedor: abrir y autoguardar ───────────────────────────
+
+const abrirRecepcionProveedorSchema = z.object({
+  proveedor_id: z.coerce
+    .number({ invalid_type_error: "Elegí el proveedor." })
+    .int("Elegí el proveedor.")
+    .positive("Elegí el proveedor.")
+    .safe("Elegí el proveedor."),
+  // La factura se normaliza en el modelo (mayúsculas, espacios, clave). Acá solo
+  // que exista y que quepa en VARCHAR(40); una clave vacía (solo símbolos) la
+  // rechaza el modelo con su propio mensaje.
+  factura: z
+    .string({
+      required_error: "Escribí el número de factura.",
+      invalid_type_error: "Escribí el número de factura.",
+    })
+    .trim()
+    .min(1, "Escribí el número de factura.")
+    .max(40, "El número de factura no puede pasar de 40 caracteres."),
+  qr_token: z
+    .string({
+      required_error: "Escaneá el código QR de la sede.",
+      invalid_type_error: "Escaneá el código QR de la sede.",
+    })
+    .trim()
+    .min(8, "El código quedó incompleto. Volvé a escanear.")
+    .max(64),
+  recibido_por: correo("El correo del recibidor no es válido."),
+});
+
+/**
+ * Campos del autoguardado de proveedor: los topes de ACÁ son un tope duro de
+ * 10x contra abuso, no la regla de negocio. Los largos que de verdad aplican
+ * (valor 25, cantidad 20, motivo 500, observaciones 2000) los decide el plan del
+ * guardado (`shared/guardadoProveedor.js`): un campo largo se rechaza SOLO a
+ * él y vuelve en `pendientes`, o (observaciones) se recorta — no tumba el
+ * autoguardado entero con un 400.
+ *
+ * Los números pueden llegar como texto ("12,5") o como número; no se convierten
+ * acá: un valor que no se entiende es un `pendiente`, no un 400.
+ */
+const numeroOTexto = z.union([z.string().max(200), z.number()]);
+
+const guardarRecepcionProveedorSchema = z.object({
+  editado_por: correo("El correo de quien edita no es válido."),
+  observaciones: z.string().max(20000).nullable().optional(),
+  items: z
+    .array(
+      z.object({
+        id: z.coerce.number().int().positive(),
+        cantidad: numeroOTexto.nullish(),
+        // La plata viaja SIEMPRE como texto: el navegador no calcula dinero que
+        // el backend crea. Se interpreta con `parsearPesos`.
+        valor: z.string().max(250).nullable().optional(),
+        valor_fuente: z.enum(["unitario", "total"]).nullish(),
+        cantidad_devuelta: numeroOTexto.nullish(),
+        motivo_devolucion: z.string().max(5000).nullable().optional(),
+        // La cantidad que el recibidor confirmó (mismo formato que `cantidad`).
+        confirmar_exceso: numeroOTexto.nullish(),
+        // El unitario que confirmó, como texto de plata con hasta 4 decimales
+        // ("33.333,3333"); debe coincidir con el unitario resultante.
+        confirmar_valor: z.string().max(250).nullish(),
+      }),
+    )
+    .max(300, "Demasiados renglones en un solo guardado.")
+    .default([]),
+});
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
 
   listarProveedores: validar(listarProveedoresQuerySchema, "query"),
   idParam: validar(idParamSchema, "params"),
+
+  abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
+  guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
 
   abrirRecepcion: validar(abrirRecepcionSchema),
   guardarBorrador: validar(guardarBorradorSchema),

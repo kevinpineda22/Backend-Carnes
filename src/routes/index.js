@@ -7,6 +7,7 @@ import siesaRoutes from "./siesa.routes.js";
 import desposteRoutes from "./desposte.routes.js";
 import proveedoresRoutes from "./proveedores.routes.js";
 import recibidoresRoutes from "./recibidores.routes.js";
+import recepcionesProveedorRoutes from "./recepcionesProveedor.routes.js";
 import { verificarEmail } from "../services/email.service.js";
 import { sandboxOn } from "../config/sandbox.js";
 
@@ -20,6 +21,7 @@ router.use("/siesa", siesaRoutes);
 router.use("/desposte", desposteRoutes);
 router.use("/proveedores", proveedoresRoutes);
 router.use("/recibidores", recibidoresRoutes);
+router.use("/recepciones-proveedor", recepcionesProveedorRoutes);
 
 // Health check.
 //
