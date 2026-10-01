@@ -77,7 +77,7 @@ const LARGO_REFERENCIA = 12;
  * compacta. Nunca se corta la legible: cortarla se come dígitos del número y
  * dos recepciones distintas terminarían con la misma referencia en SIESA.
  */
-function ajustarReferencia(legible, compacta) {
+export function ajustarReferencia(legible, compacta) {
   return legible.length <= LARGO_REFERENCIA ? legible : compacta.slice(0, LARGO_REFERENCIA);
 }
 
@@ -115,10 +115,11 @@ const LARGO_NOTAS = 255;
  * Notas del documento, legibles para quien lo abre en SIESA:
  * "TALLER DE CARNES - ENTRADA INICIAL - RECEPCION #23 Lopez - TC INI R23".
  *
- * Hoy el conector tiene `f350_notas` FIJO y las ignora (ver el comentario en
- * `armarEntradaDirecta`); el día que lo pasen a variable, esto aparece solo.
+ * Desde el 30/09/2026 el conector 256783 tiene `f350_notas` como la variable
+ * `NOTAS` (antes era fijo, "TALLER DE CARNES"), así que esto SÍ viaja y se lee
+ * tal cual en SIESA. Exportada para el armador de proveedores.
  */
-function notasDocumento(nota, detalle, referencia) {
+export function notasDocumento(nota, detalle, referencia) {
   return [nota, detalle, referencia].filter(Boolean).join(" - ").slice(0, LARGO_NOTAS);
 }
 
@@ -149,7 +150,7 @@ export function coMovimiento(codigoCo) {
  * valor tiene que traer los de la moneda y la cantidad los de la unidad de
  * medida. Ver `decimalesValor` / `decimalesCantidad` en config/siesa.js.
  */
-const decimal = (n, decimales) => {
+export const decimal = (n, decimales) => {
   const d = Number.isInteger(decimales) ? decimales : 2;
   const f = 10 ** d;
   return (Math.round((Number(n) || 0) * f) / f).toFixed(d);
@@ -275,11 +276,9 @@ export function armarEntradaDirecta({
   // la inicial, que es lo que quien anula necesita leer. En la inicial lleva su
   // propia referencia, para que aparezca en SIESA y se pueda buscar.
   //
-  // `NOTAS` NO está entre las variables del conector tal como quedó configurado
-  // (f350_notas está fijo en "TALLER DE CARNES"). Se manda igual: si en el
-  // conector cambian f350_notas de fijo a variable NOTAS, las dos entradas
-  // quedan distinguibles a simple vista. Si no lo cambian, el conector ignora
-  // la clave y no pasa nada.
+  // `NOTAS` es variable del conector desde el 30/09/2026 (f350_notas dejó de ser
+  // fijo en "TALLER DE CARNES"): las dos entradas quedan distinguibles a simple
+  // vista en SIESA por su texto.
   const documento = {
     TIPO_DOCTO: tipoDocto,
     CONSECUTIVO_DOCTO: consec,

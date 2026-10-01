@@ -189,6 +189,62 @@ export function bloqueoAjusteFaltante() {
   );
 }
 
+// ─── Constantes del documento de nota crédito a proveedor (devoluciones) ─────
+//
+// El recibidor de proveedores registra las devoluciones en el mismo renglón de la
+// recepción. La entrada (CEA, conector 256783) lleva la cantidad y el valor
+// FACTURADOS completos —lo que dice la factura física del proveedor— y lo
+// devuelto sale en una nota crédito APARTE, con solo lo devuelto.
+//
+// El conector de esa nota crédito NO existe todavía: lo tiene que crear el
+// negocio en SIESA. Hasta entonces `idDocumento`, `nombreDocumento` y `tipoDocto`
+// son `null`: la nota crédito NO se manda y queda bloqueada con un mensaje que
+// dice qué falta (`bloqueoNotaCreditoProveedor`), en vez de mandar un documento
+// a un conector que no es. Mismo patrón que `DOCUMENTO_AJUSTE_FALTANTE` cuando
+// su conector no existía. Cuando esté, se escriben acá los tres valores, tal
+// como salen de la pantalla "Apis Dinámicas".
+//
+// Pista, sin confirmar: la pantalla del conector 256783 dice "Entradas Directas
+// = 408 y Devoluciones = 413" (clase) y "concepto 401 si clase 408 y 402 si clase
+// 413". Una devolución a proveedor podría ser un conector hermano de ese con
+// clase 413 y concepto 402.
+//
+// El JSON del documento es PROVISIONAL (ver `armarNotaCreditoProveedor`): las
+// claves se ajustan a lo que defina el conector cuando exista.
+export const DOCUMENTO_NOTA_CREDITO_PROVEEDOR = {
+  /** Id del conector en SIESA. `null` = todavía no existe. */
+  idDocumento: null,
+  nombreDocumento: null,
+
+  /** Código del tipo de documento de la nota crédito (f350_id_tipo_docto). */
+  tipoDocto: null,
+  /** Unidad de negocio del movimiento: la misma de la CEA (003 = Carnes). */
+  unidadNegocio: DOCUMENTO_CARNES.unidadNegocio,
+  /** Decimales de la moneda para el valor, igual que la CEA. */
+  decimalesValor: DOCUMENTO_CARNES.decimalesValor,
+};
+
+/**
+ * Qué falta para poder mandar la nota crédito a proveedor, dicho para una
+ * persona. `null` si está todo. Mismo patrón que `bloqueoAjusteFaltante()`.
+ *
+ * Recibe la configuración (por defecto la de este archivo) para que el armador
+ * puro y los tests puedan probar el caso "configurado" sin tocar la constante.
+ */
+export function bloqueoNotaCreditoProveedor(config = DOCUMENTO_NOTA_CREDITO_PROVEEDOR) {
+  const faltan = ["idDocumento", "nombreDocumento", "tipoDocto"].filter(
+    (k) => !String(config?.[k] ?? "").trim(),
+  );
+  if (!faltan.length) return null;
+  return (
+    "Conector de nota crédito no configurado: falta " +
+    faltan.map((k) => `${k} (src/config/siesa.js → DOCUMENTO_NOTA_CREDITO_PROVEEDOR)`).join(", ") +
+    ". La devolución a un proveedor sale como nota crédito aparte de la entrada (la entrada lleva " +
+    "lo facturado completo) y hace falta que el negocio cree ese conector en SIESA; mientras " +
+    "tanto la nota crédito queda pendiente."
+  );
+}
+
 /**
  * Con qué tercero puede entrar la entrada oficial.
  *
