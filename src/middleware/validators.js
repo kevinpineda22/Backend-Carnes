@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { createError } from "./errorHandler.js";
+import { ESTADOS as ESTADOS_PROVEEDOR } from "../shared/estadosProveedor.js";
+import { normalizarFactura } from "../shared/proveedorValores.js";
+import { LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
 
 /* =============================================
    Validación de entrada con zod.
@@ -385,6 +388,108 @@ const reintentarSiesaProveedorSchema = z.object({
   por: correo("El correo de quien reintenta no es válido."),
 });
 
+// ─── Recepciones de proveedor: lado del admin ──────────────────────────────
+
+// Un filtro vacío (`?estado=`) es "sin filtro", no un valor inválido: así lo manda
+// un `<select>` en "Todos".
+const vacioASinFiltro = (v) => (v === "" || v === null ? undefined : v);
+
+const idFiltro = (mensaje) =>
+  z.preprocess(
+    vacioASinFiltro,
+    z.coerce
+      .number({ invalid_type_error: mensaje })
+      .int(mensaje)
+      .positive(mensaje)
+      .safe(mensaje)
+      .optional(),
+  );
+
+/** `YYYY-MM-DD` que además sea un día del calendario (no "2026-02-31"). */
+const fechaFiltro = (mensaje) =>
+  z.preprocess(
+    vacioASinFiltro,
+    z
+      .string({ invalid_type_error: mensaje })
+      .regex(/^\d{4}-\d{2}-\d{2}$/, mensaje)
+      .refine((v) => {
+        const [a, m, d] = v.split("-").map(Number);
+        const fecha = new Date(Date.UTC(a, m - 1, d));
+        return fecha.getUTCFullYear() === a && fecha.getUTCMonth() === m - 1 && fecha.getUTCDate() === d;
+      }, mensaje)
+      .optional(),
+  );
+
+const listarRecepcionesProveedorQuerySchema = z
+  .object({
+    estado: z.preprocess(
+      vacioASinFiltro,
+      z
+        .enum(Object.values(ESTADOS_PROVEEDOR), {
+          errorMap: () => ({ message: `debe ser uno de: ${Object.values(ESTADOS_PROVEEDOR).join(", ")}.` }),
+        })
+        .optional(),
+    ),
+    proveedor_id: idFiltro("no es válido."),
+    sede_id: idFiltro("no es válido."),
+    desde: fechaFiltro("debe ser una fecha AAAA-MM-DD."),
+    hasta: fechaFiltro("debe ser una fecha AAAA-MM-DD."),
+    // Fragmento de la factura: se busca por su clave (solo letras y números).
+    factura: z.preprocess(
+      vacioASinFiltro,
+      z
+        .string({ invalid_type_error: "no es válida." })
+        .trim()
+        .max(40, "no puede pasar de 40 caracteres.")
+        .refine((v) => normalizarFactura(v).clave.length > 0, "tiene que tener letras o números.")
+        .optional(),
+    ),
+    limite: z.preprocess(
+      vacioASinFiltro,
+      z.coerce
+        .number({ invalid_type_error: "no es válido." })
+        .int("no es válido.")
+        .min(1, "no es válido.")
+        .max(LIMITE_LISTA_MAX, `no puede pasar de ${LIMITE_LISTA_MAX}.`)
+        .default(LIMITE_LISTA_DEFECTO),
+    ),
+  })
+  .refine((v) => !v.desde || !v.hasta || v.desde <= v.hasta, {
+    message: "desde no puede ser posterior a hasta.",
+  });
+
+/** Corregir la referencia de factura para SIESA: quién y la referencia nueva (el formato lo valida el modelo puro). */
+const corregirFacturaSiesaProveedorSchema = z.object({
+  por: correo("El correo de quien corrige no es válido."),
+  factura_siesa: z
+    .string({
+      required_error: "Escribí la referencia para SIESA.",
+      invalid_type_error: "La referencia para SIESA no es válida.",
+    })
+    .trim()
+    .min(1, "Escribí la referencia para SIESA.")
+    .max(40, "La referencia para SIESA no puede pasar de 40 caracteres."),
+});
+
+/**
+ * Anular: quién, por qué (obligatorio: queda como trazabilidad) y, si la recepción
+ * ya está en SIESA, que alguien ya anuló el documento allá (`anulado_en_siesa`,
+ * booleano de verdad: un "true" de texto se rechaza para que un descuido no
+ * confirme algo que nadie confirmó).
+ */
+const anularRecepcionProveedorSchema = z.object({
+  por: correo("El correo de quien anula no es válido."),
+  motivo: z
+    .string({
+      required_error: "Escribí el motivo de la anulación.",
+      invalid_type_error: "El motivo no es válido.",
+    })
+    .trim()
+    .min(3, "Escribí el motivo de la anulación.")
+    .max(500, "El motivo no puede pasar de 500 caracteres."),
+  anulado_en_siesa: z.boolean({ invalid_type_error: "anulado_en_siesa debe ser true o false." }).optional(),
+});
+
 // ─── Recibidores (gestión del admin) ───────────────────────────────────────
 
 const cedulaRecibidor = z.union([z.string().max(50), z.number()], {
@@ -429,6 +534,9 @@ export const validators = {
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
   finalizarRecepcionProveedor: validar(finalizarRecepcionProveedorSchema),
   reintentarSiesaProveedor: validar(reintentarSiesaProveedorSchema),
+  listarRecepcionesProveedor: validar(listarRecepcionesProveedorQuerySchema, "query"),
+  corregirFacturaSiesaProveedor: validar(corregirFacturaSiesaProveedorSchema),
+  anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
 
   crearRecibidor: validar(crearRecibidorSchema),
   actualizarRecibidor: validar(actualizarRecibidorSchema),

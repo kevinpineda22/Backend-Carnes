@@ -1,8 +1,12 @@
 import { Router } from "express";
 import * as RecepcionesProveedorController from "../controllers/recepcionesProveedor.controller.js";
+import * as AdminController from "../controllers/recepcionesProveedorAdmin.controller.js";
 import { validators } from "../middleware/validators.js";
 
 const router = Router();
+
+// Admin: listado (sin firma ni cédula). "/" no choca con "/:id": son rutas distintas.
+router.get("/", validators.listarRecepcionesProveedor, AdminController.listar);
 
 // "/abrir" va ANTES de "/:id": Express matchea por orden de declaración, y con
 // esta línea abajo el POST entraría por otra ruta con id = "abrir".
@@ -44,6 +48,23 @@ router.post(
   validators.idParam,
   validators.reintentarSiesaProveedor,
   RecepcionesProveedorController.reintentarNotaCredito,
+);
+
+// Admin: detalle completo (ÚNICO lugar que devuelve firma y cédula del recibidor),
+// corregir la referencia de factura para SIESA y anular. "/:id" de arriba sigue
+// siendo el del recibidor, sin firma ni cédula.
+router.get("/:id/admin", validators.idParam, AdminController.detalle);
+router.patch(
+  "/:id/factura-siesa",
+  validators.idParam,
+  validators.corregirFacturaSiesaProveedor,
+  AdminController.corregirFacturaSiesa,
+);
+router.post(
+  "/:id/anular",
+  validators.idParam,
+  validators.anularRecepcionProveedor,
+  AdminController.anular,
 );
 
 // Descartar un borrador: deja de existir (no cambia de estado). Es el mismo

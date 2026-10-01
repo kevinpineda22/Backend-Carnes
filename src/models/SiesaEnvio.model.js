@@ -96,6 +96,7 @@ import {
   siesaDeFila,
 } from "../shared/siesaProveedorEnvio.js";
 import { ESTADOS as ESTADOS_PROVEEDOR, puedeEnviarASiesa } from "../shared/estadosProveedor.js";
+import { marcarResolvibles } from "../shared/adminProveedor.js";
 import {
   DOCUMENTO_AJUSTE_VISCERAS,
   DOCUMENTO_AJUSTE_FALTANTE,
@@ -2584,4 +2585,36 @@ export async function anularEnviosProveedor(recepcionId, { por, motivo, anuladoE
       `anulado(s) por ${por || "—"}.`,
   );
   return { anulados };
+}
+
+// ─── Lectura para el detalle del admin (solo lectura) ──────────────────────
+
+/**
+ * Los envíos de una recepción de proveedor para la pantalla del admin: los de
+ * `enviosDeRecepcionProveedor` (sin payload) más `resolvible` (se puede confirmar a
+ * mano mirando SIESA) y `abandonado` (un `enviando` que lleva más del tope), con el
+ * MISMO umbral que usa `resolver`.
+ */
+export async function enviosAdminProveedor(recepcionId) {
+  return marcarResolvibles(await enviosDeRecepcionProveedor(recepcionId), {
+    limiteMs: ENVIANDO_ABANDONADO_MS,
+  });
+}
+
+/**
+ * Lo que el detalle del admin necesita saber de SIESA para una recepción, SIN mandar
+ * nada ni escribir: si el envío está activo, la nota crédito tal como está
+ * (`notaCredito`, la vista automática que ve `finalizar`) y la decisión que tomaría
+ * el reintento MANUAL de la nota crédito (`decisionNotaCredito`).
+ *
+ * `recepcion` es la cabecera con `sede` y `items` (los campos que lee el armador);
+ * `envios` son todos los de la recepción.
+ */
+export async function evaluarSiesaProveedor(recepcion, envios) {
+  const { decision: manual } = await evaluarNotaCredito(recepcion, envios, { manual: true });
+  return {
+    activo: siesaActivo(),
+    notaCredito: await notaCreditoActual(recepcion, envios),
+    decisionNotaCredito: manual,
+  };
 }
