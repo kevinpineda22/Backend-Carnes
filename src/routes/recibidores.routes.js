@@ -1,11 +1,22 @@
 import { Router } from "express";
 import * as RecibidoresController from "../controllers/recibidores.controller.js";
+import { validators } from "../middleware/validators.js";
 
 const router = Router();
 
-// Lista para el recibidor (id + nombre). Las rutas de admin ("/admin", que sí
-// llevan la cédula) se agregan ANTES de cualquier "/:id", por el mismo motivo
-// que en plantilla.routes.js: Express matchea por orden de declaración.
+// Lista para el recibidor (id + nombre).
 router.get("/", RecibidoresController.listarActivos);
+
+// Gestión del admin (con cédula). Rutas bajo "/admin": no hay un "/:id" suelto,
+// así que no compiten, pero cualquier ruta con parámetro que se agregue a este
+// router va DESPUÉS de estas (Express matchea por orden de declaración).
+router.get("/admin", RecibidoresController.listarAdmin);
+router.post("/admin", validators.crearRecibidor, RecibidoresController.crear);
+router.patch(
+  "/admin/:id",
+  validators.idParam,
+  validators.actualizarRecibidor,
+  RecibidoresController.actualizar,
+);
 
 export default router;

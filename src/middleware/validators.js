@@ -346,6 +346,71 @@ const guardarRecepcionProveedorSchema = z.object({
     .default([]),
 });
 
+// ─── Recepción de proveedor: finalizar (firmar) ────────────────────────────
+
+/**
+ * Solo la FORMA. `recibidor` y `firma_data` son opcionales a propósito: solo hacen
+ * falta cuando la recepción sigue en Borrador, y un reintento sobre una recepción
+ * ya firmada los ignora (no se vuelve a firmar). Si faltan en un Borrador, las
+ * reglas de `shared/finalizarProveedor.js` contestan 400 con su propio mensaje.
+ * El contenido (largo de nombre, formato de cédula, que la firma sea un PNG) se
+ * valida ahí, no acá, para que haya una sola copia de cada regla.
+ *
+ * Aunque llegue un `nombre` junto con un `id` de la lista, se ignora: cédula y
+ * nombre de un recibidor de la lista salen de la base.
+ */
+const finalizarRecepcionProveedorSchema = z.object({
+  recibido_por: correo("El correo de quien finaliza no es válido."),
+  recibidor: z
+    .object({
+      id: z.coerce
+        .number({ invalid_type_error: "El recibidor no es válido." })
+        .int("El recibidor no es válido.")
+        .positive("El recibidor no es válido.")
+        .safe("El recibidor no es válido.")
+        .nullish(),
+      otro: z.boolean({ invalid_type_error: "El recibidor no es válido." }).nullish(),
+      nombre: z.string().max(300).nullish(),
+      cedula: z.union([z.string().max(50), z.number()]).nullish(),
+    })
+    .nullish(),
+  firma_data: z.string({ invalid_type_error: "La firma no es válida." }).nullish(),
+});
+
+// ─── Recibidores (gestión del admin) ───────────────────────────────────────
+
+const cedulaRecibidor = z.union([z.string().max(50), z.number()], {
+  required_error: "Escribí la cédula.",
+  invalid_type_error: "La cédula no es válida.",
+});
+const nombreRecibidor = z
+  .string({ required_error: "Escribí el nombre.", invalid_type_error: "El nombre no es válido." })
+  .max(300);
+const ordenRecibidor = z.coerce
+  .number({ invalid_type_error: "El orden no es válido." })
+  .int("El orden no es válido.")
+  .min(0, "El orden no es válido.")
+  .max(1_000_000, "El orden no es válido.")
+  .nullish();
+
+const crearRecibidorSchema = z.object({
+  cedula: cedulaRecibidor,
+  nombre: nombreRecibidor,
+  orden: ordenRecibidor,
+});
+
+const actualizarRecibidorSchema = z
+  .object({
+    cedula: cedulaRecibidor.optional(),
+    nombre: nombreRecibidor.optional(),
+    activo: z.boolean({ invalid_type_error: "activo debe ser true o false." }).optional(),
+    orden: ordenRecibidor,
+  })
+  .refine(
+    (v) => v.cedula !== undefined || v.nombre !== undefined || v.activo !== undefined || (v.orden ?? undefined) !== undefined,
+    { message: "No hay nada para cambiar." },
+  );
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
 
@@ -354,6 +419,10 @@ export const validators = {
 
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
+  finalizarRecepcionProveedor: validar(finalizarRecepcionProveedorSchema),
+
+  crearRecibidor: validar(crearRecibidorSchema),
+  actualizarRecibidor: validar(actualizarRecibidorSchema),
 
   abrirRecepcion: validar(abrirRecepcionSchema),
   guardarBorrador: validar(guardarBorradorSchema),

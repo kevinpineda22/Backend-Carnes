@@ -23,6 +23,14 @@ router.patch(
   RecepcionesProveedorController.guardar,
 );
 
+// Firmar. Borrador -> Finalizada; sobre una ya firmada es un reintento que no vuelve a firmar.
+router.post(
+  "/:id/finalizar",
+  validators.idParam,
+  validators.finalizarRecepcionProveedor,
+  RecepcionesProveedorController.finalizar,
+);
+
 // Descartar un borrador: deja de existir (no cambia de estado). Es el mismo
 // endpoint para el recibidor que abrió por error y para el admin que descarta un
 // borrador viejo — ver `mensajeFacturaEnRecepcion` en shared/aperturaProveedor.js.

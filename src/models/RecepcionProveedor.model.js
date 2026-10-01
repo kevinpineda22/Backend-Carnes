@@ -3,7 +3,13 @@ import { createError } from "../middleware/errorHandler.js";
 import { fallarSiFaltaMigracion } from "../shared/migraciones.js";
 import * as SedeModel from "./Sede.model.js";
 import { ESTADOS } from "../shared/estadosProveedor.js";
-import { hoyBogota, normalizarFactura } from "../shared/proveedorValores.js";
+import {
+  hoyBogota,
+  normalizarFactura,
+  resumenRecepcion,
+  validarRecepcion,
+} from "../shared/proveedorValores.js";
+import * as RecibidorModel from "./Recibidor.model.js";
 import {
   avisosDeFactura,
   decidirApertura,
@@ -20,13 +26,21 @@ import {
   planearReintento,
   resolverRechazos,
 } from "../shared/guardadoProveedor.js";
+import {
+  MENSAJE_CAMBIO_AL_FINALIZAR,
+  armarActualizacionFinalizar,
+  armarRecibidor,
+  decidirFinalizar,
+  idRecibidorListado,
+  validarFirma,
+} from "../shared/finalizarProveedor.js";
 
 /* =============================================
-   Recepción de proveedor — lado del RECIBIDOR: abrir, autoguardar, descartar y
-   leer para reanudar.
+   Recepción de proveedor — lado del RECIBIDOR: abrir, autoguardar, descartar,
+   leer para reanudar y finalizar (firmar).
 
    Las tablas (sql/022) son aparte de `carnes_recepciones`: nada de esto toca
-   Talleres, costeo ni liquidaciones. Finalizar, SIESA y las acciones del admin
+   Talleres, costeo ni liquidaciones. El envío a SIESA y las acciones del admin
    llegan en cortes posteriores.
 
    Las REGLAS no viven acá: la decisión de qué hacer con una factura repetida está
@@ -435,4 +449,119 @@ export async function descartar(id) {
     `Solo se puede descartar un borrador: esta recepción está en "${existente.estado}".`,
     "RECEPCION_NO_BORRADOR",
   );
+}
+
+// ─── Finalizar ─────────────────────────────────────────────────────────────
+
+/** Lo que devuelve `finalizar`: la recepción como la ve el recibidor (SIN firma ni cédula) y su resumen. */
+async function resultadoFinalizar(id, yaFinalizada) {
+  const recepcion = await obtener(id);
+  return { recepcion, resumen: resumenRecepcion(recepcion.items), yaFinalizada };
+}
+
+/**
+ * El UPDATE condicional no encontró la fila que se leyó (0 filas). Se vuelve a
+ * leer el estado para decir la verdad:
+ *
+ *   · ya está firmada → alguien (casi siempre un reintento de esta misma pantalla)
+ *     la finalizó entre medio: es el camino de reintento, NO un error;
+ *   · sigue en Borrador → alguien la editó mientras se firmaba: 409, hay que
+ *     revisar y firmar de nuevo;
+ *   · anulada → 409; desapareció (la descartaron) → 404 desde `leerCabecera`.
+ */
+async function resolverTrasConflicto(id) {
+  const vigente = await leerCabecera(id);
+  const decision = decidirFinalizar(vigente.estado);
+  if (decision.accion === "reintento") return resultadoFinalizar(id, true);
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+  throw createError(409, MENSAJE_CAMBIO_AL_FINALIZAR, "RECEPCION_CAMBIO");
+}
+
+/**
+ * Firma la recepción: Borrador → Finalizada.
+ *
+ * Orden (el de la cabecera ANTES que el de los renglones es a propósito): se lee la
+ * cabecera y se guarda su `updated_at` CRUDO (texto, nunca un Date); recién después
+ * se leen los renglones. El guardián de sql/022 toca el `updated_at` de la cabecera
+ * en cada escritura de un renglón, así que si un autoguardado se cuela entre las dos
+ * lecturas, el `updated_at` leído queda viejo y el UPDATE final no encuentra la fila
+ * — nunca se firma sobre renglones distintos a los que se validaron.
+ *
+ *   1. Cabecera. Si ya está firmada: reintento (devuelve el estado, NO vuelve a
+ *      firmar). Anulada: 409.
+ *   2. Renglones y `validarRecepcion` sobre lo que HAY EN LA BASE (422 con el
+ *      detalle por renglón). Plata y cantidades del cliente no entran.
+ *   3. Recibidor (de la lista: snapshot desde la base; "Otro": nombre + cédula) y
+ *      firma (PNG en data URL, acotada).
+ *   4. Snapshots de proveedor y sede refrescados desde los maestros.
+ *   5. UPDATE condicional `estado = 'Borrador' AND updated_at = <leído>` que escribe
+ *      todo junto. 0 filas → `resolverTrasConflicto`.
+ *
+ * @param {number|string} id
+ * @param {{recibido_por: string, recibidor?: object, firma_data?: string}} cuerpo
+ * @returns {{recepcion: object, resumen: object, yaFinalizada: boolean}}
+ */
+export async function finalizar(id, { recibido_por, recibidor, firma_data }, ahora = new Date()) {
+  // 1. Cabecera primero.
+  const cabecera = await leerCabecera(id);
+  const decision = decidirFinalizar(cabecera.estado);
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+  // Ya firmada: se ignoran firma y recibidor del cuerpo. No se reescribe nada.
+  if (decision.accion === "reintento") return resultadoFinalizar(id, true);
+
+  // 2. Renglones, y la validación completa sobre la base.
+  const items = await leerItems(id);
+  const validacion = validarRecepcion(items);
+  if (!validacion.ok) {
+    const e = createError(422, "Hay renglones por corregir antes de firmar.", "RECEPCION_INVALIDA");
+    e.detalle = { errores: validacion.errores, generales: validacion.generales };
+    throw e;
+  }
+
+  // 3. Recibidor y firma.
+  const idListado = idRecibidorListado(recibidor);
+  const fila = idListado === null ? null : await RecibidorModel.obtenerPorId(idListado);
+  const quien = armarRecibidor({ recibidor, fila });
+  if (!quien.ok) throw createError(quien.status, quien.mensaje, quien.codigo);
+
+  const firma = validarFirma(firma_data);
+  if (!firma.ok) throw createError(400, firma.mensaje, firma.codigo);
+
+  // 4. Snapshots frescos de los maestros (si el maestro ya no existe se deja el que hay).
+  const [respuestaProveedor, respuestaSede] = await Promise.all([
+    supabase
+      .from("carnes_proveedores")
+      .select("nit, sucursal, razon_social")
+      .eq("id", cabecera.proveedor_id)
+      .maybeSingle(),
+    supabase
+      .from("carnes_sedes")
+      .select("codigo_co, bodega_siesa")
+      .eq("id", cabecera.sede_id)
+      .maybeSingle(),
+  ]);
+  if (respuestaProveedor.error) fallo(respuestaProveedor.error, "Error al leer el proveedor");
+  if (respuestaSede.error) fallo(respuestaSede.error, "Error al leer la sede");
+
+  const cambios = armarActualizacionFinalizar({
+    valores: quien.valores,
+    firma: firma_data,
+    por: recibido_por,
+    proveedor: respuestaProveedor.data || undefined,
+    sede: respuestaSede.data || undefined,
+    ahora,
+  });
+
+  // 5. Un solo UPDATE, condicional a Borrador Y a que nadie la haya tocado.
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update(cambios)
+    .eq("id", id)
+    .eq("estado", ESTADOS.BORRADOR)
+    .eq("updated_at", cabecera.updated_at)
+    .select("id");
+  if (error) fallo(error, "Error al finalizar la recepción");
+  if (!data?.length) return resolverTrasConflicto(id);
+
+  return resultadoFinalizar(id, false);
 }

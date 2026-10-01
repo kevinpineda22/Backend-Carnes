@@ -1,4 +1,5 @@
 import * as RecepcionProveedorModel from "../models/RecepcionProveedor.model.js";
+import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.js";
 
 /**
  * POST /api/recepciones-proveedor/abrir
@@ -77,6 +78,48 @@ export async function descartar(req, res, next) {
     const data = await RecepcionProveedorModel.descartar(req.datosValidados.id);
     res.json({ ok: true, ...data });
   } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/recepciones-proveedor/:id/finalizar
+ * Body: { recibido_por, recibidor: { id } | { otro: true, nombre, cedula }, firma_data }
+ *
+ * Firma la recepción (Borrador -> Finalizada). 200 con la recepción (sin firma ni
+ * cédula), el `resumen` y, por ahora, un `siesa` / `notaCredito` en "pendiente":
+ * el envío a SIESA llega en un corte posterior (ver `PostFinalizarProveedor.model.js`).
+ *
+ * Sobre una recepción que YA estaba firmada devuelve 200 con el estado actual y
+ * `ya_finalizada: true`: no vuelve a firmar. 422 con el detalle por renglón si
+ * algo no pasa la validación; 409 si cambió mientras se firmaba.
+ */
+export async function finalizar(req, res, next) {
+  try {
+    const { recepcion, resumen, yaFinalizada } = await RecepcionProveedorModel.finalizar(
+      req.datosValidados.id,
+      req.body,
+    );
+    // Nunca lanza: la recepción ya está firmada y lo que falle acá viaja en la respuesta.
+    const despues = await PostFinalizarProveedor.despuesDeFinalizar({ recepcion, resumen, yaFinalizada });
+    res.json({
+      ok: true,
+      data: recepcion,
+      resumen,
+      ya_finalizada: yaFinalizada,
+      ...despues,
+    });
+  } catch (error) {
+    // Igual que `abrir` con la verificación del QR: el 422 lleva el detalle por
+    // renglón, que el errorHandler genérico no sabe serializar.
+    if (error.detalle) {
+      return res.status(error.statusCode).json({
+        ok: false,
+        error: error.message,
+        codigo: error.codigo,
+        ...error.detalle,
+      });
+    }
     next(error);
   }
 }
