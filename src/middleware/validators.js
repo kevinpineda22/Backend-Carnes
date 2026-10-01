@@ -377,6 +377,14 @@ const finalizarRecepcionProveedorSchema = z.object({
   firma_data: z.string({ invalid_type_error: "La firma no es válida." }).nullish(),
 });
 
+/**
+ * Reintentos de SIESA de una recepción de proveedor (entrada y nota crédito): solo
+ * piden quién los hace. Lo demás (estado, envíos) lo decide el modelo leyendo la base.
+ */
+const reintentarSiesaProveedorSchema = z.object({
+  por: correo("El correo de quien reintenta no es válido."),
+});
+
 // ─── Recibidores (gestión del admin) ───────────────────────────────────────
 
 const cedulaRecibidor = z.union([z.string().max(50), z.number()], {
@@ -420,6 +428,7 @@ export const validators = {
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
   finalizarRecepcionProveedor: validar(finalizarRecepcionProveedorSchema),
+  reintentarSiesaProveedor: validar(reintentarSiesaProveedorSchema),
 
   crearRecibidor: validar(crearRecibidorSchema),
   actualizarRecibidor: validar(actualizarRecibidorSchema),

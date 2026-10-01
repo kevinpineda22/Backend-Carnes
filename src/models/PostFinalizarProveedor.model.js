@@ -1,27 +1,24 @@
 import { notaCreditoRequerida } from "../shared/finalizarProveedor.js";
+import * as SiesaEnvio from "./SiesaEnvio.model.js";
 
 /* =============================================
    Lo que pasa DESPUÉS de firmar una recepción de proveedor: la entrada CEA a SIESA
    y, si hubo devoluciones, la nota crédito.
 
-   ─── ESTE ARCHIVO ES UN SEAM (costura) ────────────────────────────────────
-   En este corte NO se manda nada a SIESA: `finalizar` firma y devuelve, y este
-   módulo contesta "pendiente" para que el front ya tenga la forma de la respuesta.
-   El envío llega con el corte de SIESA (sql/023 + `SiesaEnvio.model.js`), que
-   reemplaza el cuerpo de `despuesDeFinalizar`:
+   Es la costura entre `finalizar` (que firma) y `SiesaEnvio.model.js` (que tiene el
+   candado, el POST y las reglas). Acá solo se llama y se da forma a la respuesta:
 
-     1. Leer los envíos `entrada_proveedor` de la recepción.
-     2. Solo si `debeEnviarEntrada({ estado, enviosEntrada })` es true, llamar
-        `SiesaEnvio.enviarEntradaProveedor` (nunca lanza; no-op "apagado" si
-        `CARNES_SIESA_ACTIVO` está apagado). Es la regla de los reintentos de
-        `finalizar`: SOLO se envía si no hay NINGÚN envío de entrada, ni siquiera
-        uno con error (eso lo reintenta el admin).
-     3. Si el envío quedó ok: recepción Finalizada → Enviada_SIESA (+ `siesa_at`) y
-        `dispararNotaCreditoSiCorresponde`.
-     4. Devolver la misma forma de abajo con los valores reales.
+     1. `SiesaEnvio.enviarEntradaProveedor` lee los envíos `entrada_proveedor` de la
+        recepción y manda SOLO si no hay NINGUNO (ni uno con error: eso lo reintenta
+        el admin). Con `CARNES_SIESA_ACTIVO` apagado no manda ni anota nada.
+     2. Si el envío quedó ok: recepción Finalizada → Enviada_SIESA (+ `siesa_at`) y
+        la nota crédito si hubo devoluciones (bloqueada mientras su conector no exista).
+     3. Devuelve `siesa` / `notaCredito` con el estado REAL y, si cambió, las
+        columnas nuevas de la recepción (`cambios`: estado, siesa_at).
 
-   Nunca debe lanzar: la recepción YA está firmada y lo que falle acá se reporta
-   en la respuesta, no como error de finalizar.
+   NUNCA lanza: la recepción YA está firmada y lo que falle acá se reporta en la
+   respuesta, no como error de finalizar. Puede tardar: la espera a SIESA es de
+   hasta 45 s por documento, por eso el front usa 120 s para este pedido.
    ============================================= */
 
 /**
@@ -29,18 +26,32 @@ import { notaCreditoRequerida } from "../shared/finalizarProveedor.js";
  * @param {object} p.recepcion     la recepción ya finalizada (como la devuelve `obtener`)
  * @param {object} p.resumen       `resumenRecepcion(items)`
  * @param {boolean} p.yaFinalizada true si esta llamada fue un reintento sobre una recepción ya firmada
- * @returns {Promise<{siesa: {estado: string, referencia: ?string, error: ?string},
- *   notaCredito: {requerida: boolean, estado: string, bloqueo: ?string}}>}
+ * @returns {Promise<{siesa: {estado: string, referencia: ?string, error: ?string, envio_id: ?number},
+ *   notaCredito: {requerida: boolean, estado: string, bloqueo: ?string, referencia?: ?string, error?: ?string},
+ *   cambios: ?{estado: string, siesa_at: ?string}, aviso: ?string}>}
+ *   `siesa.estado`: ok | error | apagado | enviando | sin_confirmar | pendiente.
+ *   `notaCredito.estado`: no_requerida | pendiente | bloqueada | enviando |
+ *   sin_confirmar | error | ok.
  */
 export async function despuesDeFinalizar({ recepcion, resumen, yaFinalizada }) {
-  return {
-    // Valores previstos cuando el envío exista: "ok" | "error" | "apagado" |
-    // "sin_confirmar" | "bloqueado". Mientras tanto SIEMPRE "pendiente".
-    siesa: { estado: "pendiente", referencia: null, error: null },
-    notaCredito: {
-      requerida: notaCreditoRequerida(resumen),
-      estado: "pendiente",
-      bloqueo: null,
-    },
-  };
+  const requerida = notaCreditoRequerida(resumen);
+  try {
+    const r = await SiesaEnvio.enviarEntradaProveedor(recepcion.id, recepcion.recibido_por);
+    return {
+      siesa: r.siesa,
+      // Si el armado de la nota crédito falló no hay estado propio: "pendiente".
+      notaCredito: r.notaCredito ?? { requerida, estado: "pendiente", bloqueo: null },
+      cambios: r.cambios ?? null,
+      aviso: r.aviso ?? null,
+    };
+  } catch (e) {
+    // `enviarEntradaProveedor` no lanza; esto cubre solo lo que no se espera.
+    console.error(`🔴 Post-finalizar proveedor #${recepcion?.id}: ${e?.message}`);
+    return {
+      siesa: { estado: "error", referencia: null, error: e?.message || "Error al enviar a SIESA.", envio_id: null },
+      notaCredito: { requerida, estado: "pendiente", bloqueo: null },
+      cambios: null,
+      aviso: null,
+    };
+  }
 }

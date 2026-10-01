@@ -73,8 +73,34 @@ import {
   TIPO_AJUSTE_FALTANTE,
 } from "../shared/siesaFaltantes.js";
 import {
+  armarEntradaProveedor,
+  armarNotaCreditoProveedor,
+  consecutivoEntradaProveedor,
+  consecutivoNotaCreditoProveedor,
+  TIPO_ENVIO_PROVEEDOR,
+} from "../shared/siesaProveedor.js";
+import {
+  armarRefrescoSnapshots,
+  decidirEntradaAlFinalizar,
+  decidirNotaCredito,
+  decidirReintentoEntrada,
+  enriquecerMovimientosProveedor,
+  ESTADOS_EN_CURSO,
+  esTipoProveedor,
+  motivoEnvioVigente,
+  notaCreditoParaFront,
+  planearAnulacionEnvios,
+  rechazoDeNotaCredito,
+  resumirEnvios,
+  siesaDeEnvios,
+  siesaDeFila,
+} from "../shared/siesaProveedorEnvio.js";
+import { ESTADOS as ESTADOS_PROVEEDOR, puedeEnviarASiesa } from "../shared/estadosProveedor.js";
+import {
   DOCUMENTO_AJUSTE_VISCERAS,
   DOCUMENTO_AJUSTE_FALTANTE,
+  DOCUMENTO_CARNES,
+  DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   bloqueoAjusteFaltante,
   documentoSiesa,
   siesaConfigurado,
@@ -117,6 +143,14 @@ const MIGRACIONES = [
   "sql/020_ajuste_visceras_liquidacion.sql",
   "sql/021_ajuste_faltante.sql",
 ];
+
+/**
+ * Lo que necesitan los envíos de las recepciones de PROVEEDOR. Lista aparte de
+ * `MIGRACIONES` a propósito: el mensaje de "falta una migración" de las rutas de
+ * Talleres no tiene por qué nombrar archivos que ellas no usan.
+ */
+const ARCHIVO_SQL_PROVEEDOR = "sql/023_siesa_proveedor.sql";
+const MIGRACIONES_PROVEEDOR = [...MIGRACIONES, "sql/022_proveedores.sql", ARCHIVO_SQL_PROVEEDOR];
 
 /**
  * Consecutivo propio para enlazar cabecera y movimientos dentro de un envío.
@@ -254,6 +288,12 @@ const faltaMigracion019 = (error, tipo) =>
  * (`bodega`, `envio_origen_id`) la traduce `fallarSiFaltaMigracion`.
  */
 const archivoMigracionFaltante = (error, tipo) => {
+  // Envíos de proveedor (sql/023): sin la migración el tipo no está en el CHECK
+  // (23514), no cabe (22001) o falta la columna `recepcion_proveedor_id`. Solo
+  // aplica a esos dos tipos: los de Talleres siguen por las ramas de abajo.
+  if (esTipoProveedor(tipo) && (["22001", "23514"].includes(error?.code) || esMigracionFaltante(error))) {
+    return ARCHIVO_SQL_PROVEEDOR;
+  }
   if (faltaMigracion019(error, tipo)) return "sql/019_ajuste_visceras.sql";
   if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "22001") return "sql/019_ajuste_visceras.sql";
   if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "23514") return "sql/021_ajuste_faltante.sql";
@@ -331,7 +371,47 @@ export async function listar(f = {}) {
       "sql/007_siesa.sql",
       "sql/008_pagos_y_tercero.sql",
     ]);
-  return data || [];
+  // Sin envíos de proveedor en el resultado devuelve el MISMO arreglo, sin una
+  // consulta de más: el listado de Talleres no cambia.
+  return conRecepcionProveedor(data || []);
+}
+
+/**
+ * A los envíos de PROVEEDOR del listado les pega su recepción
+ * (`recepcion_proveedor`: factura, razón social, estado y sede), que es lo que el
+ * panel necesita para nombrarlos: sus columnas `recepcion` y `liquidacion` vienen
+ * vacías. Los de Talleres no se tocan (no ganan ni una clave).
+ *
+ * Es una consulta aparte y no un embed en la principal a propósito: así la
+ * consulta de Talleres, con su fallback a sql/021, queda exactamente como estaba.
+ * Si esta falla (p. ej. sql/023 sin correr) el listado sale igual, sin el dato.
+ */
+async function conRecepcionProveedor(filas) {
+  const deProveedor = filas.filter((f) => esTipoProveedor(f.tipo));
+  if (!deProveedor.length) return filas;
+  try {
+    const { data, error } = await supabase
+      .from(TABLA)
+      .select(
+        "id, recepcion_proveedor_id, " +
+          "recepcion_proveedor:carnes_proveedor_recepciones ( id, factura, factura_siesa, proveedor_razon_social, estado, sede:carnes_sedes ( id, nombre ) )",
+      )
+      .in(
+        "id",
+        deProveedor.map((f) => f.id),
+      );
+    if (error) throw error;
+    const porId = new Map((data || []).map((d) => [d.id, d]));
+    return filas.map((f) => {
+      const extra = porId.get(f.id);
+      return extra
+        ? { ...f, recepcion_proveedor_id: extra.recepcion_proveedor_id, recepcion_proveedor: extra.recepcion_proveedor }
+        : f;
+    });
+  } catch (e) {
+    console.error(`🔴 SIESA listado: no se pudo leer la recepción de los envíos de proveedor: ${e?.message}`);
+    return filas;
+  }
 }
 
 /** GET — un envío con el payload y la respuesta completos. */
@@ -346,6 +426,10 @@ export async function obtener(id) {
     .maybeSingle();
   if (error) fallarSiFaltaMigracion(error, "Error al leer el envío", MIGRACIONES);
   if (!data) throw createError(404, "Envío no encontrado.");
+
+  // Envío de una recepción de PROVEEDOR: sus renglones salen de otra tabla. Los
+  // de Talleres no entran acá: siguen por todo lo de abajo, sin cambios.
+  if (esTipoProveedor(data.tipo)) return obtenerEnvioProveedor(data);
 
   // El payload lleva el código del ítem y nada más: es lo que SIESA necesita.
   // Para la pantalla se le pega, a cada movimiento, el renglón de la recepción
@@ -1078,6 +1162,13 @@ export async function resolver(id, { resultado, por } = {}) {
       for (const rid of ids) recepciones.push(await cargarRecepcion(rid));
       await avisarAnulacionLiquidacion(liq, recepciones, data);
     }
+  }
+
+  // Recepción de PROVEEDOR: si lo que se confirmó es la entrada, la recepción pasa
+  // a Enviada_SIESA y sale la nota crédito si corresponde. Sin esto, resolver un
+  // `sin_confirmar` como ok la dejaría trabada en Finalizada.
+  if (data.estado === "ok" && esTipoProveedor(data.tipo)) {
+    return { ...data, seguimiento: await seguirTrasResolverProveedor(data) };
   }
   return data;
 }
@@ -1959,4 +2050,538 @@ export async function anularAjusteVisceras(liquidacionId, { recepcionId, por, mo
     }: ${anulados.map((a) => a.referencia).join(", ")} anulado por ${por || "—"}.`,
   );
   return { anulados: anulados.map((a) => ({ id: a.id, referencia: a.referencia })) };
+}
+
+// ─── Recepciones de PROVEEDOR ──────────────────────────────────────────────
+//
+// La entrada (CEA, `entrada_proveedor`) y la nota crédito de lo devuelto
+// (`nc_proveedor`) de una recepción de `carnes_proveedor_recepciones` (sql/022)
+// van por el MISMO candado que los demás: se reserva (fila `enviando`), se manda y
+// se anota (`registrarYEnviar`). Lo que cambia es de dónde salen los datos y qué
+// se hace con el resultado. Las decisiones —mandar, reconciliar, esperar,
+// rechazar— son puras y viven en `shared/siesaProveedorEnvio.js`, con tests.
+//
+//   · `finalizar` manda la entrada sola, UNA vez (`enviarEntradaProveedor`).
+//     Cuando queda ok: recepción Finalizada → Enviada_SIESA + `siesa_at`, y la
+//     nota crédito si hubo devoluciones. Nunca lanza: la recepción ya está firmada.
+//   · Lo que falle lo reintenta el admin (`reintentarEntradaProveedor`), que si la
+//     entrada ya está ok no la manda de nuevo sino que RECONCILIA el estado.
+//   · Antes de reservar, cada camino vuelve a LEER la recepción y exige que siga
+//     Finalizada (la nota crédito, Finalizada o Enviada_SIESA): entre que se
+//     decidió y que se reserva alguien pudo anularla.
+//   · Con CARNES_SIESA_ACTIVO apagado no se manda ni se anota nada, como la
+//     inicial de Talleres.
+
+const TABLA_RECEPCION_PROVEEDOR = "carnes_proveedor_recepciones";
+const TABLA_ITEMS_PROVEEDOR = "carnes_proveedor_recepcion_items";
+
+/** Cabecera sin `firma_data` ni cédula del recibidor: acá no hacen falta. */
+const COLUMNAS_RECEPCION_PROVEEDOR =
+  "id, proveedor_id, proveedor_nit, proveedor_sucursal, proveedor_razon_social, " +
+  "factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion, " +
+  "estado, recibido_por, finalizado_at, siesa_at, sede:carnes_sedes ( id, codigo_co, nombre )";
+
+/** Los envíos SIN `payload` ni `respuesta` (pesan): para decidir y para el detalle. */
+const COLUMNAS_ENVIO_PROVEEDOR =
+  "id, recepcion_proveedor_id, tipo, estado, referencia, consecutivo, tipo_docto, http_status, error, " +
+  "renglones, total_kilos, total_valor, enviado_por, enviado_at, resuelto_por, resuelto_at, " +
+  "anulado_por, anulado_at, motivo_anulacion";
+
+/** La recepción de proveedor con su sede y sus renglones. 404 si no existe. */
+async function cargarRecepcionProveedor(recepcionId) {
+  const { data, error } = await supabase
+    .from(TABLA_RECEPCION_PROVEEDOR)
+    .select(COLUMNAS_RECEPCION_PROVEEDOR)
+    .eq("id", recepcionId)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer la recepción", MIGRACIONES_PROVEEDOR);
+  if (!data) throw createError(404, "Recepción no encontrada.");
+
+  const { data: items, error: errorItems } = await supabase
+    .from(TABLA_ITEMS_PROVEEDOR)
+    .select("*")
+    .eq("recepcion_id", recepcionId)
+    .order("orden")
+    .order("id");
+  if (errorItems) fallarSiFaltaMigracion(errorItems, "Error al leer los renglones", MIGRACIONES_PROVEEDOR);
+  return { ...data, items: items || [] };
+}
+
+/**
+ * Todos los envíos de una recepción de proveedor (los dos tipos, cualquier
+ * estado), del más nuevo al más viejo, sin el payload. Lo usa el detalle del admin.
+ */
+export async function enviosDeRecepcionProveedor(recepcionId) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select(COLUMNAS_ENVIO_PROVEEDOR)
+    .eq("recepcion_proveedor_id", recepcionId)
+    .order("enviado_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (error) fallarSiFaltaMigracion(error, "Error al leer los envíos", MIGRACIONES_PROVEEDOR);
+  return data || [];
+}
+
+/** La recepción (con renglones) y todos sus envíos, leídos juntos. */
+async function leerRecepcionYEnvios(recepcionId) {
+  const recepcion = await cargarRecepcionProveedor(recepcionId);
+  const envios = await enviosDeRecepcionProveedor(recepcionId);
+  return { recepcion, envios };
+}
+
+/**
+ * El envío que ocupa el lugar de esta recepción para este tipo, o —si no hay— el
+ * que esté EN VUELO de cualquier tipo: el índice `..._proveedor_en_vuelo` de
+ * sql/023 también rechaza (23505) una nota crédito mientras la entrada está
+ * enviando o sin confirmar. Es lo que `registrarYEnviar` devuelve como `repetido`.
+ */
+async function envioQueOcupaProveedor(recepcionId, tipo) {
+  const envios = await enviosDeRecepcionProveedor(recepcionId);
+  return (
+    resumirEnvios(envios, tipo).vigente ||
+    envios.find((e) => ESTADOS_EN_CURSO.includes(e.estado)) ||
+    null
+  );
+}
+
+/** Base de la fila del envío: una recepción de proveedor, nunca de Talleres. */
+const baseProveedor = (recepcionId, tipo, consecutivo) => ({
+  recepcion_id: null,
+  liquidacion_id: null,
+  recepcion_proveedor_id: Number(recepcionId),
+  tipo,
+  consecutivo,
+});
+
+/** Reserva, manda y anota la ENTRADA. Devuelve la fila; lanza solo por la base. */
+async function mandarEntrada(recepcion, por) {
+  const armado = armarEntradaProveedor({
+    recepcion,
+    items: recepcion.items,
+    // El tercero es el proveedor; de la config solo salen tipo de documento y
+    // unidad de negocio. `DOCUMENTO_CARNES` es el mismo conector 256783 de Talleres.
+    config: DOCUMENTO_CARNES,
+  });
+  return registrarYEnviar({
+    armado,
+    base: baseProveedor(
+      recepcion.id,
+      TIPO_ENVIO_PROVEEDOR.ENTRADA,
+      consecutivoEntradaProveedor(recepcion.id),
+    ),
+    por,
+    vigente: () => envioQueOcupaProveedor(recepcion.id, TIPO_ENVIO_PROVEEDOR.ENTRADA),
+    etiqueta: `entrada proveedor recepción #${recepcion.id}`,
+  });
+}
+
+/**
+ * Recepción Finalizada → Enviada_SIESA (+ `siesa_at`), condicional a que siga
+ * Finalizada: si alguien la anuló o ya la movió, no se pisa. Idempotente.
+ *
+ * @returns {{cambio: boolean, estado: string, siesa_at: ?string}}
+ */
+async function marcarEnviadaSiesa(recepcionId) {
+  const { data, error } = await supabase
+    .from(TABLA_RECEPCION_PROVEEDOR)
+    .update({ estado: ESTADOS_PROVEEDOR.ENVIADA_SIESA, siesa_at: new Date().toISOString() })
+    .eq("id", recepcionId)
+    .eq("estado", ESTADOS_PROVEEDOR.FINALIZADA)
+    .select("id, estado, siesa_at");
+  if (error) fallarSiFaltaMigracion(error, "No se pudo marcar la recepción como enviada", MIGRACIONES_PROVEEDOR);
+  if (data?.length) return { cambio: true, estado: data[0].estado, siesa_at: data[0].siesa_at };
+
+  const { data: actual, error: errorLectura } = await supabase
+    .from(TABLA_RECEPCION_PROVEEDOR)
+    .select("estado, siesa_at")
+    .eq("id", recepcionId)
+    .maybeSingle();
+  if (errorLectura) fallarSiFaltaMigracion(errorLectura, "Error al leer la recepción", MIGRACIONES_PROVEEDOR);
+  return { cambio: false, estado: actual?.estado ?? null, siesa_at: actual?.siesa_at ?? null };
+}
+
+/**
+ * Lo que sigue cuando la ENTRADA está ok en SIESA —al enviarla, al reconciliar o
+ * al resolver un sin confirmar—: la recepción pasa a Enviada_SIESA y, si hubo
+ * devoluciones, sale la nota crédito. NUNCA lanza: SIESA ya tiene el documento, y
+ * un fallo acá se informa (`aviso`) en vez de hacerlo parecer un envío fallido.
+ *
+ * @returns {Promise<{cambios: ?{estado: string, siesa_at: ?string}, aviso: ?string, notaCredito: object}>}
+ */
+async function alQuedarOkLaEntrada(recepcion, por) {
+  let cambios = null;
+  let aviso = null;
+  try {
+    const marca = await marcarEnviadaSiesa(recepcion.id);
+    cambios = { estado: marca.estado, siesa_at: marca.siesa_at };
+    if (marca.estado === ESTADOS_PROVEEDOR.ANULADA) {
+      aviso =
+        "La entrada ya está en SIESA pero la recepción figura como anulada: anulá el documento en SIESA " +
+        "o revisá la recepción.";
+    }
+  } catch (e) {
+    console.error(`🔴 SIESA entrada proveedor #${recepcion.id}: ${e.message}`);
+    aviso =
+      "La entrada quedó en SIESA pero no se pudo actualizar el estado de la recepción. " +
+      "Reintentá el envío: no manda otra, solo vuelve a alinear el estado.";
+  }
+
+  let notaCredito;
+  try {
+    notaCredito = (await dispararNotaCreditoSiCorresponde(recepcion.id, por)).notaCredito;
+  } catch (e) {
+    console.error(`🔴 SIESA nota crédito proveedor #${recepcion.id}: ${e.message}`);
+    notaCredito = {
+      requerida: hayDevolucionesDe(recepcion),
+      estado: "error",
+      bloqueo: null,
+      referencia: null,
+      error: e.message,
+    };
+  }
+  return { cambios, aviso, notaCredito };
+}
+
+const hayDevolucionesDe = (recepcion) =>
+  (recepcion.items || []).some((i) => Number(i.cantidad) > 0 && Number(i.cantidad_devuelta) > 0);
+
+// ─── Entrada ───────────────────────────────────────────────────────────────
+
+/**
+ * La nota crédito tal como está AHORA, sin mandar nada: lo que se le informa al
+ * front cuando no se envió. Si hoy se podría enviar pero todavía no se disparó,
+ * es "pendiente".
+ */
+async function notaCreditoActual(recepcion, envios) {
+  const { decision } = await evaluarNotaCredito(recepcion, envios);
+  return notaCreditoParaFront(decision);
+}
+
+/**
+ * La entrada que sale al FINALIZAR. Se llama desde `PostFinalizarProveedor`, con
+ * la recepción ya firmada. NUNCA lanza.
+ *
+ * Manda solo si no hay NINGÚN envío de entrada (ver `decidirEntradaAlFinalizar`):
+ * cada recarga del celular reintenta `finalizar`, y un error no se reintenta solo.
+ * Apagado: no manda ni anota. Si la entrada ya estaba ok pero la recepción seguía
+ * Finalizada (un cierre que se cortó), repara el estado.
+ *
+ * @returns {Promise<{siesa: object, notaCredito: ?object, cambios: ?object, aviso: ?string}>}
+ *          `cambios` = columnas de la recepción que cambiaron (estado, siesa_at).
+ */
+export async function enviarEntradaProveedor(recepcionId, por) {
+  try {
+    const { recepcion, envios } = await leerRecepcionYEnvios(recepcionId);
+    const decision = decidirEntradaAlFinalizar({
+      estado: recepcion.estado,
+      envios,
+      activo: siesaActivo(),
+    });
+
+    if (decision.accion === "apagado") {
+      return {
+        siesa: { estado: "apagado", referencia: null, error: null, envio_id: null },
+        notaCredito: await notaCreditoActual(recepcion, envios),
+        cambios: null,
+        aviso: null,
+      };
+    }
+
+    if (decision.accion === "omitir") {
+      const entrada = resumirEnvios(envios, TIPO_ENVIO_PROVEEDOR.ENTRADA);
+      if (entrada.ok && recepcion.estado === ESTADOS_PROVEEDOR.FINALIZADA) {
+        const cierre = await alQuedarOkLaEntrada(recepcion, por);
+        return { siesa: siesaDeEnvios(envios), ...cierre };
+      }
+      return {
+        siesa: siesaDeEnvios(envios),
+        notaCredito: await notaCreditoActual(recepcion, envios),
+        cambios: null,
+        aviso: null,
+      };
+    }
+
+    const fila = await mandarEntrada(recepcion, por);
+    if (fila.estado === "ok") {
+      const cierre = await alQuedarOkLaEntrada(recepcion, por);
+      return { siesa: siesaDeFila(fila), ...cierre };
+    }
+    return {
+      siesa: siesaDeFila(fila),
+      notaCredito: await notaCreditoActual(recepcion, [...envios, fila]),
+      cambios: null,
+      aviso: null,
+    };
+  } catch (e) {
+    console.error(`🔴 SIESA entrada proveedor recepción #${recepcionId}: ${e.message}`);
+    return {
+      siesa: { estado: "error", referencia: null, error: e.message, envio_id: null },
+      notaCredito: null,
+      cambios: null,
+      aviso: null,
+    };
+  }
+}
+
+/**
+ * Antes de volver a mandar, la foto del proveedor y de la sede se refresca desde
+ * los maestros: un NIT, una bodega o un C.O. corregidos desde que se firmó tienen
+ * que llegar bien a SIESA. Solo se llama sin entrada vigente ni ok (después queda
+ * congelada) y el UPDATE es condicional a que siga Finalizada.
+ */
+async function refrescarSnapshotsProveedor(recepcion) {
+  const [proveedor, sede] = await Promise.all([
+    supabase
+      .from("carnes_proveedores")
+      .select("nit, sucursal, razon_social")
+      .eq("id", recepcion.proveedor_id)
+      .maybeSingle(),
+    supabase.from("carnes_sedes").select("codigo_co, bodega_siesa").eq("id", recepcion.sede_id).maybeSingle(),
+  ]);
+  if (proveedor.error) fallarSiFaltaMigracion(proveedor.error, "Error al leer el proveedor", MIGRACIONES_PROVEEDOR);
+  if (sede.error) fallarSiFaltaMigracion(sede.error, "Error al leer la sede", MIGRACIONES_PROVEEDOR);
+
+  const cambios = armarRefrescoSnapshots(recepcion, { proveedor: proveedor.data, sede: sede.data });
+  if (!Object.keys(cambios).length) return false;
+
+  const { data, error } = await supabase
+    .from(TABLA_RECEPCION_PROVEEDOR)
+    .update(cambios)
+    .eq("id", recepcion.id)
+    .eq("estado", ESTADOS_PROVEEDOR.FINALIZADA)
+    .select("id");
+  if (error) fallarSiFaltaMigracion(error, "No se pudo actualizar la recepción", MIGRACIONES_PROVEEDOR);
+  return Boolean(data?.length);
+}
+
+/**
+ * Reintento MANUAL de la entrada (admin). Sí lanza (409) cuando no se puede.
+ *
+ *   · Con una entrada ya `ok` NO manda otra: RECONCILIA (Finalizada →
+ *     Enviada_SIESA) y dispara la nota crédito que falte. No depende de que SIESA
+ *     esté activo: no habla con SIESA.
+ *   · Con una en curso o sin confirmar: 409, se resuelve primero.
+ *   · Si no, refresca la foto de proveedor y sede, vuelve a leer la recepción
+ *     (tiene que seguir Finalizada) y manda por el candado.
+ *
+ * @returns {Promise<{reconciliada: boolean, siesa: object, notaCredito: ?object,
+ *   cambios: ?object, aviso: ?string}>}
+ */
+export async function reintentarEntradaProveedor(recepcionId, por) {
+  const { recepcion, envios } = await leerRecepcionYEnvios(recepcionId);
+  const decision = decidirReintentoEntrada({
+    estado: recepcion.estado,
+    envios,
+    activo: siesaActivo(),
+  });
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+
+  if (decision.accion === "reconciliar") {
+    const cierre = await alQuedarOkLaEntrada(recepcion, por);
+    return { reconciliada: true, siesa: siesaDeFila(decision.envio), ...cierre };
+  }
+
+  await refrescarSnapshotsProveedor(recepcion);
+
+  // Releída justo antes de reservar: tiene que seguir Finalizada.
+  const fresca = await cargarRecepcionProveedor(recepcionId);
+  if (!puedeEnviarASiesa(fresca.estado)) {
+    throw createError(409, `La recepción está en "${fresca.estado}": ya no se puede enviar.`, "RECEPCION_CAMBIO");
+  }
+
+  const fila = await mandarEntrada(fresca, por);
+  // Otro pedido la reservó entre la pregunta de arriba y la reserva.
+  if (fila.repetido) throw createError(409, motivoEnvioVigente(fila), "ENVIO_VIGENTE");
+
+  if (fila.estado === "ok") {
+    const cierre = await alQuedarOkLaEntrada(fresca, por);
+    return { reconciliada: false, siesa: siesaDeFila(fila), ...cierre };
+  }
+  return {
+    reconciliada: false,
+    siesa: siesaDeFila(fila),
+    notaCredito: await notaCreditoActual(fresca, [...envios, fila]),
+    cambios: null,
+    aviso: null,
+  };
+}
+
+// ─── Nota crédito ──────────────────────────────────────────────────────────
+
+/**
+ * Arma la nota crédito con los datos de AHORA y decide qué hacer. El armador
+ * dice primero si falta el conector (`DOCUMENTO_NOTA_CREDITO_PROVEEDOR`); a eso
+ * se le suma que SIESA no tenga credenciales. Nada de esto toca la base.
+ */
+async function evaluarNotaCredito(recepcion, envios, { manual = false } = {}) {
+  const armado = armarNotaCreditoProveedor({
+    recepcion,
+    items: recepcion.items,
+    config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
+  });
+  const bloqueos = [...armado.bloqueos];
+  if (!siesaConfigurado()) bloqueos.push(`SIESA no está configurado. Faltan: ${faltantesSiesa().join(", ")}.`);
+
+  const decision = decidirNotaCredito({
+    estado: recepcion.estado,
+    items: recepcion.items,
+    envios,
+    activo: siesaActivo(),
+    bloqueos,
+    manual,
+  });
+  return { armado, decision };
+}
+
+/**
+ * La nota crédito de lo devuelto: se manda si corresponde.
+ *
+ * Corre cada vez que la entrada queda ok (al finalizar, al reconciliar, al
+ * resolver). Solo manda si ya hay una entrada ok, hay renglones devueltos y no hay
+ * ningún envío de nota crédito (automático) o ninguno vigente/ok (manual).
+ *
+ * Si está bloqueada —el conector todavía no existe, o SIESA no tiene
+ * credenciales— NO anota ningún envío: devuelve el bloqueo. Anotarlo en cada
+ * disparo llenaría la tabla de filas `error` idénticas. Cuando el conector se
+ * configure, la manda el siguiente disparo o el reintento del admin.
+ *
+ * @param {number|string} recepcionId
+ * @param {string} [por]
+ * @param {{manual?: boolean, lanzar?: boolean}} [opciones]
+ *        `manual`: lo pidió el admin. `lanzar`: un 409 con el motivo cuando no se
+ *        manda (el endpoint) en vez de devolver el estado (el disparo automático).
+ * @returns {Promise<{decision: object, fila: ?object, notaCredito: object}>}
+ */
+export async function dispararNotaCreditoSiCorresponde(recepcionId, por, { manual = false, lanzar = false } = {}) {
+  // La lectura es la releída de estado de J8: acá se decide con lo que hay AHORA.
+  const { recepcion, envios } = await leerRecepcionYEnvios(recepcionId);
+  const { armado, decision } = await evaluarNotaCredito(recepcion, envios, { manual });
+
+  if (decision.accion !== "enviar") {
+    if (lanzar) {
+      const rechazo = rechazoDeNotaCredito(decision);
+      throw createError(rechazo.status, rechazo.mensaje, rechazo.codigo);
+    }
+    return { decision, fila: null, notaCredito: notaCreditoParaFront(decision) };
+  }
+
+  const fila = await registrarYEnviar({
+    armado,
+    base: baseProveedor(
+      recepcion.id,
+      TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO,
+      consecutivoNotaCreditoProveedor(recepcion.id),
+    ),
+    por,
+    vigente: () => envioQueOcupaProveedor(recepcion.id, TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO),
+    etiqueta: `nota crédito proveedor recepción #${recepcion.id}`,
+    // Su conector propio (no el de la CEA). Sin él `decidirNotaCredito` bloquea.
+    documento: {
+      idDocumento: DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento,
+      nombreDocumento: DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento,
+    },
+  });
+  if (fila.repetido && lanzar) throw createError(409, motivoEnvioVigente(fila), "ENVIO_VIGENTE");
+  return { decision, fila, notaCredito: notaCreditoParaFront(decision, fila) };
+}
+
+/**
+ * Reintento MANUAL de la nota crédito (admin). 409 con el motivo si no se puede:
+ * la entrada todavía no está en SIESA, no hay devoluciones, ya hay una vigente u
+ * ok, SIESA está apagado o el conector no está configurado (en ese caso no se
+ * anota ninguna fila).
+ */
+export async function reintentarNotaCreditoProveedor(recepcionId, por) {
+  return dispararNotaCreditoSiCorresponde(recepcionId, por, { manual: true, lanzar: true });
+}
+
+// ─── Resolver, detalle y anulación ─────────────────────────────────────────
+
+/**
+ * Se resolvió como ok un envío de proveedor. Si es la ENTRADA: la recepción pasa
+ * a Enviada_SIESA y sale la nota crédito. Una nota crédito ok no cambia nada en
+ * la recepción. Nunca lanza: el envío ya quedó resuelto.
+ */
+async function seguirTrasResolverProveedor(envio) {
+  try {
+    if (envio.tipo !== TIPO_ENVIO_PROVEEDOR.ENTRADA) return { cambios: null, aviso: null, notaCredito: null };
+    const recepcion = await cargarRecepcionProveedor(envio.recepcion_proveedor_id);
+    return await alQuedarOkLaEntrada(recepcion, envio.resuelto_por);
+  } catch (e) {
+    console.error(`🔴 SIESA resolver proveedor envío #${envio.id}: ${e.message}`);
+    return {
+      cambios: null,
+      notaCredito: null,
+      aviso:
+        "El envío quedó resuelto, pero no se pudo actualizar la recepción: reintentá el envío de la " +
+        "entrada para volver a alinear su estado.",
+    };
+  }
+}
+
+/**
+ * El detalle de un envío de PROVEEDOR: payload y respuesta completos, la
+ * recepción de la que salió y cada movimiento con su renglón (equivalencia,
+ * descripción, unidad, valor y precio unitario), con la forma que lee el panel.
+ */
+async function obtenerEnvioProveedor(envio) {
+  let recepcion = null;
+  let items = [];
+  if (envio.recepcion_proveedor_id) {
+    const { items: renglones, ...cabecera } = await cargarRecepcionProveedor(envio.recepcion_proveedor_id);
+    items = renglones;
+    recepcion = cabecera;
+  }
+  const movimientos = enriquecerMovimientosProveedor({
+    tipo: envio.tipo,
+    movimientos: envio.payload?.Movimientos,
+    items,
+    sede: recepcion?.sede,
+  });
+  return { ...envio, recepcion_proveedor: recepcion, movimientos };
+}
+
+/**
+ * Marca como `anulado` los envíos `ok` de una recepción de proveedor, para poder
+ * anular la recepción. NO toca SIESA (la anulación allá la hace una persona) ni
+ * el estado de la recepción (eso lo hace quien la anula, después de esto).
+ *
+ *   · Con un envío en curso o sin confirmar: 409, se resuelve primero.
+ *   · Con uno ok y sin `anuladoEnSiesa`: 409, hay que confirmar que ya se anuló.
+ *
+ * El UPDATE es condicional a `ok`: un envío que cambió de estado entre la lectura
+ * y la escritura no se pisa.
+ *
+ * @param {number|string} recepcionId
+ * @param {{por?: string, motivo?: string, anuladoEnSiesa?: boolean}} p
+ * @returns {Promise<{anulados: {id: number, tipo: string, referencia: string}[]}>}
+ */
+export async function anularEnviosProveedor(recepcionId, { por, motivo, anuladoEnSiesa = false } = {}) {
+  const envios = await enviosDeRecepcionProveedor(recepcionId);
+  const plan = planearAnulacionEnvios({ envios, anuladoEnSiesa });
+  if (!plan.ok) throw createError(plan.status, plan.mensaje, plan.codigo);
+  if (!plan.aAnular.length) return { anulados: [] };
+
+  const { data, error } = await supabase
+    .from(TABLA)
+    .update({
+      estado: "anulado",
+      anulado_por: por || null,
+      anulado_at: new Date().toISOString(),
+      motivo_anulacion: String(motivo ?? "").trim() || null,
+    })
+    .in(
+      "id",
+      plan.aAnular.map((e) => e.id),
+    )
+    .eq("estado", "ok")
+    .select("id, tipo, referencia");
+  if (error) fallarSiFaltaMigracion(error, "No se pudieron anular los envíos", MIGRACIONES_PROVEEDOR);
+
+  const anulados = (data || []).map((e) => ({ id: e.id, tipo: e.tipo, referencia: e.referencia }));
+  console.log(
+    `↩️  Recepción de proveedor #${recepcionId}: ${anulados.map((a) => a.referencia).join(", ") || "—"} ` +
+      `anulado(s) por ${por || "—"}.`,
+  );
+  return { anulados };
 }

@@ -1,5 +1,6 @@
 import * as RecepcionProveedorModel from "../models/RecepcionProveedor.model.js";
 import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.js";
+import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
 
 /**
  * POST /api/recepciones-proveedor/abrir
@@ -86,9 +87,11 @@ export async function descartar(req, res, next) {
  * POST /api/recepciones-proveedor/:id/finalizar
  * Body: { recibido_por, recibidor: { id } | { otro: true, nombre, cedula }, firma_data }
  *
- * Firma la recepción (Borrador -> Finalizada). 200 con la recepción (sin firma ni
- * cédula), el `resumen` y, por ahora, un `siesa` / `notaCredito` en "pendiente":
- * el envío a SIESA llega en un corte posterior (ver `PostFinalizarProveedor.model.js`).
+ * Firma la recepción (Borrador -> Finalizada) y manda la entrada a SIESA (ver
+ * `PostFinalizarProveedor.model.js`). 200 con la recepción (sin firma ni cédula), el
+ * `resumen`, `siesa` {estado, referencia, error, envio_id} y `notaCredito` {requerida,
+ * estado, bloqueo, referencia, error} con el estado REAL. Que SIESA falle no es un
+ * error de finalizar: la recepción ya está firmada y el admin reintenta.
  *
  * Sobre una recepción que YA estaba firmada devuelve 200 con el estado actual y
  * `ya_finalizada: true`: no vuelve a firmar. 422 con el detalle por renglón si
@@ -101,10 +104,15 @@ export async function finalizar(req, res, next) {
       req.body,
     );
     // Nunca lanza: la recepción ya está firmada y lo que falle acá viaja en la respuesta.
-    const despues = await PostFinalizarProveedor.despuesDeFinalizar({ recepcion, resumen, yaFinalizada });
+    const { cambios, ...despues } = await PostFinalizarProveedor.despuesDeFinalizar({
+      recepcion,
+      resumen,
+      yaFinalizada,
+    });
     res.json({
       ok: true,
-      data: recepcion,
+      // Si la entrada quedó ok, la recepción ya pasó a Enviada_SIESA: que `data` lo diga.
+      data: cambios ? { ...recepcion, ...cambios } : recepcion,
       resumen,
       ya_finalizada: yaFinalizada,
       ...despues,
@@ -120,6 +128,54 @@ export async function finalizar(req, res, next) {
         ...error.detalle,
       });
     }
+    next(error);
+  }
+}
+
+/**
+ * POST /api/recepciones-proveedor/:id/siesa/reintentar
+ * Body: { por }  (correo del admin)
+ *
+ * Reintenta la entrada a SIESA. Si la entrada YA está ok no manda otra: reconcilia
+ * el estado de la recepción (`reconciliada: true`) y dispara la nota crédito que
+ * falte. 200 si la entrada está en SIESA; 502 con el motivo si SIESA la rechazó o
+ * quedó sin confirmar (el detalle va en `siesa`). 409 si no se puede (borrador,
+ * anulada, envío en curso o sin confirmar, SIESA apagado).
+ */
+export async function reintentarSiesa(req, res, next) {
+  try {
+    const id = req.datosValidados.id;
+    const { cambios, ...resultado } = await SiesaEnvioModel.reintentarEntradaProveedor(id, req.body.por);
+    const recepcion = await RecepcionProveedorModel.obtener(id);
+    const ok = resultado.siesa.estado === "ok";
+    res.status(ok ? 200 : 502).json({
+      ok,
+      data: cambios ? { ...recepcion, ...cambios } : recepcion,
+      ...resultado,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/recepciones-proveedor/:id/nota-credito/reintentar
+ * Body: { por }  (correo del admin)
+ *
+ * Manda (o reintenta) la nota crédito de lo devuelto. 409 con el motivo si no se
+ * puede: la entrada no está en SIESA, no hay devoluciones, ya hay una vigente u
+ * ok, SIESA apagado, o el conector de la nota crédito todavía no está configurado
+ * (en ese caso NO se anota ningún envío). 200 si quedó en SIESA; 502 si SIESA la
+ * rechazó o quedó sin confirmar.
+ */
+export async function reintentarNotaCredito(req, res, next) {
+  try {
+    const id = req.datosValidados.id;
+    const { notaCredito } = await SiesaEnvioModel.reintentarNotaCreditoProveedor(id, req.body.por);
+    const recepcion = await RecepcionProveedorModel.obtener(id);
+    const ok = notaCredito.estado === "ok";
+    res.status(ok ? 200 : 502).json({ ok, data: recepcion, notaCredito });
+  } catch (error) {
     next(error);
   }
 }
