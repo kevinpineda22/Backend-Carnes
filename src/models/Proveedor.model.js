@@ -28,25 +28,26 @@ const CAMPOS_EQUIVALENCIA = "id, codigo_item, descripcion_item, unidad, equivale
  *
  * Con `conPlantilla` solo los que tienen al menos una equivalencia ACTIVA: es el
  * selector del recibidor, y un proveedor sin plantilla no tiene qué recibir
- * (abrir la factura fallaría). `!inner` hace ese filtro en la base y no en JS.
- * Sin la bandera salen todos, con su conteo (puede ser 0) — es lo que va a
- * necesitar el admin para ver a quién le falta cargar la plantilla.
+ * (abrir la factura fallaría). Sin la bandera salen todos, con su conteo (puede
+ * ser 0) — es lo que va a necesitar el admin para ver a quién le falta cargar la
+ * plantilla.
+ *
+ * El filtro va sobre el conteo y NO con `!inner(count)`: con un agregado,
+ * PostgREST devuelve siempre una fila `{ count: 0 }`, así que el `!inner` nunca
+ * excluye a nadie y el selector mostraba los 16 proveedores.
  */
 export async function listar({ conPlantilla = false } = {}) {
-  const relacion = conPlantilla
-    ? "carnes_proveedor_equivalencias!inner(count)"
-    : "carnes_proveedor_equivalencias(count)";
-
   const { data, error } = await supabase
     .from("carnes_proveedores")
-    .select(`${CAMPOS_PROVEEDOR}, ${relacion}`)
+    .select(`${CAMPOS_PROVEEDOR}, carnes_proveedor_equivalencias(count)`)
     .eq("activo", true)
     // Sin este filtro el conteo incluiría las filas dadas de baja.
     .eq("carnes_proveedor_equivalencias.activo", true)
     .order("razon_social")
     .order("id");
   if (error) fallarSiFaltaMigracion(error, "Error al leer los proveedores", MIGRACIONES);
-  return formatearProveedores(data || []);
+  const proveedores = formatearProveedores(data || []);
+  return conPlantilla ? proveedores.filter((p) => p.equivalencias_activas > 0) : proveedores;
 }
 
 /**
