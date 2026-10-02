@@ -33,3 +33,51 @@ export async function obtenerPlantilla(req, res, next) {
     next(error);
   }
 }
+
+/**
+ * PUT /api/proveedores/:id/plantilla
+ * Body: { por(correo), filas: <hoja como arreglo de arreglos, encabezado incluido>,
+ *         aplicar?: boolean (false = solo vista previa) }
+ *
+ * Vista previa (aplicar false, no escribe): el plan completo, fila por fila.
+ * Aplicar (true): lo guardado y desactivado + el resumen; 422 PLANTILLA_NO_APLICABLE
+ * si la hoja no tiene ninguna fila válida.
+ */
+export async function cargarPlantilla(req, res, next) {
+  try {
+    const { filas, aplicar, por } = req.body;
+    const { proveedor, plan, aplicado, guardadas, desactivadas } =
+      await ProveedorModel.cargarPlantilla(req.datosValidados.id, { filas, aplicar, por });
+
+    if (!aplicado) {
+      res.json({
+        ok: true,
+        aplicado: false,
+        proveedor,
+        aplicable: plan.aplicable,
+        motivo_no_aplicable: plan.motivo_no_aplicable,
+        errores: plan.errores,
+        advertencias: plan.advertencias,
+        filas: plan.filas,
+        rechazadas: plan.rechazadas,
+        a_desactivar: plan.a_desactivar,
+        desactivacion_omitida: plan.desactivacion_omitida,
+        resumen: plan.resumen,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      aplicado: true,
+      proveedor,
+      guardadas,
+      desactivadas,
+      advertencias: plan.advertencias,
+      rechazadas: plan.rechazadas,
+      desactivacion_omitida: plan.desactivacion_omitida,
+      resumen: plan.resumen,
+    });
+  } catch (error) {
+    next(error);
+  }
+}

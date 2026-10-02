@@ -3,6 +3,7 @@ import { createError } from "./errorHandler.js";
 import { ESTADOS as ESTADOS_PROVEEDOR } from "../shared/estadosProveedor.js";
 import { normalizarFactura } from "../shared/proveedorValores.js";
 import { LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
+import { TOPE_COLUMNAS_CARGA, TOPE_FILAS_CARGA } from "../shared/plantillaProveedor.js";
 
 /* =============================================
    Validación de entrada con zod.
@@ -281,6 +282,43 @@ const listarProveedoresQuerySchema = z.object({
     .optional(),
 });
 
+// ─── Plantilla de un proveedor: carga desde el admin ───────────────────────
+
+/**
+ * Una celda de la hoja tal como la deja `sheet_to_json({ header: 1 })`: texto,
+ * número, booleano o `null` (celda vacía). Nada de objetos ni arreglos anidados.
+ */
+const celdaDeHoja = z.union([z.string().max(2000), z.number(), z.boolean(), z.null()], {
+  errorMap: () => ({ message: "La hoja trae una celda que no es válida." }),
+});
+
+/**
+ * PUT /proveedores/:id/plantilla. `filas` es la hoja COMPLETA, encabezado incluido
+ * (el normalizador busca los nombres de columna). `aplicar` es un booleano de
+ * verdad y por defecto `false`: sin él la petición es solo una vista previa y no
+ * escribe nada. "true" como texto es 400 — una carga que se aplica por un valor
+ * que se coló como string sería el peor error posible acá.
+ */
+const cargarPlantillaProveedorSchema = z.object({
+  por: correo("El correo de quien carga la plantilla no es válido."),
+  filas: z
+    .array(
+      z
+        .array(celdaDeHoja, { invalid_type_error: "La hoja trae una fila que no es válida." })
+        .max(TOPE_COLUMNAS_CARGA, `La hoja trae filas con más de ${TOPE_COLUMNAS_CARGA} columnas.`),
+      {
+        required_error: "Falta la hoja con la plantilla.",
+        invalid_type_error: "Las filas de la hoja no son válidas.",
+      },
+    )
+    .min(1, "La hoja está vacía.")
+    .max(
+      TOPE_FILAS_CARGA,
+      `La hoja trae más de ${TOPE_FILAS_CARGA} filas. Dejá solo la plantilla del proveedor.`,
+    ),
+  aplicar: z.boolean({ invalid_type_error: "debe ser true o false." }).default(false),
+});
+
 // ─── Recepción de proveedor: abrir y autoguardar ───────────────────────────
 
 const abrirRecepcionProveedorSchema = z.object({
@@ -529,6 +567,7 @@ export const validators = {
 
   listarProveedores: validar(listarProveedoresQuerySchema, "query"),
   idParam: validar(idParamSchema, "params"),
+  cargarPlantillaProveedor: validar(cargarPlantillaProveedorSchema),
 
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
