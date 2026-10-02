@@ -35,20 +35,17 @@
  * documento en SIESA. Por eso la referencia cruzada entre inicial y oficial
  * va por `PENDIENTE` y por las notas, que sí viajan tal cual.
  *
- * ─── Vísceras: van, con su propia unidad y SIN prorratear ─────────────────
+ * ─── Vísceras: NO van en esta entrada ─────────────────────────────────────
  *
- * Desde `sql/016_visceras_siesa.sql`, nueve de las once vísceras de res tienen
- * código de SIESA (ver `shared/visceras.js`). Van al documento igual que un
- * producto, con tres diferencias:
+ * Desde el 29/09/2026 las vísceras no viajan en la inicial ni en la oficial
+ * (`vaASiesa` en `shared/visceras.js` las excluye): la CEA es la factura y solo
+ * lleva cortes. Entran al inventario por un documento aparte, el ajuste de
+ * vísceras CEI (`shared/siesaAjusteVisceras.js`): por liquidación, o por
+ * recepción al cerrar si CARNES_SIESA_VISCERAS_AL_CIERRE está prendida.
  *
- *   · su UNIDAD_MEDIDA es la del renglón (`item.unidad`), no la fija de la
- *     configuración — Lengua es UND, el resto KL.
- *   · su precio es SIEMPRE `costo_base`, en la inicial y en la oficial: no
- *     existe `costo_ajustado` para una víscera porque no se prorratea (no
- *     entra en el costo teórico de `calcularCosteo`).
- *   · sin código (Vísceras, Entrañita hoy) NO se manda y NO bloquea el resto
- *     del documento — a diferencia de un producto sin homologar, que si
- *     bloquea. Ver `vaASiesa` en `shared/visceras.js`.
+ * (Entre `sql/016_visceras_siesa.sql` y esa decisión sí iban como un renglón
+ * más, con su propia unidad y sin prorratear: `costo_base`, nunca
+ * `costo_ajustado`. Esos renglones ya no se arman acá.)
  */
 import {
   esProducto,

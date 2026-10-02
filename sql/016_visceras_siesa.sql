@@ -28,6 +28,11 @@
 -- catálogo el mes que viene, una recepción ya cerrada no tiene que cambiar de
 -- significado.
 --
+-- NOTA (29/09/2026): esta migración dejó las vísceras con código dentro de la CEA.
+-- Eso cambió: hoy NO van en la entrada (inicial ni oficial) sino en el ajuste de
+-- vísceras CEI (sql/019, sql/020, sql/025). Los códigos y el snapshot que se
+-- guardan acá son los que ese ajuste usa.
+--
 -- ─── Qué actualiza ──────────────────────────────────────────────────────────
 --
 -- 1. El catálogo de RES con los códigos/unidad/factor confirmados por el
