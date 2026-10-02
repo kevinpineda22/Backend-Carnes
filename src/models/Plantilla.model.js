@@ -1,6 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
-import { cambiosDeFila } from "../shared/plantillaCambios.js";
+import { cambiosDeFila, agruparPorColumnas } from "../shared/plantillaCambios.js";
 
 /* =============================================
    La plantilla que edita el admin.
@@ -175,14 +175,15 @@ export async function guardarLote(catalogo, especie, filas = []) {
   // apagaría las filas que se acaban de crear. Se guardaban y desaparecían.
   const idsNuevos = [];
   let creados = 0;
-  if (nuevas.length) {
-    const { data, error } = await supabase
-      .from(t)
-      .insert(nuevas.map((f) => ({ ...limpiar(catalogo, f), especie })))
-      .select("id");
+  // Un insert por grupo de columnas iguales (ver `agruparPorColumnas`): mezclar
+  // filas con columnas distintas en un solo insert le manda NULL a las que
+  // faltan en vez de su default, y el guardado fallaba entero.
+  const grupos = agruparPorColumnas(nuevas.map((f) => ({ ...limpiar(catalogo, f), especie })));
+  for (const grupo of grupos) {
+    const { data, error } = await supabase.from(t).insert(grupo).select("id");
     if (error) throw new Error(`Error al crear en ${catalogo}: ${error.message}`);
     idsNuevos.push(...(data || []).map((f) => f.id));
-    creados = nuevas.length;
+    creados += grupo.length;
   }
 
   // Solo se actualiza lo que cambió (ver `shared/plantillaCambios.js`): la

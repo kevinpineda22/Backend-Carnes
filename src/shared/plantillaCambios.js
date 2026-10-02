@@ -42,3 +42,28 @@ export function cambiosDeFila(limpio, actual) {
   }
   return cambios;
 }
+
+/**
+ * Parte un lote de filas nuevas en grupos con EXACTAMENTE las mismas columnas.
+ *
+ * En un insert de varias filas, Supabase arma la unión de las columnas y a la
+ * fila a la que le falta una le manda NULL —no el DEFAULT de la columna—. La
+ * grilla del admin solo manda lo que se completó, así que dos ítems nuevos con
+ * columnas distintas (uno con `orden`, otro sin) hacían fallar el guardado
+ * entero contra un NOT NULL. Es el mismo bug que rompió "Recibir Res" el 30/09.
+ * Insertando cada grupo por separado, lo que falta toma su default.
+ *
+ * Conserva el orden de llegada dentro de cada grupo y el de los grupos.
+ *
+ * @param {object[]} filas
+ * @returns {object[][]}
+ */
+export function agruparPorColumnas(filas = []) {
+  const grupos = new Map();
+  for (const fila of filas) {
+    const firma = Object.keys(fila).sort().join("|");
+    if (!grupos.has(firma)) grupos.set(firma, []);
+    grupos.get(firma).push(fila);
+  }
+  return [...grupos.values()];
+}
