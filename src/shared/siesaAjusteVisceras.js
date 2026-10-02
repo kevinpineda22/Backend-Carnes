@@ -358,6 +358,71 @@ export function compararViscerasEnviadas(payloadEnviado, payloadActual, { descri
   return { cambio: diferencias.length > 0, diferencias };
 }
 
+// ─── Qué hacer con las vísceras de una recepción en la liquidación ──────────
+
+/**
+ * Los estados de las vísceras de una recepción vistas desde la liquidación,
+ * cuando salieron al cerrar (tipo `visceras_recepcion`).
+ *
+ *   sin_cambios   hay un CEI vigente ok y lo que se mandaría hoy es igual: no hay
+ *                 nada que subir
+ *   modificada    hay un CEI vigente ok pero el admin tocó algo: hay que borrar el
+ *                 viejo A MANO en SIESA y reenviar
+ *   pendiente     no hay un CEI vigente (nunca salió, falló o se anuló) y hoy hay
+ *                 vísceras para mandar
+ *   en_revision   el CEI vigente está enviando o sin confirmar: se resuelve antes
+ *   sin_visceras  no hay CEI vigente y tampoco vísceras con código y cantidad
+ */
+export const ESTADO_VISCERAS = {
+  SIN_CAMBIOS: "sin_cambios",
+  MODIFICADA: "modificada",
+  PENDIENTE: "pendiente",
+  EN_REVISION: "en_revision",
+  SIN_VISCERAS: "sin_visceras",
+};
+
+const ESTADOS_VIGENTES_ENVIO = ["enviando", "ok", "sin_confirmar"];
+
+/**
+ * Decide en qué quedó una recepción. Puro.
+ *
+ * @param {object} p
+ * @param {{payload: object|null, vacio: boolean}} p.armado  el CEI armado con los datos de AHORA
+ * @param {object[]} p.filas  envíos `visceras_recepcion` de la recepción, del más nuevo al más viejo
+ * @param {Record<string,string>} [p.descripciones]  código → nombre, para las diferencias
+ * @returns {{estado: string, vigente: object|null, ultimo: object|null, diferencias: object[]}}
+ */
+export function decidirViscerasRecepcion({ armado, filas = [], descripciones = {} }) {
+  const vigente = filas.find((f) => ESTADOS_VIGENTES_ENVIO.includes(f.estado)) || null;
+  const ultimo = filas[0] || null;
+  const base = { vigente, ultimo, diferencias: [] };
+
+  if (vigente && vigente.estado !== "ok") return { ...base, estado: ESTADO_VISCERAS.EN_REVISION };
+  if (vigente) {
+    const { cambio, diferencias } = compararViscerasEnviadas(vigente.payload, armado.payload, {
+      descripciones,
+    });
+    return {
+      ...base,
+      estado: cambio ? ESTADO_VISCERAS.MODIFICADA : ESTADO_VISCERAS.SIN_CAMBIOS,
+      diferencias,
+    };
+  }
+  return { ...base, estado: armado.vacio ? ESTADO_VISCERAS.SIN_VISCERAS : ESTADO_VISCERAS.PENDIENTE };
+}
+
+/**
+ * ¿Toda la liquidación está al día? Sí cuando ninguna recepción necesita subir
+ * nada y al menos una ya tiene su CEI en SIESA. Es lo que habilita el aviso
+ * «no se modificó nada» en vez del botón de enviar.
+ */
+export function viscerasSinCambios(estados = []) {
+  return (
+    estados.some((e) => e === ESTADO_VISCERAS.SIN_CAMBIOS) &&
+    estados.every((e) => e === ESTADO_VISCERAS.SIN_CAMBIOS || e === ESTADO_VISCERAS.SIN_VISCERAS)
+  );
+}
+
 // ─── Con qué se cruza el ajuste: la entrada oficial que ya está en SIESA ────
 
 /**

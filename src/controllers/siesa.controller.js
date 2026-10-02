@@ -59,6 +59,42 @@ export async function reintentarInicial(req, res, next) {
   }
 }
 
+/**
+ * POST /api/siesa/recepciones/:id/visceras — reintento manual del CEI de las
+ * vísceras de una recepción de res (el que sale al cerrarla).
+ */
+export async function reintentarViscerasRecepcion(req, res, next) {
+  try {
+    const data = await SiesaEnvio.reintentarViscerasRecepcion(req.params.id, req.body?.enviado_por);
+    res.status(data.estado === "ok" ? 201 : 502).json({ ok: data.estado === "ok", data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/siesa/liquidaciones/:id/visceras/reenviar
+ * { recepcion_ids, eliminado_en_siesa, por, motivo? } — manda las vísceras de
+ * esas recepciones. Las modificadas exigen `eliminado_en_siesa: true` (el
+ * documento viejo se borró a mano en SIESA). 200 si todas quedaron en SIESA; 207
+ * si alguna no (el detalle va en `resultados`). 409 si algo lo bloquea, sin
+ * mandar nada.
+ */
+export async function reenviarViscerasLiquidacion(req, res, next) {
+  try {
+    const { recepcion_ids, eliminado_en_siesa, por, motivo } = req.body;
+    const data = await SiesaEnvio.reenviarViscerasLiquidacion(req.params.id, {
+      recepcionIds: recepcion_ids,
+      eliminadoEnSiesa: eliminado_en_siesa,
+      por,
+      motivo,
+    });
+    res.status(data.completo ? 200 : 207).json({ ok: data.completo, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** GET /api/siesa/liquidaciones/:id/previsualizar */
 export async function previsualizarOficial(req, res, next) {
   try {

@@ -191,9 +191,14 @@ export async function finalizar(req, res, next) {
     //
     // La guía NO viaja en la respuesta: esta la lee el recibidor, y la
     // diferencia contra el frigorífico es del admin, que la recibe por correo.
-    const [notificacion, siesa] = await Promise.all([
+    //
+    // Las vísceras de res (CEI) salen en paralelo con la entrada inicial si
+    // CARNES_SIESA_VISCERAS_AL_CIERRE está prendida; apagada devuelve "apagado"
+    // sin tocar la base.
+    const [notificacion, siesa, siesaVisceras] = await Promise.all([
       notificarRecepcionFinalizada(data, data.items),
       SiesaEnvio.enviarInicial(data.id, data.recibido_por),
+      SiesaEnvio.enviarViscerasRecepcion(data.id, data.recibido_por),
       DesposteModel.vincularAnticipada(data.id),
     ]);
 
@@ -202,6 +207,11 @@ export async function finalizar(req, res, next) {
       data,
       notificacion,
       siesa: { estado: siesa.estado, referencia: siesa.referencia ?? null, error: siesa.error ?? null },
+      siesa_visceras: {
+        estado: siesaVisceras.estado,
+        referencia: siesaVisceras.referencia ?? null,
+        error: siesaVisceras.error ?? null,
+      },
     });
   } catch (error) {
     next(error);

@@ -62,6 +62,12 @@ import {
   ESPERA_MINIMA_AJUSTE_MS,
   ESPERA_MAXIMA_COMPENSACION_MS,
   TIPO_AJUSTE_VISCERAS,
+  TIPO_VISCERAS_RECEPCION,
+  ESTADO_VISCERAS,
+  armarViscerasRecepcion,
+  consecutivoViscerasRecepcion,
+  decidirViscerasRecepcion,
+  viscerasSinCambios,
 } from "../shared/siesaAjusteVisceras.js";
 import {
   parsearFaltantes,
@@ -106,6 +112,7 @@ import {
   documentoSiesa,
   siesaConfigurado,
   siesaActivo,
+  viscerasAlCierre,
   faltantesSiesa,
   terceroCarnes,
   TERCEROS_CARNES,
@@ -295,6 +302,11 @@ const archivoMigracionFaltante = (error, tipo) => {
   if (esTipoProveedor(tipo) && (["22001", "23514"].includes(error?.code) || esMigracionFaltante(error))) {
     return ARCHIVO_SQL_PROVEEDOR;
   }
+  // Vísceras por recepción (sql/025): 'visceras_recepcion' cabe en la columna (18),
+  // así que sin la migración falla el CHECK.
+  if (tipo === TIPO_VISCERAS_RECEPCION && error?.code === "23514") {
+    return "sql/025_visceras_recepcion.sql";
+  }
   if (faltaMigracion019(error, tipo)) return "sql/019_ajuste_visceras.sql";
   if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "22001") return "sql/019_ajuste_visceras.sql";
   if (tipo === TIPO_AJUSTE_FALTANTE && error?.code === "23514") return "sql/021_ajuste_faltante.sql";
@@ -456,7 +468,8 @@ export async function obtener(id) {
   // El ajuste de vísceras y su compensación por faltante se explican con los
   // renglones de VÍSCERA; la CEA, con los de carne y adicionales.
   const esFaltante = data.tipo === TIPO_AJUSTE_FALTANTE;
-  const esAjuste = data.tipo === TIPO_AJUSTE_VISCERAS || esFaltante;
+  const esAjuste =
+    data.tipo === TIPO_AJUSTE_VISCERAS || data.tipo === TIPO_VISCERAS_RECEPCION || esFaltante;
   let items = [];
   const sedeDe = new Map();
   if (idsRecepciones.length) {
@@ -1660,7 +1673,10 @@ function construirPrevia(ev) {
 
 /** GET — qué se mandaría en el ajuste de vísceras de la liquidación. */
 export async function previsualizarAjusteVisceras(liquidacionId) {
-  return construirPrevia(await evaluarAjuste(liquidacionId));
+  const ev = await evaluarAjuste(liquidacionId);
+  // Con vísceras que salieron al cerrar la recepción, la vista es por recepción.
+  const porRecepcion = await evaluarPorRecepcion(ev);
+  return porRecepcion ? construirPreviaPorRecepcion(ev, porRecepcion) : construirPrevia(ev);
 }
 
 // ─── Compensación por faltante de inventario ───────────────────────────────
@@ -1745,7 +1761,7 @@ async function compensacionVigente(origenId, bodega) {
  *
  * @returns {{ ok: boolean, pendiente?: boolean, registros: object[], detalle?: string }}
  */
-async function compensarBodega({ documento, origen, liquidacionId, por, inicio }) {
+async function compensarBodega({ documento, origen, alcance, por, inicio }) {
   const registros = [];
   let actual = documento;
 
@@ -1766,8 +1782,7 @@ async function compensarBodega({ documento, origen, liquidacionId, por, inicio }
     const fila = await registrarYEnviar({
       armado: { payload: actual.payload, resumen: actual.resumen, bloqueos: [] },
       base: {
-        recepcion_id: null,
-        liquidacion_id: Number(liquidacionId),
+        ...alcance.baseCompensacion,
         tipo: TIPO_AJUSTE_FALTANTE,
         consecutivo: null,
         tipo_docto: DOCUMENTO_AJUSTE_FALTANTE.tipoDocto,
@@ -1776,7 +1791,7 @@ async function compensarBodega({ documento, origen, liquidacionId, por, inicio }
       },
       por,
       vigente: () => compensacionVigente(origen.id, actual.bodega),
-      etiqueta: `ajuste por faltante liquidación #${liquidacionId} bodega ${actual.bodega}`,
+      etiqueta: alcance.etiquetaCompensacion(actual.bodega),
       documento: DOCUMENTO_AJUSTE_FALTANTE,
       timeoutMs: espera,
     });
@@ -1791,7 +1806,8 @@ async function compensarBodega({ documento, origen, liquidacionId, por, inicio }
         documento: actual,
         faltantes: parsearFaltantes(fila.respuesta),
         config: DOCUMENTO_AJUSTE_FALTANTE,
-        liquidacionId,
+        liquidacionId: alcance.liquidacionId,
+        recepcionId: alcance.recepcionId,
       });
       if (!subida.documento) {
         return {
@@ -1820,6 +1836,56 @@ async function compensarBodega({ documento, origen, liquidacionId, por, inicio }
 }
 
 /**
+ * Qué documento se manda y dónde queda registrado: lo único que cambia entre el
+ * ajuste de una LIQUIDACIÓN y el CEI de una RECEPCIÓN. Todo lo demás —el
+ * candado, la compensación por faltante, los reintentos— es `ejecutarAjuste`.
+ */
+const alcanceLiquidacion = (ev, liquidacionId) => ({
+  armado: ev.armado,
+  base: {
+    recepcion_id: null,
+    liquidacion_id: Number(liquidacionId),
+    recepcion_ids: ev.armado.recepcion_ids,
+    tipo: TIPO_AJUSTE_VISCERAS,
+    consecutivo: consecutivoAjusteLiquidacion(liquidacionId),
+    tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+  },
+  vigente: () => ajusteDeLiquidacion(liquidacionId),
+  etiqueta: `ajuste vísceras liquidación #${liquidacionId}`,
+  liquidacionId,
+  recepcionId: undefined,
+  baseCompensacion: { recepcion_id: null, liquidacion_id: Number(liquidacionId) },
+  etiquetaCompensacion: (bodega) =>
+    `ajuste por faltante liquidación #${liquidacionId} bodega ${bodega}`,
+});
+
+/**
+ * El CEI de una recepción. Las compensaciones por faltante van SIN `recepcion_id`
+ * (el índice de sql/010 admite un solo vigente por recepción y tipo, y una
+ * recepción puede necesitar más de una compensación) y con `recepcion_ids`, que
+ * es como `enviosDeRecepcion` las encuentra. Tampoco llevan `liquidacion_id`:
+ * al cerrar la recepción todavía no hay liquidación, y el índice de sql/021 que
+ * limita los envíos en vuelo por liquidación no tiene por qué aplicarles.
+ */
+const alcanceRecepcion = (recepcion, armado) => ({
+  armado,
+  base: {
+    recepcion_id: recepcion.id,
+    liquidacion_id: recepcion.liquidacion_id ?? null,
+    tipo: TIPO_VISCERAS_RECEPCION,
+    consecutivo: consecutivoViscerasRecepcion(recepcion.id),
+    tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+  },
+  vigente: () => envioVigente(recepcion.id, TIPO_VISCERAS_RECEPCION),
+  etiqueta: `vísceras recepción #${recepcion.id}`,
+  liquidacionId: undefined,
+  recepcionId: recepcion.id,
+  baseCompensacion: { recepcion_id: null, liquidacion_id: null, recepcion_ids: [recepcion.id] },
+  etiquetaCompensacion: (bodega) =>
+    `ajuste por faltante recepción #${recepcion.id} bodega ${bodega}`,
+});
+
+/**
  * Manda el ajuste de vísceras y, si SIESA lo rechaza solo por faltantes,
  * compensa y reenvía (hasta MAX_RONDAS_AJUSTE envíos del ajuste).
  *
@@ -1829,7 +1895,7 @@ async function compensarBodega({ documento, origen, liquidacionId, por, inicio }
  * falta de tiempo para el próximo POST. Lo que quedó a medias se retoma con otro
  * clic (ver el comentario de arriba).
  */
-async function ejecutarAjuste({ ev, liquidacionId, por, inicio }) {
+async function ejecutarAjuste({ alcance, por, inicio }) {
   const compensaciones = [];
   let fila = null;
   let faltantesPrevios = null;
@@ -1876,18 +1942,11 @@ async function ejecutarAjuste({ ev, liquidacionId, por, inicio }) {
     }
 
     fila = await registrarYEnviar({
-      armado: ev.armado,
-      base: {
-        recepcion_id: null,
-        liquidacion_id: Number(liquidacionId),
-        recepcion_ids: ev.armado.recepcion_ids,
-        tipo: TIPO_AJUSTE_VISCERAS,
-        consecutivo: consecutivoAjusteLiquidacion(liquidacionId),
-        tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
-      },
+      armado: alcance.armado,
+      base: alcance.base,
       por,
-      vigente: () => ajusteDeLiquidacion(liquidacionId),
-      etiqueta: `ajuste vísceras liquidación #${liquidacionId}${ronda > 1 ? ` (ronda ${ronda})` : ""}`,
+      vigente: alcance.vigente,
+      etiqueta: `${alcance.etiqueta}${ronda > 1 ? ` (ronda ${ronda})` : ""}`,
       documento: DOCUMENTO_AJUSTE_VISCERAS,
       timeoutMs: espera,
     });
@@ -1926,15 +1985,16 @@ async function ejecutarAjuste({ ev, liquidacionId, por, inicio }) {
 
     const { documentos, bloqueos } = armarAjusteFaltante({
       faltantes,
-      movimientosCei: ev.armado.payload.Movimientos,
+      movimientosCei: alcance.armado.payload.Movimientos,
       config: DOCUMENTO_AJUSTE_FALTANTE,
-      fecha: ev.armado.payload.Documentos[0]?.FECHA_DOCTO,
-      liquidacionId,
+      fecha: alcance.armado.payload.Documentos[0]?.FECHA_DOCTO,
+      liquidacionId: alcance.liquidacionId,
+      recepcionId: alcance.recepcionId,
     });
     if (bloqueos.length) return resultado({ detalle: bloqueos.join(" ") });
 
     for (const documento of documentos) {
-      const r = await compensarBodega({ documento, origen: fila, liquidacionId, por, inicio });
+      const r = await compensarBodega({ documento, origen: fila, alcance, por, inicio });
       compensaciones.push(...r.registros);
       if (!r.ok) {
         return resultado({
@@ -1967,6 +2027,15 @@ export async function enviarAjusteVisceras(liquidacionId, por) {
   // El reloj arranca ANTES de leer: cargar las recepciones también gasta función.
   const inicio = Date.now();
   const ev = await evaluarAjuste(liquidacionId);
+  // En modo por recepción el consolidado no sale NUNCA: esas vísceras ya están (o
+  // van a estar) en SIESA en un CEI por recepción, y este las entraría de nuevo.
+  if ((await viscerasPorRecepcion(ev.ids)).size > 0) {
+    throw createError(
+      409,
+      "Las vísceras de esta liquidación salen por recepción: usá «Reenviar» sobre las recepciones " +
+        "pendientes o modificadas. El ajuste consolidado entraría esas vísceras dos veces.",
+    );
+  }
   const previa = construirPrevia(ev);
 
   if (previa.enviado) {
@@ -1978,7 +2047,7 @@ export async function enviarAjusteVisceras(liquidacionId, por) {
   }
   if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
 
-  return ejecutarAjuste({ ev, liquidacionId, por, inicio });
+  return ejecutarAjuste({ alcance: alcanceLiquidacion(ev, liquidacionId), por, inicio });
 }
 
 /**
@@ -2051,6 +2120,414 @@ export async function anularAjusteVisceras(liquidacionId, { recepcionId, por, mo
     }: ${anulados.map((a) => a.referencia).join(", ")} anulado por ${por || "—"}.`,
   );
   return { anulados: anulados.map((a) => ({ id: a.id, referencia: a.referencia })) };
+}
+
+// ─── Vísceras POR RECEPCIÓN (tipo visceras_recepcion, sql/025) ──────────────
+//
+// Con CARNES_SIESA_VISCERAS_AL_CIERRE las vísceras de res salen al cerrar la
+// recepción: UN CEI por recepción, igual que las líneas de carne salen en la
+// inicial. Después, en la liquidación, el admin pudo haber corregido algo:
+//
+//   · sin cambios  → no hay nada que subir; la pantalla lo dice.
+//   · modificada   → el CEI viejo está contabilizado en SIESA y es una ENTRADA de
+//                    inventario: mandar el nuevo encima duplica el stock. Una
+//                    PERSONA borra el viejo a mano en SIESA, confirma que lo hizo
+//                    (`eliminado_en_siesa`), el envío viejo pasa a `anulado` y se
+//                    manda el vigente completo.
+//   · pendiente    → nunca salió, falló o se anuló: se manda sin más.
+//
+// ─── ¿Por qué acá NO se exige la entrada oficial? ───────────────────────────
+//
+// El ajuste consolidado exige `coberturaOficial` por dos razones: (1) no entrar
+// vísceras de una carne que nunca entró a SIESA, y (2) las CEA anteriores al
+// 29/09/2026 llevaban las vísceras DENTRO (`viscerasEnCea`), y el ajuste las
+// duplicaba. Al cerrar la recepción, la inicial se arma con `vaASiesa`, que ya no
+// lleva vísceras (2 no puede pasar con documentos nuevos), y (1) deja de ser una
+// regla: el negocio decidió que las vísceras entran al cerrar, antes de que haya
+// oficial. Por eso este camino no mira la cobertura.
+//
+// ─── Liquidaciones mezcladas ────────────────────────────────────────────────
+//
+// En cuanto UNA recepción de la liquidación tiene un envío `visceras_recepcion`,
+// la liquidación pasa a modo por recepción y el ajuste consolidado NO sale nunca
+// más (`enviarAjusteVisceras` responde 409): las recepciones que no tienen
+// su CEI quedan `pendiente` y se mandan de a una. Una liquidación sin ningún
+// envío `visceras_recepcion` sigue exactamente por el flujo consolidado de antes.
+
+/** Los envíos `visceras_recepcion` de estas recepciones, por recepción (nuevo → viejo). */
+async function viscerasPorRecepcion(ids) {
+  const porRecepcion = new Map();
+  if (!ids.length) return porRecepcion;
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("*")
+    .in("recepcion_id", ids)
+    .eq("tipo", TIPO_VISCERAS_RECEPCION)
+    .order("enviado_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (error) fallarSiFaltaMigracion(error, "Error al leer los envíos de vísceras", MIGRACIONES);
+  for (const f of data || []) {
+    porRecepcion.set(f.recepcion_id, [...(porRecepcion.get(f.recepcion_id) || []), f]);
+  }
+  return porRecepcion;
+}
+
+/** Lo que el front necesita del resultado de un CEI de recepción. */
+function resultadoVisceras(fila, extra = {}) {
+  return {
+    estado: fila?.estado ?? "error",
+    referencia: fila?.referencia ?? null,
+    error: fila?.repetido ? motivoVigente(fila) : (fila?.error ?? null),
+    ...extra,
+  };
+}
+
+/**
+ * Manda el CEI de una recepción con las vísceras que tiene AHORA (con la
+ * compensación por faltante si SIESA lo rechaza por inventario). Nunca lanza por
+ * SIESA: devuelve el resultado.
+ *
+ * @returns {{completo: boolean, resultado: object, compensaciones: object[]}}
+ */
+async function mandarViscerasRecepcion({ recepcion, armado, por, inicio }) {
+  const r = await ejecutarAjuste({ alcance: alcanceRecepcion(recepcion, armado), por, inicio });
+  return {
+    completo: r.completo,
+    repetido: r.repetido,
+    resultado: resultadoVisceras(r.envio, { detalle: r.detalle ?? null, pendiente: r.pendiente }),
+    compensaciones: r.compensaciones,
+  };
+}
+
+/** El CEI de la recepción con los datos de AHORA (solo vísceras). */
+const armarViscerasDe = (recepcion) =>
+  armarViscerasRecepcion({
+    recepcion,
+    items: recepcion.items,
+    config: DOCUMENTO_AJUSTE_VISCERAS,
+  });
+
+/**
+ * Se llama al CERRAR la recepción de res. Nunca lanza: si algo falla la
+ * recepción ya está cerrada, y lo que falle se reintenta desde el panel
+ * (`reintentarViscerasRecepcion`) o desde la liquidación.
+ *
+ * Sin vísceras con código y cantidad no se registra nada. Con la bandera
+ * apagada ni siquiera lee la base: el cierre queda como siempre.
+ */
+export async function enviarViscerasRecepcion(recepcionId, por) {
+  const base = { tipo: TIPO_VISCERAS_RECEPCION, recepcion_id: recepcionId };
+  if (!siesaActivo() || !viscerasAlCierre()) return { ...base, estado: "apagado" };
+  try {
+    const recepcion = await cargarRecepcion(recepcionId);
+    if (recepcion.especie !== "res") return { ...base, estado: "no_aplica" };
+
+    const previa = await envioVigente(recepcionId, TIPO_VISCERAS_RECEPCION);
+    if (previa) return { ...base, ...resultadoVisceras(previa), repetido: true };
+
+    const armado = armarViscerasDe(recepcion);
+    if (armado.vacio) return { ...base, estado: "sin_visceras" };
+
+    const r = await mandarViscerasRecepcion({ recepcion, armado, por, inicio: Date.now() });
+    return {
+      ...base,
+      ...r.resultado,
+      // Un rechazo por faltante cuenta el motivo en `detalle`: no se pierde.
+      error: r.resultado.error ?? r.resultado.detalle ?? null,
+      repetido: r.repetido,
+    };
+  } catch (e) {
+    console.error(`🔴 SIESA vísceras recepción #${recepcionId}: ${e.message}`);
+    return { ...base, estado: "error", error: e.message };
+  }
+}
+
+/** Reintento manual del CEI de una recepción, desde el panel. Sí lanza si no se puede. */
+export async function reintentarViscerasRecepcion(recepcionId, por) {
+  if (!siesaActivo()) {
+    throw createError(409, "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
+  }
+  if (!viscerasAlCierre()) {
+    throw createError(
+      409,
+      "El envío de vísceras al cierre está apagado (CARNES_SIESA_VISCERAS_AL_CIERRE no es true).",
+    );
+  }
+  const recepcion = await cargarRecepcion(recepcionId);
+  if (recepcion.especie !== "res") {
+    throw createError(409, "Solo las recepciones de res llevan vísceras para SIESA.");
+  }
+  if ([ESTADOS.BORRADOR, ESTADOS.RECHAZADO].includes(recepcion.estado)) {
+    throw createError(409, `La recepción está en ${recepcion.estado}: todavía no se cerró.`);
+  }
+  const previa = await envioVigente(recepcionId, TIPO_VISCERAS_RECEPCION);
+  if (previa) throw createError(409, motivoVigente(previa));
+
+  const armado = armarViscerasDe(recepcion);
+  if (armado.vacio) {
+    throw createError(409, "La recepción no tiene vísceras con código y cantidad para mandar.");
+  }
+  const r = await mandarViscerasRecepcion({ recepcion, armado, por, inicio: Date.now() });
+  // Otro pedido la reservó entre la pregunta de arriba y la reserva.
+  if (r.repetido) throw createError(409, r.resultado.error);
+  return {
+    ...r.resultado,
+    error: r.resultado.error ?? r.resultado.detalle ?? null,
+    tipo: TIPO_VISCERAS_RECEPCION,
+    recepcion_id: recepcion.id,
+  };
+}
+
+/**
+ * Evalúa la liquidación en modo por recepción, o devuelve null si ninguna de sus
+ * recepciones tiene un envío `visceras_recepcion` (flujo consolidado de siempre).
+ *
+ * @param {object} ev  `evaluarAjuste(...)`
+ */
+async function evaluarPorRecepcion(ev) {
+  const filasPor = await viscerasPorRecepcion(ev.ids);
+  if (filasPor.size === 0) return null;
+
+  const internos = new Map();
+  const recepciones = ev.recepciones.map((r) => {
+    const armado = armarViscerasDe(r);
+    const descripciones = {};
+    for (const i of r.items.filter((x) => x.tipo === "vicera")) {
+      if (String(i.codigo_item ?? "").trim()) {
+        descripciones[String(i.codigo_item).trim()] = i.descripcion;
+      }
+    }
+    const decision = decidirViscerasRecepcion({
+      armado,
+      filas: filasPor.get(r.id) || [],
+      descripciones,
+    });
+    const necesitaEnvio = [ESTADO_VISCERAS.PENDIENTE, ESTADO_VISCERAS.MODIFICADA].includes(
+      decision.estado,
+    );
+
+    // Esas vísceras ya pueden estar en SIESA por el esquema anterior (el ajuste
+    // por sede o el consolidado de la liquidación): mandar el CEI las entraría
+    // dos veces.
+    const bloqueos = [];
+    if (necesitaEnvio) {
+      bloqueos.push(...armado.bloqueos);
+      const previo = ev.previos.get(r.id)?.vigente;
+      if (previo) {
+        bloqueos.push(
+          `Sus vísceras ya están en SIESA en el ajuste por sede ${previo.referencia}: ` +
+            "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
+        );
+      }
+      if (ev.vigente && (ev.vigente.recepcion_ids || []).map(Number).includes(Number(r.id))) {
+        bloqueos.push(
+          `Sus vísceras ya están en SIESA en el ajuste consolidado ${ev.vigente.referencia}: ` +
+            "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
+        );
+      }
+    }
+    internos.set(r.id, { recepcion: r, armado, decision });
+    return {
+      recepcion_id: r.id,
+      sede: r.sede?.nombre ?? null,
+      fecha: r.fecha_ingreso ?? null,
+      estado: decision.estado,
+      diferencias: decision.diferencias,
+      // El documento que está en SIESA hoy, si hay: el que una persona borra a mano.
+      referencia_anterior: decision.vigente?.referencia ?? null,
+      envio: resumenAjuste(decision.vigente || decision.ultimo),
+      resumen: armado.resumen,
+      renglones: armado.renglones,
+      vacio: armado.vacio,
+      bloqueos,
+    };
+  });
+  return { recepciones, internos };
+}
+
+/** La previa del modo por recepción: qué le toca a cada una y si se puede mandar. */
+function construirPreviaPorRecepcion(ev, porRecepcion) {
+  const { recepciones } = porRecepcion;
+  const necesitan = recepciones.filter((r) =>
+    [ESTADO_VISCERAS.PENDIENTE, ESTADO_VISCERAS.MODIFICADA].includes(r.estado),
+  );
+  const configurado = siesaConfigurado();
+  const bloqueos = [];
+  if (necesitan.length) {
+    if (!siesaActivo()) {
+      bloqueos.push("El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
+    }
+    if (!configurado) {
+      bloqueos.push(`SIESA no está configurado. Faltan: ${faltantesSiesa().join(", ")}.`);
+    }
+  }
+  const lista = recepciones.map((r) => ({
+    ...r,
+    puedeReenviar: necesitan.includes(r) && bloqueos.length === 0 && r.bloqueos.length === 0,
+  }));
+  return {
+    modo: "por_recepcion",
+    liquidacion: ev.liq,
+    configurado,
+    activo: siesaActivo(),
+    bloqueos,
+    recepciones: lista,
+    // Nada que subir: el front lo dice en vez de ofrecer el botón.
+    sinCambios: viscerasSinCambios(recepciones.map((r) => r.estado)),
+    puedeEnviar: lista.some((r) => r.puedeReenviar),
+    compensaciones: ev.compensaciones,
+    compensacionBloqueo: bloqueoAjusteFaltante(),
+    totales: {
+      recepciones: recepciones.length,
+      pendientes: recepciones.filter((r) => r.estado === ESTADO_VISCERAS.PENDIENTE).length,
+      modificadas: recepciones.filter((r) => r.estado === ESTADO_VISCERAS.MODIFICADA).length,
+    },
+  };
+}
+
+/**
+ * Reenvía las vísceras de recepciones de una liquidación en modo por recepción.
+ *
+ * Valida TODO antes de tocar nada: si una de las pedidas no se puede (sin
+ * cambios, en revisión, bloqueada, o modificada sin la confirmación de que el
+ * documento viejo se borró en SIESA) no se anula ni se manda ninguna.
+ *
+ * Una `modificada` pasa por: anular el envío viejo (solo si sigue `ok`) y mandar
+ * el vigente completo de la recepción. Si el nuevo falla, queda un `error` y la
+ * recepción es `pendiente`: reintentarla ya no pide confirmar nada (el documento
+ * viejo ya no está).
+ *
+ * Las recepciones se mandan de a una dentro del presupuesto de tiempo de la
+ * función. Se detiene en la primera que no queda ok; las demás no se tocan.
+ *
+ * @param {number|string} liquidacionId
+ * @param {{recepcionIds: Array<number|string>, eliminadoEnSiesa?: boolean, por?: string, motivo?: string}} p
+ */
+export async function reenviarViscerasLiquidacion(
+  liquidacionId,
+  { recepcionIds, eliminadoEnSiesa, por, motivo } = {},
+) {
+  const inicio = Date.now();
+  const ev = await evaluarAjuste(liquidacionId);
+  const porRecepcion = await evaluarPorRecepcion(ev);
+  if (!porRecepcion) {
+    throw createError(
+      409,
+      "Esta liquidación no maneja las vísceras por recepción: usá el ajuste de vísceras de la liquidación.",
+    );
+  }
+  const previa = construirPreviaPorRecepcion(ev, porRecepcion);
+  if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
+
+  const pedidas = [...new Set((recepcionIds || []).map(Number))];
+  if (!pedidas.length) throw createError(400, "Indicá qué recepciones reenviar.");
+  const porId = new Map(previa.recepciones.map((r) => [r.recepcion_id, r]));
+  const fuera = pedidas.filter((id) => !porId.has(id));
+  if (fuera.length) {
+    throw createError(404, `Las recepciones ${fuera.join(", ")} no están en esta liquidación.`);
+  }
+
+  // Todo o nada ANTES de anular o mandar nada.
+  for (const id of pedidas) {
+    const r = porId.get(id);
+    const nombre = r.sede ?? `Recepción #${id}`;
+    if (r.estado === ESTADO_VISCERAS.SIN_CAMBIOS) {
+      throw createError(409, `${nombre}: No se modificó nada en las vísceras de esta recepción.`);
+    }
+    if (r.estado === ESTADO_VISCERAS.EN_REVISION) {
+      throw createError(
+        409,
+        `${nombre}: el envío ${r.envio?.referencia ?? ""} está ${
+          r.envio?.estado === "enviando" ? "en curso" : "sin confirmar"
+        }. Resolvelo desde Envíos a SIESA antes de reenviar.`,
+      );
+    }
+    if (r.estado === ESTADO_VISCERAS.SIN_VISCERAS) {
+      throw createError(409, `${nombre}: no tiene vísceras con código y cantidad para mandar.`);
+    }
+    if (r.bloqueos.length) throw createError(409, `${nombre}: ${r.bloqueos.join(" ")}`);
+  }
+  const modificadas = pedidas.filter((id) => porId.get(id).estado === ESTADO_VISCERAS.MODIFICADA);
+  if (modificadas.length && eliminadoEnSiesa !== true) {
+    const refs = modificadas.map((id) => porId.get(id).referencia_anterior).join(", ");
+    throw createError(
+      400,
+      `Confirmá que ya eliminaste en SIESA ${
+        modificadas.length > 1 ? "los documentos" : "el documento"
+      } ${refs} (eliminado_en_siesa). El documento viejo está contabilizado: mandar el nuevo ` +
+        "sin borrarlo duplica el inventario.",
+    );
+  }
+
+  const resultados = [];
+  let completo = true;
+  for (const id of pedidas) {
+    const r = porId.get(id);
+    const { recepcion, armado, decision } = porRecepcion.internos.get(id);
+    const item = { recepcion_id: id, sede: r.sede, anulado: null };
+
+    // Se frena ANTES de anular: anular y no poder mandar dejaría la recepción sin
+    // documento por falta de tiempo, no por un error de SIESA.
+    if (!completo || esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS) === null) {
+      resultados.push({
+        ...item,
+        accion: "omitida",
+        detalle: completo
+          ? "No quedó tiempo seguro en este pedido para mandarla. Volvé a enviar."
+          : "Se detuvo antes: la anterior no quedó en SIESA.",
+      });
+      completo = false;
+      continue;
+    }
+
+    if (r.estado === ESTADO_VISCERAS.MODIFICADA) {
+      const { data, error } = await supabase
+        .from(TABLA)
+        .update({
+          estado: "anulado",
+          anulado_por: por || null,
+          anulado_at: new Date().toISOString(),
+          motivo_anulacion:
+            String(motivo ?? "").trim() ||
+            "Modificada por el admin; documento eliminado a mano en SIESA",
+        })
+        .eq("id", decision.vigente.id)
+        // Solo si sigue ok: si alguien lo resolvió mientras tanto, no se pisa.
+        .eq("estado", "ok")
+        .select("id, referencia")
+        .maybeSingle();
+      if (error) {
+        fallarSiFaltaMigracion(error, "No se pudo anular el documento de vísceras", MIGRACIONES);
+      }
+      if (!data) {
+        throw createError(
+          409,
+          `${r.sede ?? `Recepción #${id}`}: el documento ${decision.vigente.referencia} cambió de estado. Actualizá y volvé a intentar.`,
+        );
+      }
+      item.anulado = data.referencia;
+      console.log(
+        `↩️  Vísceras recepción #${id}: ${data.referencia} anulado por ${por || "—"} (modificada, eliminado en SIESA).`,
+      );
+    }
+
+    // Sin vísceras hoy: el viejo ya se anuló y no hay nada que mandar.
+    if (armado.vacio) {
+      resultados.push({ ...item, accion: "anulada", detalle: "No quedaron vísceras para mandar." });
+      continue;
+    }
+
+    const m = await mandarViscerasRecepcion({ recepcion, armado, por, inicio });
+    resultados.push({
+      ...item,
+      accion: m.completo ? "enviada" : "error",
+      ...m.resultado,
+      compensaciones: m.compensaciones,
+    });
+    if (!m.completo) completo = false;
+  }
+
+  return { completo, resultados };
 }
 
 // ─── Recepciones de PROVEEDOR ──────────────────────────────────────────────

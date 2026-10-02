@@ -5,6 +5,9 @@ import {
   armarAjusteVisceras,
   armarViscerasRecepcion,
   compararViscerasEnviadas,
+  decidirViscerasRecepcion,
+  viscerasSinCambios,
+  ESTADO_VISCERAS,
   referenciaViscerasRecepcion,
   consecutivoViscerasRecepcion,
   TIPO_VISCERAS_RECEPCION,
@@ -825,4 +828,79 @@ test("compararViscerasEnviadas: sin payload viejo, todo es agregado", () => {
   const r = compararViscerasEnviadas(null, payloadDe(ITEMS));
   assert.equal(r.cambio, true);
   assert.ok(r.diferencias.every((d) => d.tipo === "agregado"));
+});
+
+// ─── Qué le toca a cada recepción en la liquidación ─────────────────────────
+
+const fila = (estado, items = ITEMS, extra = {}) => ({
+  id: 1,
+  estado,
+  referencia: "TC VISC R12",
+  payload: payloadDe(items),
+  ...extra,
+});
+const armadoDe = (items) => armarViscerasRecepcion({ recepcion: recepcion(), items, config: CONFIG });
+
+test("decidirViscerasRecepcion: ok y sin tocar es sin_cambios", () => {
+  const d = decidirViscerasRecepcion({ armado: armadoDe(ITEMS), filas: [fila("ok")] });
+  assert.equal(d.estado, ESTADO_VISCERAS.SIN_CAMBIOS);
+  assert.deepEqual(d.diferencias, []);
+});
+
+test("decidirViscerasRecepcion: ok y el admin cambió algo es modificada, con las diferencias", () => {
+  const cambiadas = [viscera("Mondongo", "20101", 40, 6500), ITEMS[1]];
+  const d = decidirViscerasRecepcion({
+    armado: armadoDe(cambiadas),
+    filas: [fila("ok")],
+    descripciones: { 20101: "Mondongo" },
+  });
+  assert.equal(d.estado, ESTADO_VISCERAS.MODIFICADA);
+  assert.equal(d.vigente.referencia, "TC VISC R12");
+  assert.equal(d.diferencias[0].descripcion, "Mondongo");
+});
+
+test("decidirViscerasRecepcion: dejar la recepción sin vísceras también es modificada", () => {
+  const d = decidirViscerasRecepcion({ armado: armadoDe([carne("15139", 10, 16800)]), filas: [fila("ok")] });
+  assert.equal(d.estado, ESTADO_VISCERAS.MODIFICADA);
+});
+
+test("decidirViscerasRecepcion: enviando y sin_confirmar son en_revision", () => {
+  for (const e of ["enviando", "sin_confirmar"]) {
+    assert.equal(
+      decidirViscerasRecepcion({ armado: armadoDe(ITEMS), filas: [fila(e)] }).estado,
+      ESTADO_VISCERAS.EN_REVISION,
+    );
+  }
+});
+
+test("decidirViscerasRecepcion: error o anulado (sin vigente) es pendiente; sin nada que mandar, sin_visceras", () => {
+  for (const e of ["error", "anulado"]) {
+    assert.equal(
+      decidirViscerasRecepcion({ armado: armadoDe(ITEMS), filas: [fila(e)] }).estado,
+      ESTADO_VISCERAS.PENDIENTE,
+    );
+  }
+  assert.equal(decidirViscerasRecepcion({ armado: armadoDe(ITEMS), filas: [] }).estado, ESTADO_VISCERAS.PENDIENTE);
+  assert.equal(decidirViscerasRecepcion({ armado: armadoDe([]), filas: [] }).estado, ESTADO_VISCERAS.SIN_VISCERAS);
+});
+
+test("decidirViscerasRecepcion: el vigente manda sobre un error más nuevo ya anulado en el historial", () => {
+  const d = decidirViscerasRecepcion({
+    armado: armadoDe(ITEMS),
+    filas: [fila("error", ITEMS, { id: 3 }), fila("ok", ITEMS, { id: 2 })],
+  });
+  assert.equal(d.estado, ESTADO_VISCERAS.SIN_CAMBIOS);
+  assert.equal(d.vigente.id, 2);
+  assert.equal(d.ultimo.id, 3);
+});
+
+test("viscerasSinCambios: solo cuando nada necesita subirse y hay al menos una al día", () => {
+  const E = ESTADO_VISCERAS;
+  assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.SIN_CAMBIOS]), true);
+  assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.SIN_VISCERAS]), true);
+  assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.MODIFICADA]), false);
+  assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.PENDIENTE]), false);
+  assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.EN_REVISION]), false);
+  assert.equal(viscerasSinCambios([E.SIN_VISCERAS]), false);
+  assert.equal(viscerasSinCambios([]), false);
 });

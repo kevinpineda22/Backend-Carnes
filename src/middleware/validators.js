@@ -562,8 +562,38 @@ const actualizarRecibidorSchema = z
     { message: "No hay nada para cambiar." },
   );
 
+/**
+ * Reenviar vísceras a SIESA desde la liquidación. `eliminado_en_siesa` es un
+ * booleano de verdad (un "true" de texto se rechaza para que un descuido no
+ * confirme algo que nadie confirmó); si hace falta, lo exige el modelo según el
+ * estado de cada recepción.
+ */
+const reenviarViscerasSchema = z.object({
+  recepcion_ids: z
+    .array(
+      z.coerce
+        .number({ invalid_type_error: "Una recepción no es válida." })
+        .int("Una recepción no es válida.")
+        .positive("Una recepción no es válida.")
+        .safe("Una recepción no es válida."),
+      { required_error: "Indicá qué recepciones reenviar.", invalid_type_error: "Indicá qué recepciones reenviar." },
+    )
+    .min(1, "Indicá qué recepciones reenviar.")
+    .max(100, "Son demasiadas recepciones."),
+  eliminado_en_siesa: z
+    .boolean({ invalid_type_error: "eliminado_en_siesa debe ser true o false." })
+    .optional(),
+  por: z.string({ invalid_type_error: "Quién reenvía no es válido." }).trim().max(150).optional(),
+  motivo: z
+    .string({ invalid_type_error: "El motivo no es válido." })
+    .trim()
+    .max(500, "El motivo no puede pasar de 500 caracteres.")
+    .optional(),
+});
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
+  reenviarVisceras: validar(reenviarViscerasSchema),
 
   listarProveedores: validar(listarProveedoresQuerySchema, "query"),
   idParam: validar(idParamSchema, "params"),

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as SiesaController from "../controllers/siesa.controller.js";
+import { validators } from "../middleware/validators.js";
 
 const router = Router();
 
@@ -19,6 +20,10 @@ router.delete("/envios/:id", SiesaController.eliminarEnvio);
 // Esto es el reintento manual cuando aquella falló.
 router.post("/recepciones/:id/inicial", SiesaController.reintentarInicial);
 
+// Las vísceras de res salen al cerrar la recepción (CARNES_SIESA_VISCERAS_AL_CIERRE).
+// Esto es el reintento manual cuando aquel envío falló.
+router.post("/recepciones/:id/visceras", SiesaController.reintentarViscerasRecepcion);
+
 // La oficial la dispara el admin desde la liquidación costeada.
 router.get("/liquidaciones/:id/previsualizar", SiesaController.previsualizarOficial);
 router.post("/liquidaciones/:id/enviar", SiesaController.enviarOficial);
@@ -33,6 +38,14 @@ router.get(
   SiesaController.previsualizarAjusteVisceras,
 );
 router.post("/liquidaciones/:id/ajuste-visceras/enviar", SiesaController.enviarAjusteVisceras);
+// Liquidaciones cuyas vísceras salieron al cerrar la recepción: el admin reenvía las
+// recepciones pendientes o modificadas (confirmando que borró el documento viejo en
+// SIESA). La vista previa de arriba trae el estado de cada una.
+router.post(
+  "/liquidaciones/:id/visceras/reenviar",
+  validators.reenviarVisceras,
+  SiesaController.reenviarViscerasLiquidacion,
+);
 // Se anuló en SIESA el ajuste: se libera para mandarlo de nuevo. Con `recepcion_id`,
 // el de una sede del esquema anterior; sin él, el consolidado.
 router.post("/liquidaciones/:id/ajuste-visceras/anular", SiesaController.anularAjusteVisceras);
