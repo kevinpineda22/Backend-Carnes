@@ -283,9 +283,10 @@ export function armarViscerasRecepcion({ recepcion, items, config = {} }) {
  * Compara lo que se mandó a SIESA con lo que se mandaría hoy, renglón por
  * renglón. Módulo puro: recibe los dos `payload`.
  *
- * Se compara por `ITEM` (el código de SIESA): cantidad (con la misma tolerancia
- * de `viscerasEnCea`), costo unitario, unidad y bodega; más los renglones
- * agregados o quitados y la fecha del documento. Si un código se repite en el
+ * Se compara por `ITEM` (el código de SIESA): cantidad y costo unitario EXACTOS
+ * (ambos lados ya vienen formateados con los decimales de la unidad / moneda: una
+ * tolerancia dejaría pasar un cambio de 0,001 kg, que es un cambio real),
+ * unidad y bodega; más los renglones agregados o quitados y la fecha del documento. Si un código se repite en el
  * documento, los renglones se emparejan por cantidad.
  *
  * Es lo que decide si hay que volver a subir las vísceras: cualquier diferencia
@@ -300,6 +301,10 @@ export function armarViscerasRecepcion({ recepcion, items, config = {} }) {
  *   descripcion, campo?, antes, ahora }`
  */
 export function compararViscerasEnviadas(payloadEnviado, payloadActual, { descripciones = {} } = {}) {
+  // Ambos payloads ya traen los valores formateados (CANTIDAD con los decimales de
+  // la unidad, COSTO_PROMEDIO con los de la moneda): se igualan como número, sin
+  // tolerancia. El redondeo a 6 decimales solo quita el ruido de punto flotante.
+  const exacto = (v) => Math.round((Number(v) || 0) * 1e6) / 1e6;
   const movs = (p) => (Array.isArray(p?.Movimientos) ? p.Movimientos : []);
   const agrupar = (lista) => {
     const m = new Map();
@@ -332,14 +337,14 @@ export function compararViscerasEnviadas(payloadEnviado, payloadActual, { descri
         continue;
       }
       const base = { tipo: "modificado", item, descripcion: nombre(item) };
-      const cx = Number(x.CANTIDAD) || 0;
-      const cy = Number(y.CANTIDAD) || 0;
-      if (Math.abs(cx - cy) > TOLERANCIA_CANTIDAD) {
+      const cx = exacto(x.CANTIDAD);
+      const cy = exacto(y.CANTIDAD);
+      if (cx !== cy) {
         dif({ ...base, campo: "cantidad", antes: cx, ahora: cy });
       }
-      const px = Number(x.COSTO_PROMEDIO) || 0;
-      const py = Number(y.COSTO_PROMEDIO) || 0;
-      if (Math.abs(px - py) > TOLERANCIA_CANTIDAD) {
+      const px = exacto(x.COSTO_PROMEDIO);
+      const py = exacto(y.COSTO_PROMEDIO);
+      if (px !== py) {
         dif({ ...base, campo: "costo", antes: px, ahora: py });
       }
       const ux = String(x.UNIDAD_MEDIDA ?? "").trim();
@@ -719,10 +724,25 @@ export const ESPERA_MAXIMA_COMPENSACION_MS = 90_000;
  * ese envío necesita, no se arranca — se prefiere parar y pedir "volvé a enviar"
  * que arrancar un POST que se corte y deje un `sin_confirmar`.
  *
+ * Con `presupuestoMs` (el cierre de una recepción) el tope no es el límite de la
+ * función sino ese presupuesto: el recibidor espera la respuesta de /finalizar y
+ * el front la corta a los 120 s.
+ *
  * @param {number} transcurridoMs  desde el INICIO del pedido
- * @param {{maxEsperaMs: number, minimoMs: number}} p
+ * @param {{maxEsperaMs: number, minimoMs: number, presupuestoMs?: number|null}} p
  */
-export function esperaParaEnvio(transcurridoMs, { maxEsperaMs, minimoMs }) {
-  const espera = Math.min(maxEsperaMs, LIMITE_FUNCION_MS - transcurridoMs);
+export function esperaParaEnvio(transcurridoMs, { maxEsperaMs, minimoMs, presupuestoMs = null }) {
+  const tope = presupuestoMs == null ? LIMITE_FUNCION_MS : Math.min(LIMITE_FUNCION_MS, presupuestoMs);
+  const espera = Math.min(maxEsperaMs, tope - transcurridoMs);
   return espera < minimoMs ? null : espera;
 }
+
+/**
+ * Presupuesto TOTAL de las vísceras al cerrar la recepción (el envío, sus
+ * compensaciones y el reenvío). El front corta /finalizar a los 120 s: con esto
+ * la respuesta vuelve con margen. Lo que no alcance queda `sin_confirmar` o
+ * pendiente y se resuelve por el flujo de siempre.
+ */
+export const PRESUPUESTO_CIERRE_RECEPCION_MS = 90_000;
+/** Espera mínima de cada envío del cierre (el CEI de una recepción es chico). */
+export const ESPERA_MINIMA_CIERRE_MS = 30_000;

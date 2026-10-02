@@ -15,6 +15,8 @@ import {
   coberturaOficial,
   viscerasEnCea,
   esperaParaSede,
+  esperaParaEnvio,
+  PRESUPUESTO_CIERRE_RECEPCION_MS,
   armarAjusteViscerasLiquidacion,
   consecutivoAjusteLiquidacion,
   referenciaAjusteLiquidacion,
@@ -764,11 +766,15 @@ test("compararViscerasEnviadas: payload idéntico no tiene cambio", () => {
   assert.deepEqual(r.diferencias, []);
 });
 
-test("compararViscerasEnviadas: la tolerancia de cantidad no cuenta como cambio", () => {
+test("compararViscerasEnviadas: la comparación es exacta sobre el valor ya formateado", () => {
   const a = payloadDe(ITEMS);
+  // 33.3004 se formatea a 33.300 (3 decimales): el mismo valor que viaja, sin cambio.
   const b = payloadDe([viscera("Mondongo", "20101", 33.3004, 6500), ITEMS[1]]);
   assert.equal(compararViscerasEnviadas(a, b).cambio, false);
-  // CANTIDAD viaja con 3 decimales: 33.301 vs 33.3 pasa la tolerancia de 0,005.
+  // 0,001 kg es el mínimo que SIESA distingue: es un cambio real.
+  const mil = compararViscerasEnviadas(a, payloadDe([viscera("Mondongo", "20101", 33.301, 6500), ITEMS[1]]));
+  assert.equal(mil.cambio, true);
+  assert.deepEqual(mil.diferencias.map((d) => [d.tipo, d.campo]), [["modificado", "cantidad"]]);
   const c = payloadDe([viscera("Mondongo", "20101", 33.31, 6500), ITEMS[1]]);
   const dif = compararViscerasEnviadas(a, c);
   assert.equal(dif.cambio, true);
@@ -903,4 +909,13 @@ test("viscerasSinCambios: solo cuando nada necesita subirse y hay al menos una a
   assert.equal(viscerasSinCambios([E.SIN_CAMBIOS, E.EN_REVISION]), false);
   assert.equal(viscerasSinCambios([E.SIN_VISCERAS]), false);
   assert.equal(viscerasSinCambios([]), false);
+});
+
+test("esperaParaEnvio: con presupuesto de cierre el tope es el presupuesto, no el límite de la función", () => {
+  const p = { maxEsperaMs: 45_000, minimoMs: 30_000, presupuestoMs: PRESUPUESTO_CIERRE_RECEPCION_MS };
+  assert.equal(esperaParaEnvio(0, p), 45_000);
+  assert.equal(esperaParaEnvio(50_000, p), 40_000);
+  assert.equal(esperaParaEnvio(65_000, p), null);
+  // Sin presupuesto sigue valiendo el límite de la función.
+  assert.equal(esperaParaEnvio(65_000, { maxEsperaMs: 45_000, minimoMs: 30_000 }), 45_000);
 });
