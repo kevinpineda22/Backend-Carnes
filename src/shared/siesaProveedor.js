@@ -360,7 +360,9 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
     armarMovimiento({ recepcion, config, consec, co: base.co, tipoDocto, n, ...f }),
   );
 
-  const documento = armarDocumento({
+  // El conector de devoluciones (258258) llama `DOCTO_REFERENCIA` a lo que la
+  // CEA llama `PENDIENTE`: es el mismo campo de SIESA (f451_num_docto_referencia).
+  const { PENDIENTE: doctoReferencia, ...cabecera } = armarDocumento({
     recepcion,
     tipoDocto,
     consec,
@@ -372,6 +374,7 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
       razonSocialDe(recepcion),
     ),
   });
+  const documento = { ...cabecera, DOCTO_REFERENCIA: doctoReferencia };
 
   return {
     payload: { Documentos: [documento], Movimientos: movimientos },

@@ -409,17 +409,15 @@ test("entrada: no muta la recepción ni los renglones", () => {
 
 // ─── La nota crédito ────────────────────────────────────────────────────────
 
-test("nota crédito: con el conector sin configurar devuelve el bloqueo explícito (y el payload provisional)", () => {
+test("nota crédito: con el conector real (258258, CDP) no hay bloqueos y sale con su tipo de documento", () => {
   const { bloqueos, payload } = armarNotaCreditoProveedor({
     recepcion: RECEPCION,
     items: [KILOS, UNIDADES],
     config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   });
-  assert.equal(bloqueos[0], bloqueoNotaCreditoProveedor());
-  assert.match(bloqueos[0], /^Conector de nota crédito no configurado/);
-  assert.match(bloqueos[0], /idDocumento/);
-  // Nada más bloquea: la recepción está bien, solo falta el conector.
-  assert.equal(bloqueos.length, 1);
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Documentos[0].TIPO_DOCTO, "CDP");
+  assert.equal(payload.Movimientos[0].TIPO_DOCTO, "CDP");
   assert.equal(payload.Movimientos.length, 1);
 });
 
@@ -440,8 +438,8 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
         FECHA: "20260930",
         NIT: "900123456",
         SUCURSAL: "001",
-        PENDIENTE: "FE-00123",
         NOTAS: "TC PRV N12 - DEVOLUCION PROVEEDOR FACT FE-00123 Lopez ENTRADA TC PRV R12 - NUTRESA S.A.S.",
+        DOCTO_REFERENCIA: "FE-00123",
       },
     ],
     Movimientos: [
@@ -499,25 +497,28 @@ test("nota crédito: la factura de más de 12 caracteres también bloquea y no s
   const factura = "FE-1234567890";
   const { bloqueos, payload } = armarNC({ recepcion: { ...RECEPCION, factura } });
   assert.ok(bloqueos.some((b) => b.includes(factura) && /No se recorta/.test(b)));
-  assert.equal(payload.Documentos[0].PENDIENTE, factura);
+  assert.equal(payload.Documentos[0].DOCTO_REFERENCIA, factura);
 });
 
 test("nota crédito: factura_siesa también es la referencia de la nota", () => {
   const { payload, bloqueos } = armarNC({ recepcion: { ...RECEPCION, factura: "FE-1234567890-A", factura_siesa: "FE123" } });
   assert.deepEqual(bloqueos, []);
-  assert.equal(payload.Documentos[0].PENDIENTE, "FE123");
+  assert.equal(payload.Documentos[0].DOCTO_REFERENCIA, "FE123");
 });
 
 // ─── Configuración ──────────────────────────────────────────────────────────
 
-test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR nace sin conector y bloquea con un mensaje que dice dónde ponerlo", () => {
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, null);
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, null);
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.tipoDocto, null);
+test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR apunta al conector 258258 de devoluciones", () => {
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, "258258");
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, "DEVOLUCIONES_DEV_CARNES");
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.tipoDocto, "CDP");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.unidadNegocio, "003");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.decimalesValor, 0);
+  assert.equal(bloqueoNotaCreditoProveedor(), null);
+});
 
-  const mensaje = bloqueoNotaCreditoProveedor();
+test("config: sin conector bloquea con un mensaje que dice dónde ponerlo", () => {
+  const mensaje = bloqueoNotaCreditoProveedor({ unidadNegocio: "003" });
   assert.match(mensaje, /idDocumento/);
   assert.match(mensaje, /nombreDocumento/);
   assert.match(mensaje, /tipoDocto/);
