@@ -47,6 +47,14 @@ CARNES_PANEL_URL=https://merkahorro.com/carnes/admin
 # NO se pone en el front: una variable VITE_* termina en el bundle.
 CARNES_ADMIN_KEY=
 
+# ─── SIESA: vísceras de res al cerrar la recepción ───────────────────────────
+# En true, cerrar una recepción de res manda sus vísceras a SIESA (un CEI por
+# recepción) en vez de esperar al ajuste de la liquidación. Necesita también
+# CARNES_SIESA_ACTIVO=true y correr antes sql/025_visceras_recepcion.sql.
+# El CEI se contabiliza al importarse: no se prende hasta que se decida.
+# Sin esta variable (o en false) todo funciona como antes.
+CARNES_SIESA_VISCERAS_AL_CIERRE=false
+
 # ─── Pruebas ─────────────────────────────────────────────────────────────────
 # En true no sale ni un correo.
 CARNES_SANDBOX=true

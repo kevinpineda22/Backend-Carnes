@@ -338,6 +338,19 @@ export function siesaActivo() {
   return String(process.env.CARNES_SIESA_ACTIVO || "").toLowerCase() === "true";
 }
 
+/**
+ * `CARNES_SIESA_VISCERAS_AL_CIERRE=true` manda las vísceras de res a SIESA al
+ * cerrar la recepción (un CEI por recepción, tipo `visceras_recepcion`, sql/025)
+ * en vez de esperar al ajuste consolidado de la liquidación.
+ *
+ * Apagado por defecto, y TAMBIÉN necesita `CARNES_SIESA_ACTIVO`: el CEI se
+ * contabiliza al importarse y es una entrada de inventario, así que no se
+ * prende por accidente. Apagado, todo funciona como antes.
+ */
+export function viscerasAlCierre() {
+  return String(process.env.CARNES_SIESA_VISCERAS_AL_CIERRE || "").toLowerCase() === "true";
+}
+
 /** ¿Están las credenciales? Sin esto no se intenta ningún envío. */
 export function siesaConfigurado() {
   const c = conexionSiesa();
