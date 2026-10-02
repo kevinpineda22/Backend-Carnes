@@ -169,6 +169,18 @@ export function referenciaAjusteFaltante(liquidacionId, bodega) {
   return `F${liquidacionId}-${b}`.slice(0, LARGO_REFERENCIA);
 }
 
+/**
+ * Lo mismo para el CEI de UNA recepción (tipo `visceras_recepcion`): `TF R12 00201`.
+ * `R` y no `L` para no chocar con el de liquidación; pasada la recepción #99 no
+ * entra en 12 y pasa a `FR123-00201` (el prefijo `FR` tampoco choca con `F10-…`).
+ */
+export function referenciaAjusteFaltanteRecepcion(recepcionId, bodega) {
+  const b = String(bodega ?? "").trim();
+  const legible = `TF R${recepcionId} ${b}`;
+  if (legible.length <= LARGO_REFERENCIA) return legible;
+  return `FR${recepcionId}-${b}`.slice(0, LARGO_REFERENCIA);
+}
+
 // ─── El documento ───────────────────────────────────────────────────────────
 
 /**
@@ -178,8 +190,10 @@ export function referenciaAjusteFaltante(liquidacionId, bodega) {
  * rechazó sin él). `liquidación × 10 + 5` no choca con la CEA (+1, +2, +3) ni
  * con el ajuste de vísceras (+4), y SIESA asigna el número real igual.
  */
-function construirDocumento({ liquidacionId, bodega, fecha, lineas, config }) {
-  const consec = String(Number(liquidacionId) * 10 + 5);
+function construirDocumento({ liquidacionId, recepcionId, bodega, fecha, lineas, config }) {
+  // Con `recepcionId` es la compensación del CEI de una recepción: recepción × 10
+  // + 8 (el +7 es el propio CEI), que no choca con ningún otro consecutivo.
+  const consec = String(recepcionId ? Number(recepcionId) * 10 + 8 : Number(liquidacionId) * 10 + 5);
   const dv = Number.isInteger(config.decimalesValor) ? config.decimalesValor : 0;
   const movimientos = lineas.map((l, n) => ({
     consec_docto: consec,
@@ -205,7 +219,9 @@ function construirDocumento({ liquidacionId, bodega, fecha, lineas, config }) {
     },
     resumen: {
       tipo: "ajuste_faltante",
-      referencia: referenciaAjusteFaltante(liquidacionId, bodega),
+      referencia: recepcionId
+        ? referenciaAjusteFaltanteRecepcion(recepcionId, bodega)
+        : referenciaAjusteFaltante(liquidacionId, bodega),
       renglones: movimientos.length,
       totalKilos: Math.round(totalKilos * 1000) / 1000,
       totalValor: Math.round(totalValor * 100) / 100,
@@ -230,6 +246,8 @@ function construirDocumento({ liquidacionId, bodega, fecha, lineas, config }) {
  * @param {object} p.config            `DOCUMENTO_AJUSTE_FALTANTE`
  * @param {string} p.fecha             AAAAMMDD (la del documento rechazado)
  * @param {number|string} p.liquidacionId
+ * @param {number|string} [p.recepcionId]  si el documento rechazado es el CEI de una
+ *   recepción (no el de una liquidación): cambia la referencia y el consecutivo
  * @returns {{ documentos: object[], bloqueos: string[] }}
  */
 export function armarAjusteFaltante({
@@ -238,6 +256,7 @@ export function armarAjusteFaltante({
   config = {},
   fecha,
   liquidacionId,
+  recepcionId,
 }) {
   const bloqueos = [];
   if (!faltantes.length) return { documentos: [], bloqueos: ["No hay faltantes que compensar."] };
@@ -295,7 +314,14 @@ export function armarAjusteFaltante({
   const documentos = [...porBodega.keys()]
     .sort()
     .map((bodega) =>
-      construirDocumento({ liquidacionId, bodega, fecha, lineas: porBodega.get(bodega), config }),
+      construirDocumento({
+        liquidacionId,
+        recepcionId,
+        bodega,
+        fecha,
+        lineas: porBodega.get(bodega),
+        config,
+      }),
     );
   return { documentos, bloqueos };
 }
@@ -313,7 +339,7 @@ export function armarAjusteFaltante({
  *   `documento` es null si ningún faltante corresponde a un renglón (no hay qué
  *   subir); `noAplicables` son los que no encajaron.
  */
-export function subirCantidadPorFaltante({ documento, faltantes, config, liquidacionId }) {
+export function subirCantidadPorFaltante({ documento, faltantes, config, liquidacionId, recepcionId }) {
   const cambios = [];
   const noAplicables = [];
   const lineas = documento.lineas.map((l) => ({ ...l }));
@@ -331,6 +357,7 @@ export function subirCantidadPorFaltante({ documento, faltantes, config, liquida
   return {
     documento: construirDocumento({
       liquidacionId,
+      recepcionId,
       bodega: documento.bodega,
       fecha: documento.payload.Documentos[0].FECHA_DOCTO,
       lineas,

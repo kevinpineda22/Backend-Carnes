@@ -10,6 +10,7 @@ import {
   cantidadHaciaArriba,
   formatDecimal,
   referenciaAjusteFaltante,
+  referenciaAjusteFaltanteRecepcion,
   TIPO_AJUSTE_FALTANTE,
 } from "../src/shared/siesaFaltantes.js";
 import { esperaParaEnvio, LIMITE_FUNCION_MS } from "../src/shared/siesaAjusteVisceras.js";
@@ -417,4 +418,29 @@ test("esperaParaEnvio: recorta la espera al límite de la función y no arranca 
   // Una compensación (mínimo 30 s) arranca más tarde que el reenvío del ajuste.
   assert.equal(esperaParaEnvio(250_000, { maxEsperaMs: 90_000, minimoMs: 30_000 }), 35_000);
   assert.equal(esperaParaEnvio(256_000, { maxEsperaMs: 90_000, minimoMs: 30_000 }), null);
+});
+
+test("la compensación del CEI de una recepción usa su propia referencia y consecutivo", () => {
+  const { documentos, bloqueos } = armarAjusteFaltante({
+    faltantes: [{ item: "15187", bodega: "00201", faltante: 1.998 }],
+    movimientosCei: CEI,
+    config: CONFIG,
+    fecha: "20260923",
+    recepcionId: 12,
+  });
+  assert.deepEqual(bloqueos, []);
+  assert.equal(documentos[0].resumen.referencia, "TF R12 00201");
+  assert.equal(documentos[0].payload.Documentos[0].CONSECUTIVO_DOCTO, "128");
+  assert.equal(referenciaAjusteFaltanteRecepcion(123, "00201"), "FR123-00201");
+  assert.notEqual(referenciaAjusteFaltanteRecepcion(10, "00201"), referenciaAjusteFaltante(10, "00201"));
+
+  // Al subir la cantidad se conserva el esquema de la recepción.
+  const subida = subirCantidadPorFaltante({
+    documento: documentos[0],
+    faltantes: [{ item: "15187", bodega: "00201", faltante: 1 }],
+    config: CONFIG,
+    recepcionId: 12,
+  });
+  assert.equal(subida.documento.resumen.referencia, "TF R12 00201");
+  assert.equal(subida.documento.payload.Documentos[0].CONSECUTIVO_DOCTO, "128");
 });

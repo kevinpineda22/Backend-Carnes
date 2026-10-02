@@ -3,6 +3,11 @@ import assert from "node:assert/strict";
 
 import {
   armarAjusteVisceras,
+  armarViscerasRecepcion,
+  compararViscerasEnviadas,
+  referenciaViscerasRecepcion,
+  consecutivoViscerasRecepcion,
+  TIPO_VISCERAS_RECEPCION,
   referenciaAjusteVisceras,
   coberturaOficial,
   viscerasEnCea,
@@ -716,4 +721,108 @@ test("guardia: con cuatro ok (#12 a #15) los nombra a todos en un solo mensaje",
   for (const n of ["Llano", "Carnes Barbosa", "Super Barbosa", "San Juan"]) {
     assert.match(bloqueos[0], new RegExp(n));
   }
+});
+
+// ─── El CEI de una recepción al cerrarla (visceras_recepcion) ───────────────
+
+test("el CEI de la recepción usa su propia referencia, consecutivo y tipo", () => {
+  const { payload, resumen, vacio } = armarViscerasRecepcion({
+    recepcion: recepcion(),
+    items: ITEMS,
+    config: CONFIG,
+  });
+  assert.equal(TIPO_VISCERAS_RECEPCION, "visceras_recepcion");
+  assert.equal(vacio, false);
+  assert.equal(resumen.referencia, "TC VISC R12");
+  assert.notEqual(resumen.referencia, referenciaAjusteVisceras(12));
+  assert.equal(consecutivoViscerasRecepcion(12), 127);
+  assert.equal(payload.Documentos[0].CONSECUTIVO_DOCTO, "127");
+  assert.ok(payload.Movimientos.every((m) => m.NRO_DOCTO === "127"));
+  // Entra legible hasta 3 dígitos y pasa a la compacta sin cortar el número.
+  assert.equal(referenciaViscerasRecepcion(999), "TC VISC R999");
+  assert.equal(referenciaViscerasRecepcion(12345), "TCVC12345");
+});
+
+test("recepción sin vísceras con código y cantidad: vacío, nada que mandar", () => {
+  const r = armarViscerasRecepcion({
+    recepcion: recepcion(),
+    items: [carne("15139", 10, 16800), viscera("Vísceras", "", 3, 1000)],
+    config: CONFIG,
+  });
+  assert.equal(r.vacio, true);
+  assert.equal(r.payload.Movimientos.length, 0);
+});
+
+const payloadDe = (items, r = recepcion()) => armarViscerasRecepcion({ recepcion: r, items, config: CONFIG }).payload;
+
+test("compararViscerasEnviadas: payload idéntico no tiene cambio", () => {
+  const r = compararViscerasEnviadas(payloadDe(ITEMS), payloadDe(ITEMS));
+  assert.equal(r.cambio, false);
+  assert.deepEqual(r.diferencias, []);
+});
+
+test("compararViscerasEnviadas: la tolerancia de cantidad no cuenta como cambio", () => {
+  const a = payloadDe(ITEMS);
+  const b = payloadDe([viscera("Mondongo", "20101", 33.3004, 6500), ITEMS[1]]);
+  assert.equal(compararViscerasEnviadas(a, b).cambio, false);
+  // CANTIDAD viaja con 3 decimales: 33.301 vs 33.3 pasa la tolerancia de 0,005.
+  const c = payloadDe([viscera("Mondongo", "20101", 33.31, 6500), ITEMS[1]]);
+  const dif = compararViscerasEnviadas(a, c);
+  assert.equal(dif.cambio, true);
+  assert.deepEqual(
+    dif.diferencias.map((d) => [d.tipo, d.campo, d.item]),
+    [["modificado", "cantidad", "20101"]],
+  );
+  assert.equal(dif.diferencias[0].antes, 33.3);
+  assert.equal(dif.diferencias[0].ahora, 33.31);
+});
+
+test("compararViscerasEnviadas: detecta costo, renglón agregado y renglón quitado", () => {
+  const a = payloadDe(ITEMS);
+  const costo = compararViscerasEnviadas(a, payloadDe([viscera("Mondongo", "20101", 33.3, 7000), ITEMS[1]]));
+  assert.deepEqual(
+    costo.diferencias.map((d) => [d.tipo, d.campo]),
+    [["modificado", "costo"]],
+  );
+
+  const agregado = compararViscerasEnviadas(a, payloadDe([...ITEMS, viscera("Hígado", "20103", 5, 9000)]), {
+    descripciones: { 20103: "Hígado" },
+  });
+  assert.deepEqual(
+    agregado.diferencias.map((d) => [d.tipo, d.item, d.descripcion]),
+    [["agregado", "20103", "Hígado"]],
+  );
+
+  const quitado = compararViscerasEnviadas(a, payloadDe([ITEMS[0]]));
+  assert.deepEqual(
+    quitado.diferencias.map((d) => [d.tipo, d.item]),
+    [["eliminado", "20102"]],
+  );
+
+  // Quedó sin ninguna víscera: todo eliminado.
+  const nada = compararViscerasEnviadas(a, payloadDe([]));
+  assert.equal(nada.cambio, true);
+  assert.equal(nada.diferencias.length, 2);
+});
+
+test("compararViscerasEnviadas: cambia la bodega o la fecha del documento", () => {
+  const a = payloadDe(ITEMS);
+  const otraSede = recepcion({ sede: { id: 3, nombre: "Otra", codigo_co: "03", bodega_siesa: "00301" } });
+  assert.ok(compararViscerasEnviadas(a, payloadDe(ITEMS, otraSede)).diferencias.some((d) => d.campo === "bodega"));
+  const otraFecha = recepcion({ fecha_ingreso: "2026-09-24" });
+  assert.ok(compararViscerasEnviadas(a, payloadDe(ITEMS, otraFecha)).diferencias.some((d) => d.tipo === "fecha"));
+});
+
+test("compararViscerasEnviadas: el mismo código repetido se empareja por cantidad", () => {
+  const dos = [viscera("A", "20101", 2, 1000), viscera("B", "20101", 5, 1000)];
+  const igual = [viscera("B", "20101", 5, 1000), viscera("A", "20101", 2, 1000)];
+  assert.equal(compararViscerasEnviadas(payloadDe(dos), payloadDe(igual)).cambio, false);
+  const cambia = compararViscerasEnviadas(payloadDe(dos), payloadDe([viscera("A", "20101", 2, 1000)]));
+  assert.deepEqual(cambia.diferencias.map((d) => d.tipo), ["eliminado"]);
+});
+
+test("compararViscerasEnviadas: sin payload viejo, todo es agregado", () => {
+  const r = compararViscerasEnviadas(null, payloadDe(ITEMS));
+  assert.equal(r.cambio, true);
+  assert.ok(r.diferencias.every((d) => d.tipo === "agregado"));
 });

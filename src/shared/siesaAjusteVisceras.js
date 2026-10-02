@@ -113,7 +113,13 @@ const decimal = (n, decimales) => {
  *   `vacio`: no hay ninguna víscera para ajustar. No es un bloqueo: no hay nada
  *   que corregir, simplemente esta sede no genera documento.
  */
-export function armarAjusteVisceras({ recepcion, items = [], config = {}, consecutivo }) {
+export function armarAjusteVisceras({
+  recepcion,
+  items = [],
+  config = {},
+  consecutivo,
+  referencia: referenciaPropia,
+}) {
   const bloqueos = [];
   const sede = recepcion?.sede || {};
   const dv = Number.isInteger(config.decimalesValor) ? config.decimalesValor : 0;
@@ -182,7 +188,7 @@ export function armarAjusteVisceras({ recepcion, items = [], config = {}, consec
     }
   }
 
-  const referencia = referenciaAjusteVisceras(recepcion?.id);
+  const referencia = referenciaPropia ?? referenciaAjusteVisceras(recepcion?.id);
   // Mismo esquema que `consecutivoDe` de la CEA (id × 10 + 1 inicial, + 2
   // oficial): + 3 para el ajuste. Es solo para que el campo viaje; con el
   // consecutivo automático, SIESA asigna el número real.
@@ -224,6 +230,132 @@ export function armarAjusteVisceras({ recepcion, items = [], config = {}, consec
     bloqueos,
     vacio,
   };
+}
+
+// ─── El documento de UNA recepción, al cerrarla (tipo visceras_recepcion) ───
+
+/** El `tipo` de envío del CEI que sale al cerrar la recepción de res (sql/025). */
+export const TIPO_VISCERAS_RECEPCION = "visceras_recepcion";
+
+/**
+ * Referencia del CEI de una recepción: `TC VISC R23`.
+ *
+ * Distinta de `TC VIS R23` (el ajuste por sede del esquema anterior, que queda de
+ * historial) para no confundirlos en el panel. Entra legible hasta la recepción
+ * #999; de ahí pasa a `TCVC1234`. Nunca se corta la forma legible.
+ */
+export function referenciaViscerasRecepcion(recepcionId) {
+  const legible = `TC VISC R${recepcionId}`;
+  return legible.length <= LARGO_REFERENCIA
+    ? legible
+    : `TCVC${recepcionId}`.slice(0, LARGO_REFERENCIA);
+}
+
+/**
+ * Consecutivo propio del CEI de una recepción: `id × 10 + 7`.
+ *
+ * Los demás usan, sobre ids de recepción, +1 y +2 (CEA inicial y oficial) y +3
+ * (el ajuste por sede de antes); sobre ids de liquidación, +3, +4 y +5; y las
+ * recepciones de proveedor, +4 y +6. El +7 no lo usa nadie, y el +8 es de la
+ * compensación por faltante de esta misma recepción. Con el consecutivo
+ * automático SIESA asigna el número real: este solo enlaza cabecera y movimientos.
+ */
+export const consecutivoViscerasRecepcion = (recepcionId) => Number(recepcionId) * 10 + 7;
+
+/**
+ * Arma el CEI de UNA recepción con las vísceras que tiene AHORA. Es
+ * `armarAjusteVisceras` con la referencia y el consecutivo propios del tipo
+ * `visceras_recepcion`, para que no se pisen con los demás.
+ */
+export function armarViscerasRecepcion({ recepcion, items, config = {} }) {
+  return armarAjusteVisceras({
+    recepcion,
+    items: items ?? recepcion?.items ?? [],
+    config,
+    consecutivo: consecutivoViscerasRecepcion(recepcion?.id),
+    referencia: referenciaViscerasRecepcion(recepcion?.id),
+  });
+}
+
+// ─── ¿Cambió algo desde que se mandó? ───────────────────────────────────────
+
+/**
+ * Compara lo que se mandó a SIESA con lo que se mandaría hoy, renglón por
+ * renglón. Módulo puro: recibe los dos `payload`.
+ *
+ * Se compara por `ITEM` (el código de SIESA): cantidad (con la misma tolerancia
+ * de `viscerasEnCea`), costo unitario, unidad y bodega; más los renglones
+ * agregados o quitados y la fecha del documento. Si un código se repite en el
+ * documento, los renglones se emparejan por cantidad.
+ *
+ * Es lo que decide si hay que volver a subir las vísceras: cualquier diferencia
+ * es `cambio`, porque el documento que está en SIESA ya no dice lo mismo que la
+ * recepción.
+ *
+ * @param {object|null} payloadEnviado  `payload` del envío vigente
+ * @param {object|null} payloadActual   `payload` armado con los datos de ahora
+ * @param {{descripciones?: Record<string,string>}} [opts]  código → nombre, para el texto
+ * @returns {{cambio: boolean, diferencias: object[]}}
+ *   cada diferencia: `{ tipo: "modificado"|"agregado"|"eliminado"|"fecha", item,
+ *   descripcion, campo?, antes, ahora }`
+ */
+export function compararViscerasEnviadas(payloadEnviado, payloadActual, { descripciones = {} } = {}) {
+  const movs = (p) => (Array.isArray(p?.Movimientos) ? p.Movimientos : []);
+  const agrupar = (lista) => {
+    const m = new Map();
+    for (const x of lista) {
+      const k = String(x.ITEM ?? "").trim();
+      m.set(k, [...(m.get(k) || []), x]);
+    }
+    for (const v of m.values()) v.sort((a, b) => (Number(a.CANTIDAD) || 0) - (Number(b.CANTIDAD) || 0));
+    return m;
+  };
+  const antes = agrupar(movs(payloadEnviado));
+  const ahora = agrupar(movs(payloadActual));
+  const diferencias = [];
+  const nombre = (item) => descripciones[item] ?? null;
+  const dif = (extra) => diferencias.push({ campo: null, ...extra });
+
+  const items = [...new Set([...antes.keys(), ...ahora.keys()])].sort();
+  for (const item of items) {
+    const a = antes.get(item) || [];
+    const b = ahora.get(item) || [];
+    for (let n = 0; n < Math.max(a.length, b.length); n++) {
+      const x = a[n];
+      const y = b[n];
+      if (!x) {
+        dif({ tipo: "agregado", item, descripcion: nombre(item), antes: null, ahora: Number(y.CANTIDAD) || 0 });
+        continue;
+      }
+      if (!y) {
+        dif({ tipo: "eliminado", item, descripcion: nombre(item), antes: Number(x.CANTIDAD) || 0, ahora: null });
+        continue;
+      }
+      const base = { tipo: "modificado", item, descripcion: nombre(item) };
+      const cx = Number(x.CANTIDAD) || 0;
+      const cy = Number(y.CANTIDAD) || 0;
+      if (Math.abs(cx - cy) > TOLERANCIA_CANTIDAD) {
+        dif({ ...base, campo: "cantidad", antes: cx, ahora: cy });
+      }
+      const px = Number(x.COSTO_PROMEDIO) || 0;
+      const py = Number(y.COSTO_PROMEDIO) || 0;
+      if (Math.abs(px - py) > TOLERANCIA_CANTIDAD) {
+        dif({ ...base, campo: "costo", antes: px, ahora: py });
+      }
+      const ux = String(x.UNIDAD_MEDIDA ?? "").trim();
+      const uy = String(y.UNIDAD_MEDIDA ?? "").trim();
+      if (ux !== uy) dif({ ...base, campo: "unidad", antes: ux, ahora: uy });
+      const bx = String(x.BODEGA ?? "").trim();
+      const by = String(y.BODEGA ?? "").trim();
+      if (bx !== by) dif({ ...base, campo: "bodega", antes: bx, ahora: by });
+    }
+  }
+
+  const fx = String(payloadEnviado?.Documentos?.[0]?.FECHA_DOCTO ?? "").trim();
+  const fy = String(payloadActual?.Documentos?.[0]?.FECHA_DOCTO ?? "").trim();
+  if (fx && fy && fx !== fy) dif({ tipo: "fecha", item: null, descripcion: "Fecha del documento", antes: fx, ahora: fy });
+
+  return { cambio: diferencias.length > 0, diferencias };
 }
 
 // ─── Con qué se cruza el ajuste: la entrada oficial que ya está en SIESA ────
