@@ -16,11 +16,14 @@
 --
 -- ─── Qué cambia ──────────────────────────────────────────────────────────────
 --
---   Solo el CHECK de `tipo`: se reemplaza conservando TODOS los tipos que ya
+--   1. El CHECK de `tipo`: se reemplaza conservando TODOS los tipos que ya
 --   existen ('inicial', 'oficial', 'ajuste_visceras', 'ajuste_faltante',
 --   'entrada_proveedor', 'nc_proveedor') y se suma 'visceras_recepcion'.
 --
---   El candado es el de sql/010: el índice único parcial
+--   2. Un índice único parcial para la compensación por faltante de una
+--      recepción (ver el paso 2 abajo).
+--
+--   El candado del CEI es el de sql/010: el índice único parcial
 --   uq_carnes_siesa_envios_vigente (recepcion_id, tipo) sobre enviando/ok/
 --   sin_confirmar ya cubre el tipo nuevo. Un 'anulado' o un 'error' no ocupan el
 --   lugar, así que después de anular el viejo se puede mandar el nuevo.
@@ -85,5 +88,24 @@ ALTER TABLE carnes_siesa_envios
     'inicial', 'oficial', 'ajuste_visceras', 'ajuste_faltante',
     'entrada_proveedor', 'nc_proveedor', 'visceras_recepcion'
   ));
+
+-- 2. El candado de la compensación por faltante de una recepción.
+--
+--    Al cerrar, el CEI de la recepción puede compensar un faltante (tipo
+--    'ajuste_faltante', sql/021). Esas compensaciones no llevan recepcion_id ni
+--    liquidacion_id (NULL cuenta como distinto en los índices de sql/010 y
+--    sql/021) sino `recepcion_ids = [id]`: ninguno las cubre. Sin este índice, el
+--    cierre y un reintento a la vez mandarían dos ajustes de inventario para la
+--    misma recepción y bodega. Es el patrón de uq_carnes_siesa_envios_ajuste_en_vuelo
+--    (sql/021): a lo sumo UNA compensación `enviando` por recepción y bodega; la
+--    segunda choca (23505) y el backend la trata como «ya en vuelo».
+--    Solo `enviando`: un `ok` o un `sin_confirmar` no impiden compensar de nuevo
+--    otra bodega ni un faltante nuevo.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_carnes_siesa_envios_compensacion_recepcion_en_vuelo
+  ON carnes_siesa_envios ((recepcion_ids[1]), bodega)
+  WHERE tipo = 'ajuste_faltante'
+    AND recepcion_id IS NULL
+    AND liquidacion_id IS NULL
+    AND estado = 'enviando';
 
 COMMIT;

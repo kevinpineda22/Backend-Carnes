@@ -59,6 +59,8 @@ import {
   viscerasEnCea,
   esperaParaSede,
   esperaParaEnvio,
+  PRESUPUESTO_CIERRE_RECEPCION_MS,
+  ESPERA_MINIMA_CIERRE_MS,
   ESPERA_MINIMA_AJUSTE_MS,
   ESPERA_MAXIMA_COMPENSACION_MS,
   TIPO_AJUSTE_VISCERAS,
@@ -1756,6 +1758,60 @@ async function compensacionVigente(origenId, bodega) {
 }
 
 /**
+ * Las compensaciones por faltante de recepciones (alcance recepción: sin
+ * `recepcion_id` ni `liquidacion_id`, con `recepcion_ids=[id]`), por recepción,
+ * de la más nueva a la más vieja. Sin sql/021 devuelve un mapa vacío.
+ *
+ * @returns {Promise<Map<number, Array<{id, referencia, bodega, estado}>>>}
+ */
+async function compensacionesDeRecepciones(ids) {
+  const porRecepcion = new Map();
+  const buscadas = ids.map(Number);
+  if (!buscadas.length) return porRecepcion;
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("id, estado, referencia, bodega, recepcion_ids, enviado_at")
+    .eq("tipo", TIPO_AJUSTE_FALTANTE)
+    .is("recepcion_id", null)
+    .is("liquidacion_id", null)
+    .overlaps("recepcion_ids", buscadas)
+    .order("enviado_at", { ascending: false })
+    .order("id", { ascending: false });
+  if (error) {
+    if (esMigracionFaltante(error)) return porRecepcion;
+    fallarSiFaltaMigracion(error, "Error al leer los ajustes por faltante", MIGRACIONES);
+  }
+  for (const f of data || []) {
+    for (const id of (f.recepcion_ids || []).map(Number)) {
+      if (!buscadas.includes(id)) continue;
+      porRecepcion.set(id, [
+        ...(porRecepcion.get(id) || []),
+        { id: f.id, referencia: f.referencia, bodega: f.bodega ?? null, estado: f.estado },
+      ]);
+    }
+  }
+  return porRecepcion;
+}
+
+/** Una compensación de esta recepción y bodega que sigue `enviando`, o null. */
+async function compensacionEnVueloRecepcion(recepcionId, bodega) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("*")
+    .eq("tipo", TIPO_AJUSTE_FALTANTE)
+    .is("recepcion_id", null)
+    .is("liquidacion_id", null)
+    .overlaps("recepcion_ids", [Number(recepcionId)])
+    .eq("bodega", bodega)
+    .eq("estado", "enviando")
+    .order("enviado_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer el ajuste por faltante", MIGRACIONES);
+  return data || null;
+}
+
+/**
  * Manda la compensación de UNA bodega. Si SIESA la rechaza otra vez por faltante,
  * SUBE la cantidad (anterior + faltante) y reintenta, hasta MAX_REINTENTOS_AJUSTE.
  *
@@ -1767,8 +1823,9 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
 
   for (let intento = 1; intento <= MAX_REINTENTOS_AJUSTE; intento++) {
     const espera = esperaParaEnvio(Date.now() - inicio, {
-      maxEsperaMs: ESPERA_MAXIMA_COMPENSACION_MS,
+      maxEsperaMs: Math.min(ESPERA_MAXIMA_COMPENSACION_MS, alcance.maxEsperaMs ?? Infinity),
       minimoMs: 30_000,
+      presupuestoMs: alcance.presupuestoMs ?? null,
     });
     if (espera === null) {
       return {
@@ -1790,7 +1847,10 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
         bodega: actual.bodega,
       },
       por,
-      vigente: () => compensacionVigente(origen.id, actual.bodega),
+      vigente: () =>
+        alcance.compensacionEnVuelo
+          ? alcance.compensacionEnVuelo(actual.bodega)
+          : compensacionVigente(origen.id, actual.bodega),
       etiqueta: alcance.etiquetaCompensacion(actual.bodega),
       documento: DOCUMENTO_AJUSTE_FALTANTE,
       timeoutMs: espera,
@@ -1798,7 +1858,7 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
     registros.push({ ...resumenCompensacion(fila), intento });
 
     // Otro pedido la reservó primero: no es un envío de este.
-    if (fila.repetido) return { ok: false, registros, detalle: motivoVigente(fila) };
+    if (fila.repetido) return { ok: false, enVuelo: true, registros, detalle: motivoVigente(fila) };
     if (fila.estado === "ok") return { ok: true, registros };
 
     if (fila.estado === "error" && soloFaltantes(fila.respuesta) && intento < MAX_REINTENTOS_AJUSTE) {
@@ -1867,8 +1927,14 @@ const alcanceLiquidacion = (ev, liquidacionId) => ({
  * al cerrar la recepción todavía no hay liquidación, y el índice de sql/021 que
  * limita los envíos en vuelo por liquidación no tiene por qué aplicarles.
  */
-const alcanceRecepcion = (recepcion, armado) => ({
+const alcanceRecepcion = (recepcion, armado, { alCierre = false } = {}) => ({
   armado,
+  // Al cerrar, el recibidor espera la respuesta (el front corta a los 120 s): la
+  // misma espera que la inicial y un presupuesto total para todo lo que se haga
+  // acá. Lo que no alcance queda sin_confirmar / pendiente para el flujo de siempre.
+  ...(alCierre
+    ? { maxEsperaMs: TIMEOUT_INICIAL_MS, presupuestoMs: PRESUPUESTO_CIERRE_RECEPCION_MS }
+    : {}),
   base: {
     recepcion_id: recepcion.id,
     liquidacion_id: recepcion.liquidacion_id ?? null,
@@ -1881,6 +1947,9 @@ const alcanceRecepcion = (recepcion, armado) => ({
   liquidacionId: undefined,
   recepcionId: recepcion.id,
   baseCompensacion: { recepcion_id: null, liquidacion_id: null, recepcion_ids: [recepcion.id] },
+  // El índice de sql/025 deja UNA compensación `enviando` por recepción y bodega
+  // (sin importar el origen): si choca, es la que ya está en vuelo.
+  compensacionEnVuelo: (bodega) => compensacionEnVueloRecepcion(recepcion.id, bodega),
   etiquetaCompensacion: (bodega) =>
     `ajuste por faltante recepción #${recepcion.id} bodega ${bodega}`,
 });
@@ -1919,7 +1988,11 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
     let espera;
     if (ronda === 1) {
       // El primer envío conserva la regla de siempre: si leer tardó demasiado, no se arranca.
-      espera = esperaParaSede(Date.now() - inicio, TIMEOUT_OFICIAL_MS);
+      espera = esperaParaSede(Date.now() - inicio, alcance.maxEsperaMs ?? TIMEOUT_OFICIAL_MS);
+      if (espera !== null && alcance.presupuestoMs != null) {
+        espera = Math.min(espera, alcance.presupuestoMs - (Date.now() - inicio));
+        if (espera < ESPERA_MINIMA_CIERRE_MS) espera = null;
+      }
       if (espera === null) {
         throw createError(
           503,
@@ -1928,8 +2001,9 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
       }
     } else {
       espera = esperaParaEnvio(Date.now() - inicio, {
-        maxEsperaMs: TIMEOUT_OFICIAL_MS,
-        minimoMs: ESPERA_MINIMA_AJUSTE_MS,
+        maxEsperaMs: alcance.maxEsperaMs ?? TIMEOUT_OFICIAL_MS,
+        minimoMs: alcance.presupuestoMs != null ? ESPERA_MINIMA_CIERRE_MS : ESPERA_MINIMA_AJUSTE_MS,
+        presupuestoMs: alcance.presupuestoMs ?? null,
       });
       if (espera === null) {
         return resultado({
@@ -1998,6 +2072,7 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
       compensaciones.push(...r.registros);
       if (!r.ok) {
         return resultado({
+          enVuelo: r.enVuelo || undefined,
           pendiente: r.pendiente || undefined,
           detalle: r.pendiente ? `${r.detalle} Pendiente: volvé a enviar.` : r.detalle,
         });
@@ -2172,6 +2247,10 @@ async function viscerasPorRecepcion(ids) {
   return porRecepcion;
 }
 
+const mensajeCompensacionEnCurso = (c) =>
+  `Hay un ajuste por faltante en curso (${c.referencia}, bodega ${c.bodega ?? "—"}). ` +
+  "Esperá a que termine o resolvelo desde Envíos a SIESA antes de reenviar.";
+
 /** Lo que el front necesita del resultado de un CEI de recepción. */
 function resultadoVisceras(fila, extra = {}) {
   return {
@@ -2189,13 +2268,18 @@ function resultadoVisceras(fila, extra = {}) {
  *
  * @returns {{completo: boolean, resultado: object, compensaciones: object[]}}
  */
-async function mandarViscerasRecepcion({ recepcion, armado, por, inicio }) {
-  const r = await ejecutarAjuste({ alcance: alcanceRecepcion(recepcion, armado), por, inicio });
+async function mandarViscerasRecepcion({ recepcion, armado, por, inicio, alCierre = false }) {
+  const r = await ejecutarAjuste({
+    alcance: alcanceRecepcion(recepcion, armado, { alCierre }),
+    por,
+    inicio,
+  });
   return {
     completo: r.completo,
     repetido: r.repetido,
     resultado: resultadoVisceras(r.envio, { detalle: r.detalle ?? null, pendiente: r.pendiente }),
     compensaciones: r.compensaciones,
+    enVuelo: r.enVuelo,
   };
 }
 
@@ -2228,7 +2312,13 @@ export async function enviarViscerasRecepcion(recepcionId, por) {
     const armado = armarViscerasDe(recepcion);
     if (armado.vacio) return { ...base, estado: "sin_visceras" };
 
-    const r = await mandarViscerasRecepcion({ recepcion, armado, por, inicio: Date.now() });
+    const r = await mandarViscerasRecepcion({
+      recepcion,
+      armado,
+      por,
+      inicio: Date.now(),
+      alCierre: true,
+    });
     return {
       ...base,
       ...r.resultado,
@@ -2262,6 +2352,9 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
   }
   const previa = await envioVigente(recepcionId, TIPO_VISCERAS_RECEPCION);
   if (previa) throw createError(409, motivoVigente(previa));
+  const compensaciones = (await compensacionesDeRecepciones([recepcionId])).get(Number(recepcionId));
+  const enCurso = (compensaciones || []).find((c) => c.estado === "enviando");
+  if (enCurso) throw createError(409, mensajeCompensacionEnCurso(enCurso));
 
   const armado = armarViscerasDe(recepcion);
   if (armado.vacio) {
@@ -2270,6 +2363,8 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
   const r = await mandarViscerasRecepcion({ recepcion, armado, por, inicio: Date.now() });
   // Otro pedido la reservó entre la pregunta de arriba y la reserva.
   if (r.repetido) throw createError(409, r.resultado.error);
+  // Una compensación de esta recepción y bodega ya estaba en vuelo (índice de sql/025).
+  if (r.enVuelo) throw createError(409, r.resultado.detalle);
   return {
     ...r.resultado,
     error: r.resultado.error ?? r.resultado.detalle ?? null,
@@ -2287,6 +2382,7 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
 async function evaluarPorRecepcion(ev) {
   const filasPor = await viscerasPorRecepcion(ev.ids);
   if (filasPor.size === 0) return null;
+  const compensacionesPor = await compensacionesDeRecepciones(ev.ids);
 
   const internos = new Map();
   const recepciones = ev.recepciones.map((r) => {
@@ -2326,6 +2422,10 @@ async function evaluarPorRecepcion(ev) {
         );
       }
     }
+    // Una compensación en vuelo de esta recepción: reenviar ahora la pisaría.
+    const compensaciones = compensacionesPor.get(Number(r.id)) || [];
+    const enCurso = compensaciones.find((c) => c.estado === "enviando");
+    if (necesitaEnvio && enCurso) bloqueos.push(mensajeCompensacionEnCurso(enCurso));
     internos.set(r.id, { recepcion: r, armado, decision });
     return {
       recepcion_id: r.id,
@@ -2340,6 +2440,9 @@ async function evaluarPorRecepcion(ev) {
       renglones: armado.renglones,
       vacio: armado.vacio,
       bloqueos,
+      // Las que corrigieron un faltante real de inventario al cerrar: no se
+      // borran en SIESA al reenviar ni se anulan acá.
+      compensaciones,
     };
   });
   return { recepciones, internos };
