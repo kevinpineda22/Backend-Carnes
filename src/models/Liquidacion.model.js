@@ -492,6 +492,16 @@ export async function guardarRetomas(id, { por, filas = [] } = {}) {
       };
     });
 
+  // Precondición ANTES de escribir nada: si el total va a quedar > 0 hace falta el
+  // concepto «Retomas» activo. Sin esta lectura previa, el 409 salía DESPUÉS de
+  // guardar las retomas y apagar la bonificación: datos a medias y sin gasto.
+  // Las filas huérfanas (sin ítem) no se tocan, así que cuentan en el total futuro.
+  const huerfanas = guardadas.filter(
+    (g) => g.vicera_item_id === null || g.vicera_item_id === undefined,
+  );
+  const totalEsperado = totalRetomas([...aGuardar, ...huerfanas]);
+  const concepto = totalEsperado > 0 ? await leerConceptoRetomas() : null;
+
   if (aGuardar.length) {
     const { error } = await supabase
       .from(TABLE_RETOMAS)
@@ -516,9 +526,15 @@ export async function guardarRetomas(id, { por, filas = [] } = {}) {
   const finales = await leerRetomasGuardadas(id);
   const total = totalRetomas(finales);
 
+  // Primero el gasto, después apagar la bonificación: si derivar falla, la
+  // liquidación queda como estaba (bonificación encendida, sin gasto) y repetir el
+  // guardado lo arregla. Al revés quedaba SIN descuento alguno y sin aviso.
+  const { gasto, manualReemplazado, manualesEliminados, manualesSinConcepto } =
+    await derivarGastoRetomas(id, total, concepto);
+
   // Una liquidación vieja de cerdo puede tener el descuento de las retomas del
   // recibidor encendido (viceras_bonificacion): el costeo las restaría de nuevo
-  // además del gasto derivado. Se apaga ANTES de derivar el gasto.
+  // además del gasto derivado.
   let bonificacionDesactivada = false;
   if (total > 0 && cabecera.viceras_bonificacion) {
     const { error: errorBonif } = await supabase
@@ -529,8 +545,6 @@ export async function guardarRetomas(id, { por, filas = [] } = {}) {
     bonificacionDesactivada = true;
   }
 
-  const { gasto, manualReemplazado } = await derivarGastoRetomas(id, total);
-
   console.log(
     `🐖 Retomas de la liquidación #${id} guardadas por ${por || "?"} · total ${total}.`,
   );
@@ -538,22 +552,14 @@ export async function guardarRetomas(id, { por, filas = [] } = {}) {
   return respuestaRetomas(cabecera, catalogo, finales, gasto, {
     bonificacion_desactivada: bonificacionDesactivada,
     gasto_manual_reemplazado: manualReemplazado,
+    gastos_manuales_eliminados: manualesEliminados,
+    gastos_manuales_sin_concepto: manualesSinConcepto,
   });
 }
 
-/** Crea, actualiza o quita la fila de gasto «Retomas» derivada. Devuelve {gasto, manualReemplazado}. */
-async function derivarGastoRetomas(id, total) {
-  let derivado = await leerGastoDerivado(id);
-
-  if (total <= 0) {
-    if (derivado) {
-      const { error } = await supabase.from(TABLE_GASTOS).delete().eq("id", derivado.id);
-      if (error) throw new Error(`Error al quitar el gasto de retomas: ${error.message}`);
-    }
-    return { gasto: null, manualReemplazado: false };
-  }
-
-  const { data: conceptos, error: errorConcepto } = await supabase
+/** Concepto «Retomas» activo del catálogo de cerdo; 409 si no existe. */
+async function leerConceptoRetomas() {
+  const { data: conceptos, error } = await supabase
     .from("carnes_conceptos_gasto")
     .select("id, nombre")
     .eq("especie", "cerdo")
@@ -561,7 +567,7 @@ async function derivarGastoRetomas(id, total) {
     .eq("activo", true)
     .order("id")
     .limit(1);
-  if (errorConcepto) throw new Error(`Error al leer el concepto: ${errorConcepto.message}`);
+  if (error) throw new Error(`Error al leer el concepto: ${error.message}`);
   const concepto = conceptos?.[0];
   if (!concepto) {
     throw createError(
@@ -569,22 +575,58 @@ async function derivarGastoRetomas(id, total) {
       "Falta el concepto de gasto «Retomas» activo en el catálogo de cerdo.",
     );
   }
+  return concepto;
+}
 
-  // Sin derivado todavía: si el admin ya había tipeado un «Retomas» a mano, se lo
-  // adopta en vez de dejar dos filas que restarían dos veces.
+/**
+ * Crea, actualiza o quita la fila de gasto «Retomas» derivada.
+ * Devuelve {gasto, manualReemplazado, manualesEliminados, manualesSinConcepto}.
+ */
+async function derivarGastoRetomas(id, total, conceptoLeido = null) {
+  let derivado = await leerGastoDerivado(id);
+  const sinManuales = { manualReemplazado: false, manualesEliminados: 0, manualesSinConcepto: 0 };
+
+  if (total <= 0) {
+    if (derivado) {
+      const { error } = await supabase.from(TABLE_GASTOS).delete().eq("id", derivado.id);
+      if (error) throw new Error(`Error al quitar el gasto de retomas: ${error.message}`);
+    }
+    return { gasto: null, ...sinManuales };
+  }
+
+  const concepto = conceptoLeido || (await leerConceptoRetomas());
+
+  // Sin derivado todavía: si el admin ya había tipeado «Retomas» a mano, se ADOPTA
+  // una fila en vez de dejar manual + derivada (restarían dos veces). Una liquidación
+  // vieja puede tener VARIAS manuales: se adopta la primera y se borran las demás
+  // (después de escribir la derivada, no antes). Las filas sin `concepto_id` cuyo
+  // texto dice «Retomas» NO se adivinan: no se tocan y se cuentan en la respuesta
+  // para que el admin las revise.
   let manualReemplazado = false;
+  let sobrantes = [];
+  let manualesSinConcepto = 0;
   if (!derivado) {
-    const { data: manual, error } = await supabase
+    const { data: manuales, error } = await supabase
       .from(TABLE_GASTOS)
       .select("id")
       .eq("liquidacion_id", id)
       .eq("concepto_id", concepto.id)
       .is("origen", null)
-      .order("id")
-      .limit(1);
+      .order("id");
     if (error) throw new Error(`Error al leer los gastos: ${error.message}`);
-    derivado = manual?.[0] || null;
+    derivado = manuales?.[0] || null;
+    sobrantes = (manuales || []).slice(1).map((g) => g.id);
     manualReemplazado = Boolean(derivado);
+
+    const { count, error: errorTexto } = await supabase
+      .from(TABLE_GASTOS)
+      .select("id", { count: "exact", head: true })
+      .eq("liquidacion_id", id)
+      .is("concepto_id", null)
+      .is("origen", null)
+      .eq("concepto", CONCEPTO_RETOMAS);
+    if (errorTexto) throw new Error(`Error al leer los gastos: ${errorTexto.message}`);
+    manualesSinConcepto = count || 0;
   }
 
   const fila = {
@@ -604,7 +646,21 @@ async function derivarGastoRetomas(id, total) {
     : supabase.from(TABLE_GASTOS).insert(fila);
   const { data, error } = await consulta.select("*").single();
   if (error) throw new Error(`Error al guardar el gasto de retomas: ${error.message}`);
-  return { gasto: data, manualReemplazado };
+
+  if (sobrantes.length) {
+    const { error: errorSobrantes } = await supabase
+      .from(TABLE_GASTOS)
+      .delete()
+      .in("id", sobrantes);
+    if (errorSobrantes)
+      throw new Error(`Error al quitar los gastos de retomas repetidos: ${errorSobrantes.message}`);
+  }
+  return {
+    gasto: data,
+    manualReemplazado,
+    manualesEliminados: sobrantes.length,
+    manualesSinConcepto,
+  };
 }
 
 /**
