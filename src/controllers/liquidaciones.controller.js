@@ -137,3 +137,23 @@ export async function reabrir(req, res, next) {
     next(error);
   }
 }
+
+/** GET /api/liquidaciones/:id/retomas — el panel de retomas (solo cerdo). */
+export async function obtenerRetomas(req, res, next) {
+  try {
+    const data = await LiquidacionModel.obtenerRetomas(req.params.id);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** PUT /api/liquidaciones/:id/retomas — Body: { por, filas: [{ vicera_item_id, kilos, precio }] } */
+export async function guardarRetomas(req, res, next) {
+  try {
+    const data = await LiquidacionModel.guardarRetomas(req.params.id, req.body);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}

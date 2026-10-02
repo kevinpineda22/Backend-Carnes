@@ -15,6 +15,11 @@ router.delete("/:id", LiquidacionesController.eliminar);
 
 router.put("/:id/gastos", validators.guardarGastos, LiquidacionesController.guardarGastos);
 
+// Retomas de la entrega (solo cerdo): el admin carga kilos y precio KL de cada
+// una y el total se deriva al gasto «Retomas». Aditivo: res no lo usa.
+router.get("/:id/retomas", LiquidacionesController.obtenerRetomas);
+router.put("/:id/retomas", validators.guardarRetomas, LiquidacionesController.guardarRetomas);
+
 // A quién se le paga. La suma tiene que dar el total de los gastos; el cuadre
 // se valida al costear.
 router.put("/:id/pagos", validators.guardarPagos, LiquidacionesController.guardarPagos);

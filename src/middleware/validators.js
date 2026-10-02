@@ -745,6 +745,29 @@ export const validators = {
     }),
   ),
 
+  // Retomas de la entrega (cerdo). Acá solo la FORMA; las reglas (negativos,
+  // repetidos, ítems del catálogo, topes) las aplica `validarFilasRetomas` en el
+  // modelo, que es la misma función que prueban los tests. `""` (un input vacío)
+  // llega como está: `leerNumero` lo cuenta como 0 y todo lo que no sea número lo
+  // rechaza — no se coacciona acá para que un "abc" no se vuelva 0 en silencio.
+  guardarRetomas: validar(
+    z.object({
+      por: z.string().trim().max(150).nullable().optional(),
+      filas: z
+        .array(
+          z.object({
+            vicera_item_id: z.coerce
+              .number({ invalid_type_error: "La retoma no es válida." })
+              .int()
+              .positive("La retoma no es válida."),
+            kilos: z.union([z.number(), z.string()]).nullable().optional(),
+            precio: z.union([z.number(), z.string()]).nullable().optional(),
+          }),
+        )
+        .default([]),
+    }),
+  ),
+
   vincularRecepciones: validar(
     z.object({
       recepcion_ids: z

@@ -104,9 +104,13 @@ export async function listar({
  * es una duda.
  */
 async function renglonesDesdePlantilla(especie, novillos = 0) {
+  // CERDO no materializa retomas/vísceras en la recepción: las carga el admin una
+  // sola vez por entrega en el panel «Retomas de la entrega» de la liquidación
+  // (sql/024, Liquidacion.model.js#guardarRetomas). Res sigue igual. Las
+  // recepciones de cerdo YA abiertas conservan los renglones que tengan.
   const [items, viceras] = await Promise.all([
     PlantillaModel.listar("items", especie),
-    PlantillaModel.listar("viceras", especie),
+    especie === "cerdo" ? [] : PlantillaModel.listar("viceras", especie),
   ]);
 
   const filas = items.map((i) => ({

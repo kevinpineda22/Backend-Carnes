@@ -7,6 +7,15 @@ import {
 import { ESTADOS } from "../shared/estados.js";
 import { calcularValorGasto } from "../shared/gastos.js";
 import {
+  CONCEPTO_RETOMAS,
+  ORIGEN_RETOMAS,
+  armarFilasRetomas,
+  totalKilosRetomas,
+  totalRetomas,
+  validarFilasRetomas,
+} from "../shared/retomasLiquidacion.js";
+import * as PlantillaModel from "./Plantilla.model.js";
+import {
   fallarSiFaltaMigracion,
   esMigracionFaltante,
 } from "../shared/migraciones.js";
@@ -16,6 +25,9 @@ const TABLE_GASTOS = "carnes_liquidacion_gastos";
 const TABLE_PAGOS = "carnes_liquidacion_pagos";
 const TABLE_RECEPCIONES = "carnes_recepciones";
 const TABLE_ITEMS = "carnes_recepcion_items";
+const TABLE_RETOMAS = "carnes_liquidacion_retomas";
+
+const MIGRACION_RETOMAS = "sql/024_retomas_liquidacion.sql";
 
 export const ESTADOS_LIQUIDACION = {
   ABIERTA: "Abierta",
@@ -85,6 +97,12 @@ export async function obtener(id) {
 
   return {
     ...cabecera,
+    // Solo cerdo: dice si el gasto «Retomas» lo deriva el panel de retomas (fila
+    // con `origen = 'retomas'`), para que el front lo bloquee en la grilla. En res
+    // la clave ni existe: su payload queda exactamente como estaba.
+    ...(cabecera.especie === "cerdo" && {
+      usa_retomas: (gastos || []).some((g) => g.origen === ORIGEN_RETOMAS),
+    }),
     gastos: gastos || [],
     pagos: pagos || [],
     recepciones: (recepciones || []).map((r) => ({
@@ -214,8 +232,18 @@ export async function actualizar(id, cambios) {
  * confiable para el número que después arma el costeo. Si falta cualquiera de
  * los dos, `valor` es el que tipeó el admin, igual que siempre.
  */
-export async function guardarGastos(id, filas = []) {
-  await exigirEditable(id);
+export async function guardarGastos(id, filasRecibidas = []) {
+  const liquidacion = await exigirEditable(id);
+
+  // La fila de «Retomas» que deriva el panel de retomas (cerdo) NO se edita ni se
+  // borra desde esta grilla: se ignora lo que llegue de ella —aunque el cliente la
+  // mande con otro valor— y se la protege del borrado de más abajo. Solo cerdo:
+  // en res no se consulta nada y el flujo es el de siempre.
+  const derivadas =
+    liquidacion.especie === "cerdo" ? await idsGastosDerivados(id) : [];
+  const idsDerivados = new Set(derivadas.map(String));
+  await exigirSinRetomasDuplicada(id, filasRecibidas, idsDerivados);
+  const filas = filasRecibidas.filter((f) => !f.id || !idsDerivados.has(String(f.id)));
 
   const nuevas = filas.filter((f) => !f.id);
   const existentes = filas.filter((f) => f.id);
@@ -257,7 +285,7 @@ export async function guardarGastos(id, filas = []) {
       );
   }
 
-  const conservados = [...existentes.map((f) => f.id), ...idsNuevos];
+  const conservados = [...existentes.map((f) => f.id), ...idsNuevos, ...derivadas];
   let q = supabase.from(TABLE_GASTOS).delete().eq("liquidacion_id", id);
   if (conservados.length) q = q.not("id", "in", `(${conservados.join(",")})`);
 
@@ -266,6 +294,317 @@ export async function guardarGastos(id, filas = []) {
     throw new Error(`Error al borrar gastos: ${errorBorra.message}`);
 
   return obtener(id);
+}
+
+/**
+ * Ids de las filas de gasto que deriva el panel de retomas (`origen = 'retomas'`).
+ *
+ * Tolera que sql/024 no haya corrido (la columna `origen` no existe): sin la
+ * migración no puede haber filas derivadas, y guardar la grilla tiene que seguir
+ * funcionando.
+ */
+async function idsGastosDerivados(id) {
+  const { data, error } = await supabase
+    .from(TABLE_GASTOS)
+    .select("id")
+    .eq("liquidacion_id", id)
+    .eq("origen", ORIGEN_RETOMAS);
+  if (error) {
+    // Solo "falta la columna origen" cuenta como migración pendiente. Un error
+    // opaco NO: devolver [] acá dejaría que guardarGastos borre la fila derivada.
+    const faltaOrigen =
+      error.code === "42703" || /column.*origen/i.test(String(error.message || ""));
+    if (faltaOrigen) return [];
+    throw new Error(`Error al leer los gastos derivados: ${error.message}`);
+  }
+  return (data || []).map((g) => g.id);
+}
+
+/**
+ * Con el gasto «Retomas» derivado del panel, la grilla no puede sumar OTRA fila
+ * «Retomas»: restaría las retomas dos veces. 409 claro en vez de descartarla en
+ * silencio.
+ */
+async function exigirSinRetomasDuplicada(id, filas, idsDerivados) {
+  if (idsDerivados.size === 0) return;
+  const { data, error } = await supabase
+    .from("carnes_conceptos_gasto")
+    .select("id")
+    .eq("especie", "cerdo")
+    .eq("nombre", CONCEPTO_RETOMAS);
+  if (error) throw new Error(`Error al leer el concepto: ${error.message}`);
+  const idsConcepto = new Set((data || []).map((c) => String(c.id)));
+  const duplicada = filas.some(
+    (f) =>
+      !(f.id && idsDerivados.has(String(f.id))) &&
+      ((f.concepto_id && idsConcepto.has(String(f.concepto_id))) ||
+        String(f.concepto || "").trim() === CONCEPTO_RETOMAS),
+  );
+  if (duplicada) {
+    throw createError(
+      409,
+      "Las retomas de esta liquidación se cargan en el panel «Retomas de la entrega»: " +
+        "el gasto «Retomas» se calcula desde ahí y no se puede agregar otro a mano.",
+    );
+  }
+}
+
+// ─── Retomas (solo cerdo) ──────────────────────────────────────────────────
+
+/** Lee la cabecera y exige cerdo. `escritura` además exige que no esté congelada. */
+async function exigirCerdo(id, { escritura = false } = {}) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("id, estado, especie, viceras_bonificacion")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Error al leer la liquidación: ${error.message}`);
+  if (!data) throw createError(404, "Liquidación no encontrada.");
+  if (data.especie !== "cerdo") {
+    throw createError(400, "Las retomas de la entrega son solo de cerdo.");
+  }
+  if (escritura && data.estado !== ESTADOS_LIQUIDACION.ABIERTA) {
+    throw createError(
+      409,
+      data.estado === ESTADOS_LIQUIDACION.CERRADA
+        ? "La liquidación está cerrada: ya se subió a SIESA y no se pueden cambiar las retomas."
+        : "La liquidación está costeada. Reabrila para cambiar las retomas.",
+    );
+  }
+  return data;
+}
+
+/**
+ * Las retomas del catálogo de cerdo: bloque 'bonificacion' y sin factor por
+ * novillo. Las 'informativo' o por factor no son retomas y no deben aparecer.
+ */
+async function listarCatalogoRetomas() {
+  const todas = await PlantillaModel.listar("viceras", "cerdo");
+  return todas.filter(
+    (v) =>
+      v.bloque === "bonificacion" &&
+      (v.factor_novillo === null || v.factor_novillo === undefined),
+  );
+}
+
+async function leerRetomasGuardadas(id) {
+  const { data, error } = await supabase
+    .from(TABLE_RETOMAS)
+    .select("*")
+    .eq("liquidacion_id", id)
+    .order("orden")
+    .order("id");
+  if (error) fallarSiFaltaMigracion(error, "Error al leer las retomas", [MIGRACION_RETOMAS]);
+  return data || [];
+}
+
+async function leerGastoDerivado(id) {
+  const { data, error } = await supabase
+    .from(TABLE_GASTOS)
+    .select("*")
+    .eq("liquidacion_id", id)
+    .eq("origen", ORIGEN_RETOMAS)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer el gasto de retomas", [MIGRACION_RETOMAS]);
+  return data || null;
+}
+
+function respuestaRetomas(cabecera, catalogo, guardadas, gasto, extra = {}) {
+  const congelada = cabecera.estado !== ESTADOS_LIQUIDACION.ABIERTA;
+  const filas = armarFilasRetomas({ catalogo, guardadas, congelada });
+  return {
+    liquidacion_id: cabecera.id,
+    estado: cabecera.estado,
+    editable: !congelada,
+    filas,
+    total: totalRetomas(filas),
+    total_kilos: totalKilosRetomas(filas),
+    gasto,
+    ...extra,
+  };
+}
+
+/**
+ * Las filas del panel «Retomas de la entrega»: catálogo activo de retomas de
+ * cerdo + lo guardado, con el precio KL del catálogo como valor por defecto.
+ */
+export async function obtenerRetomas(id) {
+  const cabecera = await exigirCerdo(id);
+  const [catalogo, guardadas, gasto] = await Promise.all([
+    listarCatalogoRetomas(),
+    leerRetomasGuardadas(id),
+    leerGastoDerivado(id),
+  ]);
+  return respuestaRetomas(cabecera, catalogo, guardadas, gasto);
+}
+
+/**
+ * Guarda las retomas y deriva el gasto «Retomas».
+ *
+ * `filas` ES la lista completa: lo que no vino (o vino en 0 kilos) se borra, como
+ * en `guardarGastos`. Orden: primero se escribe lo que debe existir, después se
+ * borra lo que sobra, y recién ahí se toca el gasto. Sin transacción, un corte en
+ * el medio deja las retomas guardadas con el gasto viejo —visible: el panel y la
+ * grilla no coinciden— y repetir el guardado lo arregla.
+ *
+ * Todas las filas del upsert llevan LAS MISMAS claves (supabase-js manda NULL, no
+ * el DEFAULT, a la columna que le falta a una fila de un lote).
+ *
+ * El gasto derivado: concepto «Retomas» de cerdo, signo -1 (resta), valor = total,
+ * `origen = 'retomas'`. Si el total es 0 se quita (solo la fila derivada: un
+ * gasto «Retomas» tipeado a mano antes de este panel no se toca). Si ya había un
+ * «Retomas» manual y todavía no hay derivado, se ADOPTA —se convierte en el
+ * derivado— para no restar las retomas dos veces.
+ */
+export async function guardarRetomas(id, { por, filas = [] } = {}) {
+  const cabecera = await exigirCerdo(id, { escritura: true });
+
+  const [catalogo, guardadas] = await Promise.all([
+    listarCatalogoRetomas(),
+    leerRetomasGuardadas(id),
+  ]);
+
+  const guardadaPorItem = new Map(
+    guardadas
+      .filter((g) => g.vicera_item_id !== null && g.vicera_item_id !== undefined)
+      .map((g) => [String(g.vicera_item_id), g]),
+  );
+  const catalogoPorId = new Map(catalogo.map((c) => [String(c.id), c]));
+  const permitidos = new Set([...catalogoPorId.keys(), ...guardadaPorItem.keys()]);
+
+  const validacion = validarFilasRetomas(filas, permitidos);
+  if (!validacion.ok) throw createError(400, validacion.errores[0]);
+
+  const aGuardar = validacion.filas
+    .filter((f) => f.kilos > 0)
+    .map((f, i) => {
+      const c = catalogoPorId.get(String(f.vicera_item_id));
+      const g = guardadaPorItem.get(String(f.vicera_item_id));
+      return {
+        liquidacion_id: id,
+        vicera_item_id: f.vicera_item_id,
+        nombre: c?.nombre ?? g.nombre,
+        unidad: c?.unidad || g?.unidad || "KL",
+        kilos: f.kilos,
+        precio: f.precio,
+        precio_catalogo: c ? Number(c.precio) || 0 : Number(g?.precio_catalogo) || 0,
+        orden: c?.orden ?? g?.orden ?? i,
+      };
+    });
+
+  if (aGuardar.length) {
+    const { error } = await supabase
+      .from(TABLE_RETOMAS)
+      .upsert(aGuardar, { onConflict: "liquidacion_id,vicera_item_id" });
+    if (error) fallarSiFaltaMigracion(error, "Error al guardar las retomas", [MIGRACION_RETOMAS]);
+  }
+
+  // Se borra lo que ya no está (o quedó en 0 kilos). Las filas sin ítem
+  // (`vicera_item_id` NULL, el ítem del catálogo se borró) no se tocan desde acá.
+  const conservadas = aGuardar.map((f) => f.vicera_item_id);
+  let q = supabase
+    .from(TABLE_RETOMAS)
+    .delete()
+    .eq("liquidacion_id", id)
+    .not("vicera_item_id", "is", null);
+  if (conservadas.length) q = q.not("vicera_item_id", "in", `(${conservadas.join(",")})`);
+  const { error: errorBorra } = await q;
+  if (errorBorra) fallarSiFaltaMigracion(errorBorra, "Error al borrar retomas", [MIGRACION_RETOMAS]);
+
+  // El total sale de lo que quedó en la base (incluye filas huérfanas, si las hay),
+  // no de lo que mandó el cliente.
+  const finales = await leerRetomasGuardadas(id);
+  const total = totalRetomas(finales);
+
+  // Una liquidación vieja de cerdo puede tener el descuento de las retomas del
+  // recibidor encendido (viceras_bonificacion): el costeo las restaría de nuevo
+  // además del gasto derivado. Se apaga ANTES de derivar el gasto.
+  let bonificacionDesactivada = false;
+  if (total > 0 && cabecera.viceras_bonificacion) {
+    const { error: errorBonif } = await supabase
+      .from(TABLE)
+      .update({ viceras_bonificacion: false })
+      .eq("id", id);
+    if (errorBonif) throw new Error(`Error al desactivar el descuento: ${errorBonif.message}`);
+    bonificacionDesactivada = true;
+  }
+
+  const { gasto, manualReemplazado } = await derivarGastoRetomas(id, total);
+
+  console.log(
+    `🐖 Retomas de la liquidación #${id} guardadas por ${por || "?"} · total ${total}.`,
+  );
+
+  return respuestaRetomas(cabecera, catalogo, finales, gasto, {
+    bonificacion_desactivada: bonificacionDesactivada,
+    gasto_manual_reemplazado: manualReemplazado,
+  });
+}
+
+/** Crea, actualiza o quita la fila de gasto «Retomas» derivada. Devuelve {gasto, manualReemplazado}. */
+async function derivarGastoRetomas(id, total) {
+  let derivado = await leerGastoDerivado(id);
+
+  if (total <= 0) {
+    if (derivado) {
+      const { error } = await supabase.from(TABLE_GASTOS).delete().eq("id", derivado.id);
+      if (error) throw new Error(`Error al quitar el gasto de retomas: ${error.message}`);
+    }
+    return { gasto: null, manualReemplazado: false };
+  }
+
+  const { data: conceptos, error: errorConcepto } = await supabase
+    .from("carnes_conceptos_gasto")
+    .select("id, nombre")
+    .eq("especie", "cerdo")
+    .eq("nombre", CONCEPTO_RETOMAS)
+    .eq("activo", true)
+    .order("id")
+    .limit(1);
+  if (errorConcepto) throw new Error(`Error al leer el concepto: ${errorConcepto.message}`);
+  const concepto = conceptos?.[0];
+  if (!concepto) {
+    throw createError(
+      409,
+      "Falta el concepto de gasto «Retomas» activo en el catálogo de cerdo.",
+    );
+  }
+
+  // Sin derivado todavía: si el admin ya había tipeado un «Retomas» a mano, se lo
+  // adopta en vez de dejar dos filas que restarían dos veces.
+  let manualReemplazado = false;
+  if (!derivado) {
+    const { data: manual, error } = await supabase
+      .from(TABLE_GASTOS)
+      .select("id")
+      .eq("liquidacion_id", id)
+      .eq("concepto_id", concepto.id)
+      .is("origen", null)
+      .order("id")
+      .limit(1);
+    if (error) throw new Error(`Error al leer los gastos: ${error.message}`);
+    derivado = manual?.[0] || null;
+    manualReemplazado = Boolean(derivado);
+  }
+
+  const fila = {
+    liquidacion_id: id,
+    concepto_id: concepto.id,
+    concepto: concepto.nombre,
+    signo: -1,
+    peso: null,
+    precio_kilo: null,
+    valor: total,
+    observaciones: "Calculado desde Retomas de la entrega",
+    origen: ORIGEN_RETOMAS,
+  };
+
+  const consulta = derivado
+    ? supabase.from(TABLE_GASTOS).update(fila).eq("id", derivado.id)
+    : supabase.from(TABLE_GASTOS).insert(fila);
+  const { data, error } = await consulta.select("*").single();
+  if (error) throw new Error(`Error al guardar el gasto de retomas: ${error.message}`);
+  return { gasto: data, manualReemplazado };
 }
 
 /**
