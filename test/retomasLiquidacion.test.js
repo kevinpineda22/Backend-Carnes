@@ -7,6 +7,7 @@ import {
   totalKilosRetomas,
   totalRetomas,
   VALOR_TOTAL_MAXIMO,
+  motivoBonificacionBloqueada,
   validarFilasRetomas,
   valorRetoma,
 } from "../src/shared/retomasLiquidacion.js";
@@ -261,4 +262,21 @@ test("un total justo en el tope se acepta", () => {
     PERMITIDOS,
   );
   assert.equal(r.ok, true);
+});
+
+// ─── Bonificación vs. gasto derivado ────────────────────────────────────────
+
+test("no deja encender la bonificación en cerdo con el gasto de retomas derivado", () => {
+  const motivo = motivoBonificacionBloqueada({
+    especie: "cerdo",
+    encender: true,
+    tieneGastoDerivado: true,
+  });
+  assert.match(motivo, /dos veces/);
+});
+
+test("la bonificación se puede encender sin gasto derivado, apagar, o en res", () => {
+  assert.equal(motivoBonificacionBloqueada({ especie: "cerdo", encender: true, tieneGastoDerivado: false }), null);
+  assert.equal(motivoBonificacionBloqueada({ especie: "cerdo", encender: false, tieneGastoDerivado: true }), null);
+  assert.equal(motivoBonificacionBloqueada({ especie: "res", encender: true, tieneGastoDerivado: true }), null);
 });

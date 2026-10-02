@@ -87,6 +87,23 @@ export function totalKilosRetomas(filas = []) {
 }
 
 /**
+ * ¿Se puede encender `viceras_bonificacion`? No en cerdo con el gasto «Retomas»
+ * derivado: el costeo restaría las retomas dos veces (la bonificación del recibidor
+ * y el gasto). Apagarla o tocar otro campo siempre se puede.
+ *
+ * @returns {string|null} el motivo del rechazo, o null si se puede
+ */
+export function motivoBonificacionBloqueada({ especie, encender, tieneGastoDerivado } = {}) {
+  if (especie === "cerdo" && encender === true && tieneGastoDerivado) {
+    return (
+      "Esta liquidación ya descuenta las retomas desde el panel «Retomas de la entrega»: " +
+      "encender el descuento de vísceras las restaría dos veces."
+    );
+  }
+  return null;
+}
+
+/**
  * Arma las filas del panel: el catálogo ACTIVO de retomas mezclado con lo que ya
  * se guardó para esta liquidación.
  *

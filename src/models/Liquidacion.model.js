@@ -10,6 +10,7 @@ import {
   CONCEPTO_RETOMAS,
   ORIGEN_RETOMAS,
   armarFilasRetomas,
+  motivoBonificacionBloqueada,
   totalKilosRetomas,
   totalRetomas,
   validarFilasRetomas,
@@ -184,7 +185,18 @@ async function exigirEditable(id) {
 }
 
 export async function actualizar(id, cambios) {
-  await exigirEditable(id);
+  const liquidacion = await exigirEditable(id);
+
+  // Encender la bonificación en un cerdo con el gasto de retomas derivado resta las
+  // retomas dos veces. Solo se consulta si de verdad se intenta encender.
+  if (liquidacion.especie === "cerdo" && cambios.viceras_bonificacion === true) {
+    const motivo = motivoBonificacionBloqueada({
+      especie: liquidacion.especie,
+      encender: true,
+      tieneGastoDerivado: (await idsGastosDerivados(id)).length > 0,
+    });
+    if (motivo) throw createError(409, motivo);
+  }
 
   const permitidas = [
     "fecha",
