@@ -30,6 +30,13 @@ export const ORIGEN_RETOMAS = "retomas";
 export const KILOS_MAXIMOS = 999_999_999;
 /** Cabe en NUMERIC(16,2) con margen. */
 export const PRECIO_MAXIMO = 99_999_999_999;
+/**
+ * Tope del VALOR (kilos × precio) de una fila y del TOTAL: es lo que se escribe en
+ * `carnes_liquidacion_gastos.valor`, NUMERIC(16,2) → máximo 99.999.999.999.999,99.
+ * Los topes por campo solos no alcanzan: 999.999.999 kg × 99.999.999.999 los
+ * respeta y desborda la columna (500 de Postgres con escrituras ya hechas).
+ */
+export const VALOR_TOTAL_MAXIMO = 99_999_999_999_999;
 
 const DECIMALES_KILOS = 3;
 const DECIMALES_PRECIO = 2;
@@ -222,6 +229,13 @@ export function validarFilasRetomas(filas, permitidos) {
       precio: redondear(precio, DECIMALES_PRECIO),
     });
   });
+
+  // Solo si lo demás está bien: el tope se mide sobre filas ya normalizadas.
+  if (errores.length === 0 && totalRetomas(limpias) > VALOR_TOTAL_MAXIMO) {
+    errores.push(
+      "El total de las retomas es demasiado grande y no cabe en el gasto. Revisá los kilos y los precios.",
+    );
+  }
 
   return { ok: errores.length === 0, errores, filas: limpias };
 }

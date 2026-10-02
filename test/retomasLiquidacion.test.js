@@ -6,6 +6,7 @@ import {
   leerNumero,
   totalKilosRetomas,
   totalRetomas,
+  VALOR_TOTAL_MAXIMO,
   validarFilasRetomas,
   valorRetoma,
 } from "../src/shared/retomasLiquidacion.js";
@@ -229,4 +230,35 @@ test("PUT retomas: sin filas queda en lista vacía (borra todo)", () => {
 test("PUT retomas: rechaza una retoma sin id válido", () => {
   assert.ok(correr({ filas: [{ vicera_item_id: 0, kilos: 1, precio: 1 }] }).error);
   assert.ok(correr({ filas: [{ kilos: 1, precio: 1 }] }).error);
+});
+
+// ─── Tope del total (cabe en NUMERIC(16,2)) ─────────────────────────────────
+
+test("rechaza un total que desborda la columna aunque cada campo respete su tope", () => {
+  const r = validarFilasRetomas(
+    [{ vicera_item_id: 1, kilos: 999_999_999, precio: 99_999_999_999 }],
+    PERMITIDOS,
+  );
+  assert.equal(r.ok, false);
+  assert.match(r.errores[0], /total de las retomas/);
+});
+
+test("rechaza cuando es la SUMA de filas la que pasa el tope", () => {
+  const mitad = Math.floor(VALOR_TOTAL_MAXIMO / 2) + 1;
+  const r = validarFilasRetomas(
+    [
+      { vicera_item_id: 1, kilos: 1, precio: mitad },
+      { vicera_item_id: 2, kilos: 1, precio: mitad },
+    ],
+    PERMITIDOS,
+  );
+  assert.equal(r.ok, false);
+});
+
+test("un total justo en el tope se acepta", () => {
+  const r = validarFilasRetomas(
+    [{ vicera_item_id: 1, kilos: 1, precio: 99_999_999_999 }],
+    PERMITIDOS,
+  );
+  assert.equal(r.ok, true);
 });
