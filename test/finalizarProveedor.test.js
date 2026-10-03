@@ -13,6 +13,8 @@ import {
   normalizarCedula,
   normalizarNombre,
   notaCreditoRequerida,
+  armarFirmaProveedor,
+  firmaProveedorRequerida,
   validarCedula,
   validarFirma,
   validarNombre,
@@ -333,4 +335,67 @@ test("notaCreditoRequerida: solo si algún renglón tiene devolución", () => {
   assert.equal(notaCreditoRequerida({ renglones_con_devolucion: 0 }), false);
   assert.equal(notaCreditoRequerida({}), false);
   assert.equal(notaCreditoRequerida(undefined), false);
+});
+
+// ─── Firma del proveedor (devoluciones) ────────────────────────────────────
+
+const CON_DEVOLUCION = { renglones_con_devolucion: 1 };
+const SIN_DEVOLUCION = { renglones_con_devolucion: 0 };
+const FIRMANTE = { nombre: "  Carlos   Gómez ", documento: "1.020.304.050", firma_data: FIRMA_OK };
+
+test("firmaProveedorRequerida: solo con algún renglón devuelto", () => {
+  assert.equal(firmaProveedorRequerida(CON_DEVOLUCION), true);
+  assert.equal(firmaProveedorRequerida(SIN_DEVOLUCION), false);
+  assert.equal(firmaProveedorRequerida(undefined), false);
+});
+
+test("armarFirmaProveedor: con devolución exige nombre, documento y firma, y guarda el snapshot normalizado", () => {
+  const r = armarFirmaProveedor({ resumen: CON_DEVOLUCION, firmante: FIRMANTE });
+  assert.deepEqual(r, {
+    ok: true,
+    valores: {
+      proveedor_firma: FIRMA_OK,
+      proveedor_firma_nombre: "Carlos Gómez",
+      proveedor_firma_documento: "1020304050",
+    },
+  });
+});
+
+test("armarFirmaProveedor: sin devolución no se exige y se ignora lo que mande el cliente", () => {
+  assert.deepEqual(armarFirmaProveedor({ resumen: SIN_DEVOLUCION }), { ok: true, valores: null });
+  assert.deepEqual(armarFirmaProveedor({ resumen: SIN_DEVOLUCION, firmante: FIRMANTE }), { ok: true, valores: null });
+});
+
+test("armarFirmaProveedor: cada dato faltante tiene su código (400)", () => {
+  const caso = (firmante) => armarFirmaProveedor({ resumen: CON_DEVOLUCION, firmante });
+  const esperar = (r, codigo) => {
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 400);
+    assert.equal(r.codigo, codigo);
+  };
+  esperar(caso(undefined), "FIRMA_PROVEEDOR_NOMBRE_REQUERIDO");
+  esperar(caso({ ...FIRMANTE, nombre: "   " }), "FIRMA_PROVEEDOR_NOMBRE_REQUERIDO");
+  esperar(caso({ ...FIRMANTE, nombre: "Al" }), "FIRMA_PROVEEDOR_NOMBRE_INVALIDO");
+  esperar(caso({ ...FIRMANTE, documento: "" }), "FIRMA_PROVEEDOR_DOCUMENTO_REQUERIDO");
+  esperar(caso({ ...FIRMANTE, documento: undefined }), "FIRMA_PROVEEDOR_DOCUMENTO_REQUERIDO");
+  esperar(caso({ ...FIRMANTE, documento: "12ab" }), "FIRMA_PROVEEDOR_DOCUMENTO_INVALIDO");
+  esperar(caso({ ...FIRMANTE, firma_data: undefined }), "FIRMA_PROVEEDOR_REQUERIDA");
+  esperar(caso({ ...FIRMANTE, firma_data: " " }), "FIRMA_PROVEEDOR_REQUERIDA");
+  esperar(caso({ ...FIRMANTE, firma_data: "data:image/png;base64,hola" }), "FIRMA_PROVEEDOR_INVALIDA");
+  esperar(
+    caso({ ...FIRMANTE, firma_data: PREFIJO_FIRMA + "A".repeat(LARGO_MAX_FIRMA) }),
+    "FIRMA_PROVEEDOR_GRANDE",
+  );
+});
+
+test("armarActualizacionFinalizar: las columnas del proveedor solo viajan si hay firma del proveedor", () => {
+  const base = { valores: VALORES, firma: FIRMA_OK, por: "a@b.co", ahora: new Date("2026-09-30T15:00:00Z") };
+  const sin = armarActualizacionFinalizar({ ...base, firmaProveedor: null });
+  assert.equal("proveedor_firma" in sin, false);
+  const firmaProveedor = {
+    proveedor_firma: FIRMA_OK,
+    proveedor_firma_nombre: "Carlos Gómez",
+    proveedor_firma_documento: "1020304050",
+  };
+  assert.deepEqual(armarActualizacionFinalizar({ ...base, firmaProveedor }), { ...sin, ...firmaProveedor });
 });

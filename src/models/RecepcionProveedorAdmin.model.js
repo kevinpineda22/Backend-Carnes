@@ -47,7 +47,7 @@ import * as SiesaEnvio from "./SiesaEnvio.model.js";
 const TABLE = "carnes_proveedor_recepciones";
 const TABLE_ITEMS = "carnes_proveedor_recepcion_items";
 const TABLE_ENVIOS = "carnes_siesa_envios";
-const MIGRACIONES = ["sql/022_proveedores.sql"];
+const MIGRACIONES = ["sql/022_proveedores.sql", "sql/026_firma_proveedor_devolucion.sql"];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */
 function fallo(error, contexto) {
@@ -190,7 +190,13 @@ export async function detalle(id, ahora = new Date()) {
 
   // La firma y la cédula NO viajan a las funciones de SIESA: el armador de la nota
   // crédito solo lee los campos de la recepción que no son sensibles.
-  const { firma_data: _firma, recibidor_cedula: _cedula, ...paraSiesa } = cabecera;
+  const {
+    firma_data: _firma,
+    recibidor_cedula: _cedula,
+    proveedor_firma: _firmaProveedor,
+    proveedor_firma_documento: _documentoProveedor,
+    ...paraSiesa
+  } = cabecera;
   const { activo, notaCredito, decisionNotaCredito } = await SiesaEnvio.evaluarSiesaProveedor(
     { ...paraSiesa, items },
     envios,

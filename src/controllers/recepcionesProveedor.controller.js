@@ -85,7 +85,8 @@ export async function descartar(req, res, next) {
 
 /**
  * POST /api/recepciones-proveedor/:id/finalizar
- * Body: { recibido_por, recibidor: { id } | { otro: true, nombre, cedula }, firma_data }
+ * Body: { recibido_por, recibidor: { id } | { otro: true, nombre, cedula }, firma_data,
+ *   proveedor_firmante?: { nombre, documento, firma_data } }  (obligatorio si hay devoluciones)
  *
  * Firma la recepción (Borrador -> Finalizada) y manda la entrada a SIESA (ver
  * `PostFinalizarProveedor.model.js`). 200 con la recepción (sin firma ni cédula), el

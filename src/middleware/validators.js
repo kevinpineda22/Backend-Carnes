@@ -416,6 +416,15 @@ const finalizarRecepcionProveedorSchema = z.object({
     })
     .nullish(),
   firma_data: z.string({ invalid_type_error: "La firma no es válida." }).nullish(),
+  // Quien firma por el proveedor cuando hay devoluciones. Solo la forma: que sea
+  // obligatorio lo decide `armarFirmaProveedor` sobre los renglones de la base.
+  proveedor_firmante: z
+    .object({
+      nombre: z.string().max(300).nullish(),
+      documento: z.union([z.string().max(50), z.number()]).nullish(),
+      firma_data: z.string({ invalid_type_error: "La firma del proveedor no es válida." }).nullish(),
+    })
+    .nullish(),
 });
 
 /**

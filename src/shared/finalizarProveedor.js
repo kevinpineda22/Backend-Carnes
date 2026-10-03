@@ -212,6 +212,66 @@ export function armarRecibidor({ recibidor, fila } = {}) {
   };
 }
 
+// ─── Firma del proveedor (solo si hay devoluciones) ────────────────────────
+
+/** ¿La recepción tiene mercancía devuelta? Entonces firma también el representante del proveedor. */
+export function firmaProveedorRequerida(resumen) {
+  return Number(resumen?.renglones_con_devolucion) > 0;
+}
+
+/**
+ * Quién firma por el proveedor la devolución: nombre, documento y trazo, los tres
+ * obligatorios SOLO si hay devoluciones. Sin devoluciones se ignora lo que mande el
+ * cliente y no se guarda nada (`valores: null`).
+ *
+ * Los códigos son específicos para que el front lleve al campo que falta. Todos
+ * son 400: el cuerpo está mal armado, el mundo no cambió.
+ *
+ * @param {object} p
+ * @param {object} p.resumen      `resumenRecepcion(items)` de lo que hay en la base
+ * @param {{nombre?: *, documento?: *, firma_data?: *}} [p.firmante]
+ * @returns {{ok: true, valores: null | {proveedor_firma: string, proveedor_firma_nombre: string, proveedor_firma_documento: string}}
+ *   | {ok: false, status: 400, codigo: string, mensaje: string}}
+ */
+export function armarFirmaProveedor({ resumen, firmante } = {}) {
+  if (!firmaProveedorRequerida(resumen)) return { ok: true, valores: null };
+
+  const malo = (codigo, mensaje) => ({ ok: false, status: 400, codigo, mensaje });
+  const f = firmante && typeof firmante === "object" ? firmante : {};
+
+  if (!normalizarNombre(f.nombre)) {
+    return malo("FIRMA_PROVEEDOR_NOMBRE_REQUERIDO", "Escribí el nombre de quien firma por el proveedor.");
+  }
+  const nombre = validarNombre(f.nombre);
+  if (!nombre.ok) return malo("FIRMA_PROVEEDOR_NOMBRE_INVALIDO", nombre.mensaje);
+
+  if (!normalizarCedula(f.documento)) {
+    return malo("FIRMA_PROVEEDOR_DOCUMENTO_REQUERIDO", "Escribí el documento de quien firma por el proveedor.");
+  }
+  const documento = validarCedula(f.documento);
+  if (!documento.ok) return malo("FIRMA_PROVEEDOR_DOCUMENTO_INVALIDO", documento.mensaje);
+
+  if (typeof f.firma_data !== "string" || !f.firma_data.trim()) {
+    return malo("FIRMA_PROVEEDOR_REQUERIDA", "Falta la firma del proveedor: hay mercancía devuelta.");
+  }
+  const firma = validarFirma(f.firma_data);
+  if (!firma.ok) {
+    return malo(
+      firma.codigo === "FIRMA_GRANDE" ? "FIRMA_PROVEEDOR_GRANDE" : "FIRMA_PROVEEDOR_INVALIDA",
+      firma.mensaje,
+    );
+  }
+
+  return {
+    ok: true,
+    valores: {
+      proveedor_firma: f.firma_data,
+      proveedor_firma_nombre: nombre.valor,
+      proveedor_firma_documento: documento.valor,
+    },
+  };
+}
+
 // ─── Decisión ──────────────────────────────────────────────────────────────
 
 /** Mensaje cuando el UPDATE condicional no encontró la fila que se leyó (la tocaron mientras se firmaba). */
@@ -258,11 +318,13 @@ export function decidirFinalizar(estado) {
  * @param {object} p.valores    `armarRecibidor(...).valores`
  * @param {string} p.firma      data URL ya validada
  * @param {string} p.por        correo de la sesión
+ * @param {object|null} [p.firmaProveedor] `armarFirmaProveedor(...).valores`; null si no hay devoluciones
+ *   (las columnas de sql/026 NO se tocan: así una recepción sin devolución finaliza aun sin esa migración)
  * @param {{nit: string, sucursal: string, razon_social: string}} [p.proveedor]
  * @param {{codigo_co: ?string, bodega_siesa: ?string}} [p.sede]
  * @param {Date} [p.ahora]
  */
-export function armarActualizacionFinalizar({ valores, firma, por, proveedor, sede, ahora = new Date() }) {
+export function armarActualizacionFinalizar({ valores, firma, por, firmaProveedor, proveedor, sede, ahora = new Date() }) {
   const cambios = {
     estado: ESTADOS.FINALIZADA,
     fecha_recepcion: hoyBogota(ahora),
@@ -271,6 +333,7 @@ export function armarActualizacionFinalizar({ valores, firma, por, proveedor, se
     ...valores,
     firma_data: firma,
   };
+  if (firmaProveedor) Object.assign(cambios, firmaProveedor);
   if (proveedor) {
     cambios.proveedor_nit = proveedor.nit;
     cambios.proveedor_sucursal = proveedor.sucursal;

@@ -99,3 +99,13 @@ test("actualizar recibidor: al menos un campo; activo debe ser booleano", () => 
     assert.equal(error?.statusCode, 400, JSON.stringify(body));
   }
 });
+
+test("finalizar: acepta proveedor_firmante opcional con documento texto o número", () => {
+  const con = correr(validators.finalizarRecepcionProveedor, {
+    recibido_por: CORREO,
+    proveedor_firmante: { nombre: "Carlos Gómez", documento: 1020304050, firma_data: "x" },
+  });
+  assert.equal(con.error, undefined);
+  assert.equal(con.body.proveedor_firmante.documento, 1020304050);
+  assert.equal(correr(validators.finalizarRecepcionProveedor, { recibido_por: CORREO }).error, undefined);
+});

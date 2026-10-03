@@ -32,6 +32,7 @@ import {
   armarRecibidor,
   decidirFinalizar,
   idRecibidorListado,
+  armarFirmaProveedor,
   validarFirma,
 } from "../shared/finalizarProveedor.js";
 
@@ -51,7 +52,7 @@ import {
 
 const TABLE = "carnes_proveedor_recepciones";
 const TABLE_ITEMS = "carnes_proveedor_recepcion_items";
-const MIGRACIONES = ["sql/022_proveedores.sql"];
+const MIGRACIONES = ["sql/022_proveedores.sql", "sql/026_firma_proveedor_devolucion.sql"];
 
 /**
  * Columnas de la cabecera que ve el RECIBIDOR. Se nombran una por una (nada de
@@ -492,7 +493,8 @@ async function resolverTrasConflicto(id) {
  *   2. Renglones y `validarRecepcion` sobre lo que HAY EN LA BASE (422 con el
  *      detalle por renglón). Plata y cantidades del cliente no entran.
  *   3. Recibidor (de la lista: snapshot desde la base; "Otro": nombre + cédula) y
- *      firma (PNG en data URL, acotada).
+ *      firma (PNG en data URL, acotada). Si hay renglones con devolución, también
+ *      `proveedor_firmante` {nombre, documento, firma_data} (`armarFirmaProveedor`).
  *   4. Snapshots de proveedor y sede refrescados desde los maestros.
  *   5. UPDATE condicional `estado = 'Borrador' AND updated_at = <leído>` que escribe
  *      todo junto. 0 filas → `resolverTrasConflicto`.
@@ -501,7 +503,7 @@ async function resolverTrasConflicto(id) {
  * @param {{recibido_por: string, recibidor?: object, firma_data?: string}} cuerpo
  * @returns {{recepcion: object, resumen: object, yaFinalizada: boolean}}
  */
-export async function finalizar(id, { recibido_por, recibidor, firma_data }, ahora = new Date()) {
+export async function finalizar(id, { recibido_por, recibidor, firma_data, proveedor_firmante }, ahora = new Date()) {
   // 1. Cabecera primero.
   const cabecera = await leerCabecera(id);
   const decision = decidirFinalizar(cabecera.estado);
@@ -527,6 +529,14 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data }, aho
   const firma = validarFirma(firma_data);
   if (!firma.ok) throw createError(400, firma.mensaje, firma.codigo);
 
+  // Con mercancía devuelta firma también el representante del proveedor (sobre los
+  // renglones de la base, no sobre lo que diga el cliente).
+  const firmaProveedor = armarFirmaProveedor({
+    resumen: resumenRecepcion(items),
+    firmante: proveedor_firmante,
+  });
+  if (!firmaProveedor.ok) throw createError(firmaProveedor.status, firmaProveedor.mensaje, firmaProveedor.codigo);
+
   // 4. Snapshots frescos de los maestros (si el maestro ya no existe se deja el que hay).
   const [respuestaProveedor, respuestaSede] = await Promise.all([
     supabase
@@ -547,6 +557,7 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data }, aho
     valores: quien.valores,
     firma: firma_data,
     por: recibido_por,
+    firmaProveedor: firmaProveedor.valores,
     proveedor: respuestaProveedor.data || undefined,
     sede: respuestaSede.data || undefined,
     ahora,

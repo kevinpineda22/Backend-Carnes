@@ -62,7 +62,8 @@ export const COLUMNAS_LISTA_ADMIN = `
  */
 export const COLUMNAS_DETALLE_ADMIN = `
   ${COLUMNAS_LISTA_ADMIN},
-  observaciones, recibidor_id, recibidor_cedula, firma_data
+  observaciones, recibidor_id, recibidor_cedula, firma_data,
+  proveedor_firma, proveedor_firma_nombre, proveedor_firma_documento
 `;
 
 /** Lo que el listado necesita de los renglones: solo lo que entra en el resumen. */
