@@ -3048,11 +3048,15 @@ export async function dispararNotaCreditoSiCorresponde(recepcionId, por, { manua
 
   const fila = await registrarYEnviar({
     armado,
-    base: baseProveedor(
-      recepcion.id,
-      TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO,
-      consecutivoNotaCreditoProveedor(recepcion.id),
-    ),
+    base: {
+      ...baseProveedor(
+        recepcion.id,
+        TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO,
+        consecutivoNotaCreditoProveedor(recepcion.id),
+      ),
+      // CDP es fijo en el conector y no viaja en el payload: se anota desde acá.
+      tipo_docto: DOCUMENTO_NOTA_CREDITO_PROVEEDOR.tipoDocto,
+    },
     por,
     vigente: () => envioQueOcupaProveedor(recepcion.id, TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO),
     etiqueta: `nota crédito proveedor recepción #${recepcion.id}`,

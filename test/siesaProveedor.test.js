@@ -409,15 +409,15 @@ test("entrada: no muta la recepción ni los renglones", () => {
 
 // ─── La nota crédito ────────────────────────────────────────────────────────
 
-test("nota crédito: con el conector real (258258, CDP) no hay bloqueos y sale con su tipo de documento", () => {
+test("nota crédito: con el conector real (258258) no hay bloqueos y NO manda TIPO_DOCTO (CDP es fijo en el conector)", () => {
   const { bloqueos, payload } = armarNotaCreditoProveedor({
     recepcion: RECEPCION,
     items: [KILOS, UNIDADES],
     config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   });
   assert.deepEqual(bloqueos, []);
-  assert.equal(payload.Documentos[0].TIPO_DOCTO, "CDP");
-  assert.equal(payload.Movimientos[0].TIPO_DOCTO, "CDP");
+  assert.equal("TIPO_DOCTO" in payload.Documentos[0], false);
+  assert.equal("TIPO_DOCTO" in payload.Movimientos[0], false);
   assert.equal(payload.Movimientos.length, 1);
 });
 
@@ -433,7 +433,6 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
   assert.deepEqual(payload, {
     Documentos: [
       {
-        TIPO_DOCTO: "NCP",
         CONSECUTIVO_DOCTO: "126",
         FECHA: "20260930",
         NIT: "900123456",
@@ -444,7 +443,6 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
     ],
     Movimientos: [
       {
-        TIPO_DOCTO: "NCP",
         NRO_DOCTO: "126",
         NRO_REGISTRO: "1",
         BODEGA: "B07",

@@ -356,13 +356,20 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
     };
   });
 
-  const movimientos = filas.map((f, n) =>
-    armarMovimiento({ recepcion, config, consec, co: base.co, tipoDocto, n, ...f }),
-  );
+  // El conector 258258 tiene el tipo de documento FIJO (CDP) en Documentos y en
+  // Movimientos: si `TIPO_DOCTO` viaja, SIESA responde 400 "Error en la
+  // Estructura… el campo 'TIPO_DOCTO' no está definido". `config.tipoDocto` se
+  // conserva solo para rotular el envío.
+  const movimientos = filas.map((f, n) => {
+    const { TIPO_DOCTO: _fijo, ...movimiento } = armarMovimiento({
+      recepcion, config, consec, co: base.co, tipoDocto, n, ...f,
+    });
+    return movimiento;
+  });
 
   // El conector de devoluciones (258258) llama `DOCTO_REFERENCIA` a lo que la
   // CEA llama `PENDIENTE`: es el mismo campo de SIESA (f451_num_docto_referencia).
-  const { PENDIENTE: doctoReferencia, ...cabecera } = armarDocumento({
+  const { PENDIENTE: doctoReferencia, TIPO_DOCTO: _fijoDoc, ...cabecera } = armarDocumento({
     recepcion,
     tipoDocto,
     consec,
