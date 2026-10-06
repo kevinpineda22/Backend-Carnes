@@ -196,10 +196,13 @@ export function bloqueoAjusteFaltante() {
 // FACTURADOS completos —lo que dice la factura física del proveedor— y lo
 // devuelto sale en una nota crédito APARTE, con solo lo devuelto.
 //
-// Conector 258258 DEVOLUCIONES_DEV_CARNES: hermano de la CEA con clase 413
+// Conector 258496 DEVOLUCIONES_DEV_CARNES_final: hermano de la CEA con clase 413
 // (devoluciones), concepto 402, motivo 06 y naturaleza 2 (salida), fijos del
-// lado de SIESA. Queda en elaboración (estado 0): alguien la revisa en SIESA
-// antes de contabilizar. Si algún día vuelve a faltar un valor, la nota crédito
+// lado de SIESA; `TIPO_DOCTO` y `NOTAS` (también por movimiento) son variables.
+// Reemplaza al 258258 (mismo nombre sin "_final", con TIPO_DOCTO fijo), que SIESA
+// rechazó: "plano [0 · 413] Compras comercial: la clase debe ser 408 o 420".
+// Queda en elaboración (estado 0): alguien la revisa en SIESA antes de
+// contabilizar. Si algún día vuelve a faltar un valor, la nota crédito
 // NO se manda y queda bloqueada con un mensaje que dice qué falta
 // (`bloqueoNotaCreditoProveedor`).
 //
@@ -207,8 +210,8 @@ export function bloqueoAjusteFaltante() {
 // (f451_num_docto_referencia), no en `PENDIENTE` (ver `armarNotaCreditoProveedor`).
 export const DOCUMENTO_NOTA_CREDITO_PROVEEDOR = {
   /** Id del conector en SIESA, tal como está en la pantalla "Apis Dinámicas". */
-  idDocumento: "258258",
-  nombreDocumento: "DEVOLUCIONES_DEV_CARNES",
+  idDocumento: "258496",
+  nombreDocumento: "DEVOLUCIONES_DEV_CARNES_final",
 
   /** Código del tipo de documento de la nota crédito (f350_id_tipo_docto). */
   tipoDocto: "CDP",

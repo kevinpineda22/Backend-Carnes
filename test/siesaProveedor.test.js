@@ -409,16 +409,34 @@ test("entrada: no muta la recepción ni los renglones", () => {
 
 // ─── La nota crédito ────────────────────────────────────────────────────────
 
-test("nota crédito: con el conector real (258258) no hay bloqueos y NO manda TIPO_DOCTO (CDP es fijo en el conector)", () => {
+test("nota crédito: con el conector real (258496) no hay bloqueos y manda TIPO_DOCTO CDP y NOTAS por movimiento", () => {
   const { bloqueos, payload } = armarNotaCreditoProveedor({
     recepcion: RECEPCION,
     items: [KILOS, UNIDADES],
     config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   });
   assert.deepEqual(bloqueos, []);
-  assert.equal("TIPO_DOCTO" in payload.Documentos[0], false);
-  assert.equal("TIPO_DOCTO" in payload.Movimientos[0], false);
+  assert.equal(payload.Documentos[0].TIPO_DOCTO, "CDP");
+  assert.equal(payload.Movimientos[0].TIPO_DOCTO, "CDP");
+  assert.ok(payload.Movimientos[0].NOTAS.length > 0);
   assert.equal(payload.Movimientos.length, 1);
+});
+
+test("nota crédito: el payload calza EXACTO con los campos variables del conector 258496", () => {
+  const { payload } = armarNotaCreditoProveedor({
+    recepcion: RECEPCION,
+    items: [KILOS, UNIDADES],
+    config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
+  });
+  // Lo que declara el conector como "Campo variable" (capturas del 06/10/2026).
+  // SIESA rechaza un campo de más y también uno declarado que no viaja.
+  assert.deepEqual(Object.keys(payload.Documentos[0]).sort(), [
+    "CONSECUTIVO_DOCTO", "DOCTO_REFERENCIA", "FECHA", "NIT", "NOTAS", "SUCURSAL", "TIPO_DOCTO",
+  ]);
+  assert.deepEqual(Object.keys(payload.Movimientos[0]).sort(), [
+    "BODEGA", "CANTIDAD", "CO_MOVIMIENTO", "ITEM", "NOTAS", "NRO_DOCTO", "NRO_REGISTRO",
+    "TIPO_DOCTO", "UNIDAD_MEDIDA", "UNIDAD_NEGOCIO", "VALOR_BRUTO",
+  ]);
 });
 
 test("nota crédito: sin config ({}) también bloquea por el conector", () => {
@@ -433,6 +451,7 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
   assert.deepEqual(payload, {
     Documentos: [
       {
+        TIPO_DOCTO: "NCP",
         CONSECUTIVO_DOCTO: "126",
         FECHA: "20260930",
         NIT: "900123456",
@@ -443,6 +462,7 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
     ],
     Movimientos: [
       {
+        TIPO_DOCTO: "NCP",
         NRO_DOCTO: "126",
         NRO_REGISTRO: "1",
         BODEGA: "B07",
@@ -453,6 +473,7 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
         VALOR_BRUTO: "200000",
         ITEM: "15167",
         UNIDAD_NEGOCIO: "003",
+        NOTAS: "TC PRV N12 - DEVOLUCION PROVEEDOR FACT FE-00123",
       },
     ],
   });
@@ -506,9 +527,9 @@ test("nota crédito: factura_siesa también es la referencia de la nota", () => 
 
 // ─── Configuración ──────────────────────────────────────────────────────────
 
-test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR apunta al conector 258258 de devoluciones", () => {
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, "258258");
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, "DEVOLUCIONES_DEV_CARNES");
+test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR apunta al conector 258496 de devoluciones", () => {
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, "258496");
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, "DEVOLUCIONES_DEV_CARNES_final");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.tipoDocto, "CDP");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.unidadNegocio, "003");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.decimalesValor, 0);
