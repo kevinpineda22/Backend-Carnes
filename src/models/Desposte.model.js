@@ -30,6 +30,7 @@ import { parsearInformeDesposte } from "../shared/desposteParser.js";
 import { cruzarDesposte, verificarIdentidad } from "../shared/cruceDesposte.js";
 import { extraerTexto } from "../services/pdf.service.js";
 import { notificarDiferenciaDesposte } from "../services/notificaciones.service.js";
+import { COLUMNAS_RECEPCION } from "../shared/recepcionColumnas.js";
 
 const TABLA = "carnes_desposte_informes";
 const TABLA_ITEMS = "carnes_desposte_items";
@@ -106,7 +107,7 @@ async function obtenerRecepcion(recepcionId) {
   const { data, error } = await supabase
     .from("carnes_recepciones")
     .select(
-      "*, sede:carnes_sedes ( id, codigo_co, nombre, subcliente_desposte )",
+      `${COLUMNAS_RECEPCION}, sede:carnes_sedes ( id, codigo_co, nombre, subcliente_desposte )`,
     )
     .eq("id", recepcionId)
     .maybeSingle();

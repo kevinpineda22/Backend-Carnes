@@ -20,6 +20,7 @@ import {
   fallarSiFaltaMigracion,
   esMigracionFaltante,
 } from "../shared/migraciones.js";
+import { COLUMNAS_RECEPCION } from "../shared/recepcionColumnas.js";
 
 const TABLE = "carnes_liquidaciones";
 const TABLE_GASTOS = "carnes_liquidacion_gastos";
@@ -70,7 +71,7 @@ export async function obtener(id) {
 
   const { data: recepciones, error: errorRec } = await supabase
     .from(TABLE_RECEPCIONES)
-    .select("*, sede:carnes_sedes ( id, codigo_co, nombre )")
+    .select(`${COLUMNAS_RECEPCION}, sede:carnes_sedes ( id, codigo_co, nombre )`)
     .eq("liquidacion_id", id)
     .order("id");
   if (errorRec)

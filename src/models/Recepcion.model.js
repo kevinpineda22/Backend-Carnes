@@ -12,21 +12,29 @@ import {
 } from "../shared/estados.js";
 import { puedeEliminarRecepcion } from "../shared/eliminacionAdmin.js";
 import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visceras.js";
+import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcionColumnas.js";
+import { armarRecibidor, idRecibidorListado, validarFirma } from "../shared/finalizarProveedor.js";
+import * as RecibidorModel from "./Recibidor.model.js";
 
 const TABLE = "carnes_recepciones";
 const TABLE_ITEMS = "carnes_recepcion_items";
 
-/** La cabecera siempre viaja con su sede: el front nunca muestra un id pelado. */
+/**
+ * La cabecera siempre viaja con su sede: el front nunca muestra un id pelado.
+ *
+ * Columnas nombradas, no `*`: así `firma_data` y `recibidor_cedula` (sql/027) no
+ * salen en listados ni en la lectura del recibidor. Ver `shared/recepcionColumnas.js`.
+ */
 const SELECT_CABECERA = `
-  *,
+  ${COLUMNAS_RECEPCION},
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
 // ─── Lectura ───────────────────────────────────────────────────────────────
 
 /** Una recepción con todos sus renglones, en el orden en que los ve el recibidor. */
-export async function obtener(id) {
-  const { data, error } = await supabase
+export async function obtener(id, db = supabase) {
+  const { data, error } = await db
     .from(TABLE)
     .select(SELECT_CABECERA)
     .eq("id", id)
@@ -34,7 +42,7 @@ export async function obtener(id) {
   if (error) throw new Error(`Error al leer la recepción: ${error.message}`);
   if (!data) throw createError(404, "Recepción no encontrada.");
 
-  const { data: items, error: errorItems } = await supabase
+  const { data: items, error: errorItems } = await db
     .from(TABLE_ITEMS)
     .select("*")
     .eq("recepcion_id", id)
@@ -46,6 +54,32 @@ export async function obtener(id) {
   }
 
   return { ...data, items: items || [] };
+}
+
+/**
+ * `obtener` + quién recibió y su firma. SOLO para el detalle del admin.
+ *
+ * La firma pesa y la cédula es un dato personal: se piden aparte, con una lectura
+ * propia, para que nada más las arrastre. Tolera que sql/027 no se haya corrido:
+ * sin las columnas devuelve la recepción sin recibidor ("Sin firma" en el front)
+ * en vez de tumbar el detalle.
+ */
+export async function obtenerDetalleAdmin(id) {
+  const recepcion = await obtener(id);
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_FIRMA_RECIBIDOR)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) {
+    if (esColumnaFaltante(error, "recibidor_") || esColumnaFaltante(error, "firma_data")) {
+      console.warn("⚠️  Faltan las columnas del recibidor — corré sql/027_firma_recibidor_talleres.sql.");
+      return recepcion;
+    }
+    throw new Error(`Error al leer la firma del recibidor: ${error.message}`);
+  }
+  return { ...recepcion, ...(data || {}) };
 }
 
 /**
@@ -236,7 +270,7 @@ export async function abrir({
       // Vuelve a Borrador para que se pueda corregir. El `motivo_rechazo` NO se
       // borra acá: el recibidor lo tiene que seguir viendo mientras arregla.
       // Se limpia recién al volver a cerrar (ver `finalizar`).
-      await cambiarEstado(existente.id, ESTADOS.BORRADOR);
+      await reabrir(existente.id);
       return {
         recepcion: await obtener(existente.id),
         reanudada: true,
@@ -944,24 +978,61 @@ export async function eliminarRecepcionAdmin(id) {
  * Cambia el estado validando la transición. Único punto por el que se mueve una
  * recepción — ver `shared/estados.js`.
  *
+ * El UPDATE es condicional al estado de origen que se validó (`estado = <leído>`):
+ * si dos peticiones compiten (doble toque en "Firmar", dos pestañas), solo una
+ * encuentra la fila; la otra actualiza 0 filas y recibe un 409 `RECEPCION_CAMBIO`
+ * en vez de pisar la firma y el recibidor de la que ganó.
+ *
+ * Si la base rechaza el UPDATE, el error de Supabase viaja en `dbError` para que
+ * quien llama distinga "falta una columna" de cualquier otra falla.
+ *
  * @param {number|string} id
  * @param {string} hacia
  * @param {object} [extra]  columnas a escribir junto con el estado
+ * @param {object} [db]     cliente de Supabase (se inyecta en los tests)
  */
-export async function cambiarEstado(id, hacia, extra = {}) {
-  const recepcion = await obtener(id);
+export async function cambiarEstado(id, hacia, extra = {}, db = supabase) {
+  const recepcion = await obtener(id, db);
 
   const { ok, motivo } = validarTransicion(recepcion.estado, hacia);
   if (!ok) throw createError(409, motivo);
 
-  const { error } = await supabase
+  const { data, error } = await db
     .from(TABLE)
     .update({ estado: hacia, ...extra })
-    .eq("id", id);
-  if (error) throw new Error(`Error al cambiar el estado: ${error.message}`);
+    .eq("id", id)
+    .eq("estado", recepcion.estado)
+    .select("id");
+  if (error) {
+    const e = new Error(`Error al cambiar el estado: ${error.message}`);
+    e.dbError = error;
+    throw e;
+  }
+  if (!data?.length) {
+    throw createError(
+      409,
+      "La recepción cambió de estado mientras se procesaba. Revisala y volvé a intentar.",
+      "RECEPCION_CAMBIO",
+    );
+  }
 
-  return obtener(id);
+  return obtener(id, db);
 }
+
+/** ¿El error de `cambiarEstado` es por las columnas de recibidor/firma (sql/027)? */
+function faltaMigracion027(e) {
+  const error = e?.dbError;
+  return Boolean(error) && (esColumnaFaltante(error, "recibidor_") || esColumnaFaltante(error, "firma_data"));
+}
+
+/** Lo que vuelve a null cuando la recepción regresa a Borrador (sql/027). */
+export const LIMPIAR_RECIBIDOR = {
+  recibidor_id: null,
+  recibidor_cedula: null,
+  recibidor_nombre: null,
+  recibidor_otro: false,
+  firma_data: null,
+};
 
 /**
  * Cierra el borrador: Borrador → Aprobado.
@@ -973,9 +1044,15 @@ export async function cambiarEstado(id, hacia, extra = {}) {
  * Exige al menos un renglón con cantidad > 0. Una recepción vacía no es un
  * documento: es un borrador que alguien cerró sin querer, y llega al admin como
  * si fuera trabajo terminado.
+ *
+ * También exige quién recibió y su firma, con las mismas reglas que proveedores
+ * (`shared/finalizarProveedor.js`): un recibidor de la lista (nombre y cédula salen
+ * de la base, no del cliente) o "Otro" con nombre y cédula, y una firma PNG válida.
+ * Se validan ANTES de mover el estado y se escriben en el MISMO UPDATE que lo
+ * mueve: nunca queda una recepción cerrada sin firma.
  */
-export async function finalizar(id, { recibido_por }) {
-  const recepcion = await obtener(id);
+export async function finalizar(id, { recibido_por, recibidor, firma_data }, db = supabase) {
+  const recepcion = await obtener(id, db);
 
   const conCantidad = recepcion.items.filter((i) => Number(i.cantidad) > 0);
   if (conCantidad.length === 0) {
@@ -1002,17 +1079,46 @@ export async function finalizar(id, { recibido_por }) {
     );
   }
 
+  const idListado = idRecibidorListado(recibidor);
+  const fila = idListado === null ? null : await RecibidorModel.obtenerPorId(idListado);
+  const quien = armarRecibidor({ recibidor, fila });
+  if (!quien.ok) throw createError(quien.status, quien.mensaje, quien.codigo);
+
+  const firma = validarFirma(firma_data);
+  if (!firma.ok) throw createError(400, firma.mensaje, firma.codigo);
+
   const ahora = new Date().toISOString();
-  return cambiarEstado(id, ESTADOS.APROBADO, {
-    recibido_at: ahora,
-    // Solo se pisa si vino: si el front no lo manda, vale el de la apertura.
-    ...(recibido_por ? { recibido_por } : {}),
-    aprobado_at: ahora,
-    aprobado_por: null,
-    // Una rechazada de antes que se corrige y se vuelve a cerrar no tiene que
-    // seguir mostrando el reclamo viejo.
-    motivo_rechazo: null,
-  });
+  try {
+    return await cambiarEstado(
+      id,
+      ESTADOS.APROBADO,
+      {
+        ...quien.valores,
+        firma_data,
+        recibido_at: ahora,
+        // Solo se pisa si vino: si el front no lo manda, vale el de la apertura.
+        ...(recibido_por ? { recibido_por } : {}),
+        aprobado_at: ahora,
+        aprobado_por: null,
+        // Una rechazada de antes que se corrige y se vuelve a cerrar no tiene que
+        // seguir mostrando el reclamo viejo.
+        motivo_rechazo: null,
+      },
+      db,
+    );
+  } catch (e) {
+    // Sin sql/027 reintentar no sirve: no hay nada que el recibidor pueda arreglar.
+    // Se corta con un código propio para que el front no lo mande al reintento de firma.
+    if (faltaMigracion027(e)) {
+      console.error("🔴 Faltan las columnas del recibidor — corré sql/027_firma_recibidor_talleres.sql.");
+      throw createError(
+        503,
+        "Falta aplicar la migración 027 en la base de datos. Avise al administrador del sistema.",
+        "MIGRACION_PENDIENTE",
+      );
+    }
+    throw e;
+  }
 }
 
 /**
@@ -1023,6 +1129,14 @@ export async function finalizar(id, { recibido_por }) {
  * cerrar. Mientras corrige, el recibidor tiene que seguir viendo qué le
  * reclamaron.
  */
-export async function reabrir(id) {
-  return cambiarEstado(id, ESTADOS.BORRADOR);
+export async function reabrir(id, db = supabase) {
+  // Vuelve a Borrador sin recibidor ni firma: lo firmado era sobre un cierre que ya
+  // no vale, y al volver a cerrar se pide de nuevo. Si sql/027 no se corrió las
+  // columnas no existen: se reintenta sin ellas para no romper la reapertura.
+  try {
+    return await cambiarEstado(id, ESTADOS.BORRADOR, LIMPIAR_RECIBIDOR, db);
+  } catch (e) {
+    if (!faltaMigracion027(e)) throw e;
+    return cambiarEstado(id, ESTADOS.BORRADOR, {}, db);
+  }
 }

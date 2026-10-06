@@ -390,6 +390,26 @@ const guardarRecepcionProveedorSchema = z.object({
 // ─── Recepción de proveedor: finalizar (firmar) ────────────────────────────
 
 /**
+ * Forma del recibidor y de la firma al finalizar. Compartida por proveedores y
+ * talleres: una sola copia, y el contenido lo valida `shared/finalizarProveedor.js`.
+ */
+const recibidorCuerpoSchema = z
+  .object({
+    id: z.coerce
+      .number({ invalid_type_error: "El recibidor no es válido." })
+      .int("El recibidor no es válido.")
+      .positive("El recibidor no es válido.")
+      .safe("El recibidor no es válido.")
+      .nullish(),
+    otro: z.boolean({ invalid_type_error: "El recibidor no es válido." }).nullish(),
+    nombre: z.string().max(300).nullish(),
+    cedula: z.union([z.string().max(50), z.number()]).nullish(),
+  })
+  .nullish();
+
+const firmaCuerpoSchema = z.string({ invalid_type_error: "La firma no es válida." }).nullish();
+
+/**
  * Solo la FORMA. `recibidor` y `firma_data` son opcionales a propósito: solo hacen
  * falta cuando la recepción sigue en Borrador, y un reintento sobre una recepción
  * ya firmada los ignora (no se vuelve a firmar). Si faltan en un Borrador, las
@@ -402,20 +422,8 @@ const guardarRecepcionProveedorSchema = z.object({
  */
 const finalizarRecepcionProveedorSchema = z.object({
   recibido_por: correo("El correo de quien finaliza no es válido."),
-  recibidor: z
-    .object({
-      id: z.coerce
-        .number({ invalid_type_error: "El recibidor no es válido." })
-        .int("El recibidor no es válido.")
-        .positive("El recibidor no es válido.")
-        .safe("El recibidor no es válido.")
-        .nullish(),
-      otro: z.boolean({ invalid_type_error: "El recibidor no es válido." }).nullish(),
-      nombre: z.string().max(300).nullish(),
-      cedula: z.union([z.string().max(50), z.number()]).nullish(),
-    })
-    .nullish(),
-  firma_data: z.string({ invalid_type_error: "La firma no es válida." }).nullish(),
+  recibidor: recibidorCuerpoSchema,
+  firma_data: firmaCuerpoSchema,
   // Quien firma por el proveedor cuando hay devoluciones. Solo la forma: que sea
   // obligatorio lo decide `armarFirmaProveedor` sobre los renglones de la base.
   proveedor_firmante: z
@@ -633,8 +641,15 @@ export const validators = {
     }),
   ),
 
+  // Talleres: solo la FORMA, igual que proveedores. Que recibidor y firma sean
+  // obligatorios (y válidos) lo decide `Recepcion.model.js#finalizar` con las
+  // reglas de `shared/finalizarProveedor.js`.
   finalizar: validar(
-    z.object({ recibido_por: correo("El correo del recibidor no es válido.").optional() }),
+    z.object({
+      recibido_por: correo("El correo del recibidor no es válido.").optional(),
+      recibidor: recibidorCuerpoSchema,
+      firma_data: firmaCuerpoSchema,
+    }),
   ),
 
   // El costo base es obligatorio y POSITIVO: un adicional homologado con costo 0

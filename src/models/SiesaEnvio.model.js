@@ -44,6 +44,7 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { ESTADOS } from "../shared/estados.js";
+import { COLUMNAS_RECEPCION } from "../shared/recepcionColumnas.js";
 import { fallarSiFaltaMigracion, esMigracionFaltante } from "../shared/migraciones.js";
 import { puedeEliminarEnvio } from "../shared/eliminacionAdmin.js";
 import {
@@ -182,7 +183,7 @@ const consecutivoLiquidacion = (liquidacionId) => Number(liquidacionId) * 10 + 3
 async function cargarRecepcion(recepcionId) {
   const { data, error } = await supabase
     .from("carnes_recepciones")
-    .select("*, sede:carnes_sedes ( id, codigo_co, nombre, bodega_siesa )")
+    .select(`${COLUMNAS_RECEPCION}, sede:carnes_sedes ( id, codigo_co, nombre, bodega_siesa )`)
     .eq("id", recepcionId)
     .maybeSingle();
   if (error)

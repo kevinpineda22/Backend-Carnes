@@ -57,6 +57,19 @@ export async function obtener(req, res, next) {
 }
 
 /**
+ * GET /api/recepciones/:id/admin — cabecera + renglones + quién recibió y su firma.
+ * Es la única lectura que devuelve `firma_data` y la cédula del recibidor.
+ */
+export async function obtenerAdmin(req, res, next) {
+  try {
+    const data = await RecepcionModel.obtenerDetalleAdmin(req.params.id);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * PATCH /api/recepciones/:id
  * Guarda el borrador. Body: { novillos?, observaciones?, items: [{ id, cantidad }] }
  */
@@ -171,6 +184,7 @@ export async function homologarAdicional(req, res, next) {
 
 /**
  * POST /api/recepciones/:id/finalizar
+ * Body: { recibido_por?, recibidor: { id } | { otro: true, nombre, cedula }, firma_data }
  * Borrador → Aprobado (lista para liquidar), y le avisa al admin por correo.
  *
  * El correo se ESPERA antes de responder, aunque sea un efecto secundario. En

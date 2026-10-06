@@ -13,6 +13,10 @@ router.get("/", RecepcionesController.listar);
 router.post("/abrir", validators.abrirRecepcion, RecepcionesController.abrir);
 
 router.get("/:id", RecepcionesController.obtener);
+// Lo mismo más quién recibió y su firma (sql/027). Aparte de "/:id" a propósito:
+// esa la lee también el recibidor desde el celular y no debe llevar la firma ni
+// la cédula. Mismo patrón que `DELETE /:id/admin`.
+router.get("/:id/admin", RecepcionesController.obtenerAdmin);
 
 // Descartar un borrador abierto por error. Va como DELETE del recurso y no como
 // una transición más porque no cambia de estado: deja de existir.
