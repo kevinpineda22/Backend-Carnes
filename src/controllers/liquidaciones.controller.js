@@ -1,4 +1,5 @@
 import * as LiquidacionModel from "../models/Liquidacion.model.js";
+import { conQuienHace } from "../middleware/auth.js";
 
 /** POST /api/liquidaciones */
 export async function crear(req, res, next) {
@@ -151,7 +152,10 @@ export async function obtenerRetomas(req, res, next) {
 /** PUT /api/liquidaciones/:id/retomas — Body: { por, filas: [{ vicera_item_id, kilos, precio }] } */
 export async function guardarRetomas(req, res, next) {
   try {
-    const data = await LiquidacionModel.guardarRetomas(req.params.id, req.body);
+    const data = await LiquidacionModel.guardarRetomas(
+      req.params.id,
+      conQuienHace(req, req.body, "por"),
+    );
     res.json({ ok: true, data });
   } catch (error) {
     next(error);

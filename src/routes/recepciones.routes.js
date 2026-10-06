@@ -3,10 +3,13 @@ import * as RecepcionesController from "../controllers/recepciones.controller.js
 import * as DesposteController from "../controllers/desposte.controller.js";
 import { validators } from "../middleware/validators.js";
 import { subirPDF } from "../middleware/subirPDF.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
 
-router.get("/", RecepcionesController.listar);
+// Autorización (middleware/authCarnes.js): sin `requireAdminCarnes` = flujo del
+// recibidor (basta con sesión); con él = panel del admin.
+router.get("/", requireAdminCarnes, RecepcionesController.listar);
 
 // "/abrir" va ANTES de "/:id": Express matchea por orden de declaración, y con
 // esta línea abajo el POST entraría por otra ruta con id = "abrir".
@@ -16,7 +19,7 @@ router.get("/:id", RecepcionesController.obtener);
 // Lo mismo más quién recibió y su firma (sql/027). Aparte de "/:id" a propósito:
 // esa la lee también el recibidor desde el celular y no debe llevar la firma ni
 // la cédula. Mismo patrón que `DELETE /:id/admin`.
-router.get("/:id/admin", RecepcionesController.obtenerAdmin);
+router.get("/:id/admin", requireAdminCarnes, RecepcionesController.obtenerAdmin);
 
 // Descartar un borrador abierto por error. Va como DELETE del recurso y no como
 // una transición más porque no cambia de estado: deja de existir.
@@ -33,6 +36,7 @@ router.delete("/:id/items/:itemId", RecepcionesController.eliminarItem);
 // son obligatorios: nace homologado, no como un adicional pendiente.
 router.post(
   "/:id/items/admin",
+  requireAdminCarnes,
   validators.agregarRenglonAdmin,
   RecepcionesController.agregarRenglonAdmin,
 );
@@ -40,6 +44,7 @@ router.post(
 // `eliminarRenglonAdmin`). Nunca un renglón del recibidor o de la plantilla.
 router.delete(
   "/:id/items/:itemId/admin",
+  requireAdminCarnes,
   RecepcionesController.eliminarRenglonAdmin,
 );
 
@@ -47,13 +52,19 @@ router.delete(
 // cantidad, costo, código, descripción. Distinto de `homologar` (solo para
 // adicionales sin código) y del PATCH del borrador (que es del recibidor).
 // Deja guardado quién, cuándo y cuánto había antes.
-router.patch("/:id/items/:itemId", validators.editarItem, RecepcionesController.editarItem);
+router.patch(
+  "/:id/items/:itemId",
+  requireAdminCarnes,
+  validators.editarItem,
+  RecepcionesController.editarItem,
+);
 
 // El ADMIN corrige los novillos (o canales, en cerdo) de una recepción
 // cerrada. Recalcula las vísceras de res que se cuentan por novillo — ver
 // `shared/visceras.js`. Mismo guard de estado que `editarItem`.
 router.patch(
   "/:id/novillos",
+  requireAdminCarnes,
   validators.editarNovillos,
   RecepcionesController.editarNovillos,
 );
@@ -63,6 +74,7 @@ router.patch(
 // resto de la edición del borrador.
 router.patch(
   "/:id/items/:itemId/homologar",
+  requireAdminCarnes,
   validators.homologarAdicional,
   RecepcionesController.homologarAdicional,
 );
@@ -76,10 +88,10 @@ router.patch(
 // recepción esté en Borrador. Si el recibidor pudiera verlo antes de digitar,
 // transcribiría el informe en vez de contar la carne y el cruce compararía el
 // PDF contra sí mismo.
-router.get("/:id/desposte", DesposteController.obtener);
-router.post("/:id/desposte", subirPDF, DesposteController.adjuntar);
-router.get("/:id/desposte/archivo", DesposteController.archivo);
-router.delete("/:id/desposte", DesposteController.eliminar);
+router.get("/:id/desposte", requireAdminCarnes, DesposteController.obtener);
+router.post("/:id/desposte", requireAdminCarnes, subirPDF, DesposteController.adjuntar);
+router.get("/:id/desposte/archivo", requireAdminCarnes, DesposteController.archivo);
+router.delete("/:id/desposte", requireAdminCarnes, DesposteController.eliminar);
 
 // ─── Transiciones ─────────────────────────────────────────────────────────
 //
@@ -91,7 +103,7 @@ router.delete("/:id/desposte", DesposteController.eliminar);
 // No hay `aprobar` ni `rechazar`: `finalizar` deja la recepción lista para
 // liquidar. `reabrir` queda para las rechazadas de antes.
 router.post("/:id/finalizar", validators.finalizar, RecepcionesController.finalizar);
-router.post("/:id/reabrir", RecepcionesController.reabrir);
+router.post("/:id/reabrir", requireAdminCarnes, RecepcionesController.reabrir);
 
 // ─── Borrado del ADMIN ────────────────────────────────────────────────────
 //
@@ -101,7 +113,7 @@ router.post("/:id/reabrir", RecepcionesController.reabrir);
 // para la regla completa — en resumen: nada que ya haya movido plata (Costeado,
 // Enviado_SIESA), nada vinculado a una liquidación, y nada con una entrada
 // oficial (o un envío sin resolver) en SIESA.
-router.get("/:id/siesa-referencias", RecepcionesController.siesaReferencias);
-router.delete("/:id/admin", RecepcionesController.eliminarAdmin);
+router.get("/:id/siesa-referencias", requireAdminCarnes, RecepcionesController.siesaReferencias);
+router.delete("/:id/admin", requireAdminCarnes, RecepcionesController.eliminarAdmin);
 
 export default router;

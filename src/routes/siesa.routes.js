@@ -1,8 +1,12 @@
 import { Router } from "express";
 import * as SiesaController from "../controllers/siesa.controller.js";
 import { validators } from "../middleware/validators.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
+
+// Todo este router es del panel del admin (autorización: middleware/authCarnes.js).
+router.use(requireAdminCarnes);
 
 // Trazabilidad: qué se mandó, cuándo, con qué resultado.
 router.get("/estado", SiesaController.estado);

@@ -1,6 +1,7 @@
 import * as RecepcionProveedorModel from "../models/RecepcionProveedor.model.js";
 import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.js";
 import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
+import { conQuienHace, quienHace } from "../middleware/auth.js";
 
 /**
  * POST /api/recepciones-proveedor/abrir
@@ -14,7 +15,7 @@ import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
 export async function abrir(req, res, next) {
   try {
     const { recepcion, reanudada, verificacion, avisos } = await RecepcionProveedorModel.abrir(
-      req.body,
+      conQuienHace(req, req.body, "recibido_por"),
     );
     res.status(reanudada ? 200 : 201).json({
       ok: true,
@@ -65,7 +66,7 @@ export async function guardar(req, res, next) {
   try {
     const { recepcion, pendientes, ignorados, avisos } = await RecepcionProveedorModel.guardar(
       req.datosValidados.id,
-      req.body,
+      conQuienHace(req, req.body, "editado_por"),
     );
     res.json({ ok: true, data: recepcion, pendientes, ignorados, avisos });
   } catch (error) {
@@ -102,7 +103,7 @@ export async function finalizar(req, res, next) {
   try {
     const { recepcion, resumen, yaFinalizada } = await RecepcionProveedorModel.finalizar(
       req.datosValidados.id,
-      req.body,
+      conQuienHace(req, req.body, "recibido_por"),
     );
     // Nunca lanza: la recepción ya está firmada y lo que falle acá viaja en la respuesta.
     const { cambios, ...despues } = await PostFinalizarProveedor.despuesDeFinalizar({
@@ -146,7 +147,10 @@ export async function finalizar(req, res, next) {
 export async function reintentarSiesa(req, res, next) {
   try {
     const id = req.datosValidados.id;
-    const { cambios, ...resultado } = await SiesaEnvioModel.reintentarEntradaProveedor(id, req.body.por);
+    const { cambios, ...resultado } = await SiesaEnvioModel.reintentarEntradaProveedor(
+      id,
+      quienHace(req, req.body.por, "por"),
+    );
     const recepcion = await RecepcionProveedorModel.obtener(id);
     const ok = resultado.siesa.estado === "ok";
     res.status(ok ? 200 : 502).json({
@@ -172,7 +176,10 @@ export async function reintentarSiesa(req, res, next) {
 export async function reintentarNotaCredito(req, res, next) {
   try {
     const id = req.datosValidados.id;
-    const { notaCredito } = await SiesaEnvioModel.reintentarNotaCreditoProveedor(id, req.body.por);
+    const { notaCredito } = await SiesaEnvioModel.reintentarNotaCreditoProveedor(
+      id,
+      quienHace(req, req.body.por, "por"),
+    );
     const recepcion = await RecepcionProveedorModel.obtener(id);
     const ok = notaCredito.estado === "ok";
     res.status(ok ? 200 : 502).json({ ok, data: recepcion, notaCredito });

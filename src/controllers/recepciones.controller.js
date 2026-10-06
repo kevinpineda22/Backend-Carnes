@@ -2,6 +2,7 @@ import * as RecepcionModel from "../models/Recepcion.model.js";
 import { notificarRecepcionFinalizada } from "../services/notificaciones.service.js";
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
+import { conQuienHace } from "../middleware/auth.js";
 
 /**
  * POST /api/recepciones/abrir
@@ -13,7 +14,7 @@ import * as DesposteModel from "../models/Desposte.model.js";
 export async function abrir(req, res, next) {
   try {
     const { recepcion, reanudada, rechazada, motivoRechazo } =
-      await RecepcionModel.abrir(req.body);
+      await RecepcionModel.abrir(conQuienHace(req, req.body, "recibido_por"));
     res.status(reanudada ? 200 : 201).json({
       ok: true,
       data: recepcion,
@@ -109,7 +110,10 @@ export async function eliminarItem(req, res, next) {
  */
 export async function agregarRenglonAdmin(req, res, next) {
   try {
-    const data = await RecepcionModel.agregarRenglonAdmin(req.params.id, req.body);
+    const data = await RecepcionModel.agregarRenglonAdmin(
+      req.params.id,
+      conQuienHace(req, req.body, "agregado_por"),
+    );
     res.status(201).json({ ok: true, data });
   } catch (error) {
     next(error);
@@ -135,7 +139,7 @@ export async function eliminarRenglonAdmin(req, res, next) {
  */
 export async function editarItem(req, res, next) {
   try {
-    const { editado_por, ...cambios } = req.body;
+    const { editado_por, ...cambios } = conQuienHace(req, req.body, "editado_por");
     const data = await RecepcionModel.editarItem(
       req.params.id,
       req.params.itemId,
@@ -155,7 +159,10 @@ export async function editarItem(req, res, next) {
  */
 export async function editarNovillos(req, res, next) {
   try {
-    const data = await RecepcionModel.editarNovillos(req.params.id, req.body);
+    const data = await RecepcionModel.editarNovillos(
+      req.params.id,
+      conQuienHace(req, req.body, "editado_por"),
+    );
     res.json({ ok: true, data });
   } catch (error) {
     next(error);
@@ -174,7 +181,7 @@ export async function homologarAdicional(req, res, next) {
     const data = await RecepcionModel.homologarAdicional(
       req.params.id,
       req.params.itemId,
-      req.body,
+      conQuienHace(req, req.body, "editado_por"),
     );
     res.json({ ok: true, data });
   } catch (error) {
@@ -197,7 +204,10 @@ export async function homologarAdicional(req, res, next) {
  */
 export async function finalizar(req, res, next) {
   try {
-    const data = await RecepcionModel.finalizar(req.params.id, req.body || {});
+    const data = await RecepcionModel.finalizar(
+      req.params.id,
+      conQuienHace(req, req.body || {}, "recibido_por"),
+    );
 
     // Los efectos del cierre —el correo al admin, la entrada inicial a SIESA y
     // la guía anticipada— van en paralelo y ninguno lanza. La recepción YA está

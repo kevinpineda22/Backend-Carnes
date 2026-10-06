@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as SedesController from "../controllers/sedes.controller.js";
 import { validators } from "../middleware/validators.js";
 import { requireAdminKey } from "../middleware/adminKey.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
 
@@ -17,6 +18,6 @@ router.post("/verificar", validators.verificarSede, SedesController.verificar);
 router.get("/tokens", requireAdminKey, SedesController.listarConToken);
 router.post("/:id/regenerar-token", requireAdminKey, SedesController.regenerarToken);
 
-router.patch("/:id", validators.actualizarSede, SedesController.actualizar);
+router.patch("/:id", requireAdminCarnes, validators.actualizarSede, SedesController.actualizar);
 
 export default router;

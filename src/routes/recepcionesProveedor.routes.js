@@ -2,11 +2,14 @@ import { Router } from "express";
 import * as RecepcionesProveedorController from "../controllers/recepcionesProveedor.controller.js";
 import * as AdminController from "../controllers/recepcionesProveedorAdmin.controller.js";
 import { validators } from "../middleware/validators.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
 
 // Admin: listado (sin firma ni cédula). "/" no choca con "/:id": son rutas distintas.
-router.get("/", validators.listarRecepcionesProveedor, AdminController.listar);
+// Autorización (middleware/authCarnes.js): sin `requireAdminCarnes` = flujo del
+// recibidor (basta con sesión); con él = panel del admin.
+router.get("/", requireAdminCarnes, validators.listarRecepcionesProveedor, AdminController.listar);
 
 // "/abrir" va ANTES de "/:id": Express matchea por orden de declaración, y con
 // esta línea abajo el POST entraría por otra ruta con id = "abrir".
@@ -39,12 +42,14 @@ router.post(
 // nota crédito de lo devuelto. Los dos piden el correo del admin en `por`.
 router.post(
   "/:id/siesa/reintentar",
+  requireAdminCarnes,
   validators.idParam,
   validators.reintentarSiesaProveedor,
   RecepcionesProveedorController.reintentarSiesa,
 );
 router.post(
   "/:id/nota-credito/reintentar",
+  requireAdminCarnes,
   validators.idParam,
   validators.reintentarSiesaProveedor,
   RecepcionesProveedorController.reintentarNotaCredito,
@@ -53,15 +58,17 @@ router.post(
 // Admin: detalle completo (ÚNICO lugar que devuelve firma y cédula del recibidor),
 // corregir la referencia de factura para SIESA y anular. "/:id" de arriba sigue
 // siendo el del recibidor, sin firma ni cédula.
-router.get("/:id/admin", validators.idParam, AdminController.detalle);
+router.get("/:id/admin", requireAdminCarnes, validators.idParam, AdminController.detalle);
 router.patch(
   "/:id/factura-siesa",
+  requireAdminCarnes,
   validators.idParam,
   validators.corregirFacturaSiesaProveedor,
   AdminController.corregirFacturaSiesa,
 );
 router.post(
   "/:id/anular",
+  requireAdminCarnes,
   validators.idParam,
   validators.anularRecepcionProveedor,
   AdminController.anular,

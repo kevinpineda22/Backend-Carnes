@@ -6,8 +6,14 @@ import {
   validarCatalogoBody,
   validators,
 } from "../middleware/validators.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
+
+// Todo este router es del panel del admin: solo lo consumen PlantillaGrid y
+// DetalleLiquidacion (autorización: middleware/authCarnes.js). El recibidor recibe su
+// plantilla ya armada en `POST /recepciones/abrir`.
+router.use(requireAdminCarnes);
 
 // `:especie` se valida una sola vez para todo el router. Sin esto, una especie
 // inventada llega hasta Supabase y vuelve como un 500 con el mensaje de Postgres

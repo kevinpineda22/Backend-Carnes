@@ -23,6 +23,15 @@ import { createError } from "../middleware/errorHandler.js";
  * servidor-a-servidor no mandan `Origin`. Bloquearlas rompería el monitoreo sin
  * ganar nada: quien usa curl ya podía saltarse CORS de todos modos.
  *
+ * ─── Cabecera `Authorization` ───────────────────────────────────────────────
+ *
+ * El front manda `Authorization: Bearer <jwt>` (ver middleware/auth.js), y eso
+ * dispara una preflight. No hace falta listarla: sin `allowedHeaders` el paquete
+ * `cors` REFLEJA lo que pide la preflight (`Access-Control-Request-Headers`),
+ * así que `Authorization` —y `X-Admin-Key`, y `Content-Type`— ya pasan. Si algún
+ * día se agrega `allowedHeaders` acá, `Authorization` tiene que ir en la lista:
+ * sin ella el navegador bloquea TODAS las llamadas del front.
+ *
  * ─── Configuración ────────────────────────────────────────────────────────
  *
  * `CARNES_ORIGENES` (opcional) reemplaza la lista, separada por comas. Sirve

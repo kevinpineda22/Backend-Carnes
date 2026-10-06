@@ -1,5 +1,6 @@
 import * as DesposteModel from "../models/Desposte.model.js";
 import { createError } from "../middleware/errorHandler.js";
+import { quienHace } from "../middleware/auth.js";
 
 /**
  * GET /api/recepciones/:id/desposte
@@ -30,7 +31,7 @@ export async function adjuntar(req, res, next) {
     const data = await DesposteModel.adjuntar(req.params.id, {
       buffer: req.file.buffer,
       nombre: req.file.originalname,
-      subidoPor: req.body?.subido_por,
+      subidoPor: quienHace(req, req.body?.subido_por, "subido_por"),
       forzar: req.body?.forzar === "true" || req.body?.forzar === true,
     });
     res.status(201).json({ ok: true, ...data });
@@ -87,7 +88,7 @@ export async function subirAnticipada(req, res, next) {
       fecha: req.body?.fecha,
       buffer: req.file.buffer,
       nombre: req.file.originalname,
-      subidoPor: req.body?.subido_por,
+      subidoPor: quienHace(req, req.body?.subido_por, "subido_por"),
       forzar: req.body?.forzar === "true" || req.body?.forzar === true,
     });
     res.status(201).json({ ok: true, ...data });

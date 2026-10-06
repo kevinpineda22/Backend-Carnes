@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as DesposteController from "../controllers/desposte.controller.js";
 import { subirPDF } from "../middleware/subirPDF.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 /**
  * Guías de desposte que no cuelgan (todavía) de una recepción.
@@ -13,6 +14,9 @@ import { subirPDF } from "../middleware/subirPDF.js";
  * antes de cerrar: si la viera, transcribiría el PDF en vez de contar la carne.
  */
 const router = Router();
+
+// Todo este router es del panel del admin (autorización: middleware/authCarnes.js).
+router.use(requireAdminCarnes);
 
 router.get("/anticipadas", DesposteController.listarAnticipadas);
 router.post("/anticipadas", subirPDF, DesposteController.subirAnticipada);

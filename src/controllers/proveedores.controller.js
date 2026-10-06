@@ -1,4 +1,5 @@
 import * as ProveedorModel from "../models/Proveedor.model.js";
+import { conQuienHace } from "../middleware/auth.js";
 
 /**
  * GET /api/proveedores?con_plantilla=1
@@ -45,7 +46,7 @@ export async function obtenerPlantilla(req, res, next) {
  */
 export async function cargarPlantilla(req, res, next) {
   try {
-    const { filas, aplicar, por } = req.body;
+    const { filas, aplicar, por } = conQuienHace(req, req.body, "por");
     const { proveedor, plan, aplicado, guardadas, desactivadas } =
       await ProveedorModel.cargarPlantilla(req.datosValidados.id, { filas, aplicar, por });
 

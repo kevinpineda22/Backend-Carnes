@@ -1,4 +1,5 @@
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
+import { quienHace } from "../middleware/auth.js";
 import {
   siesaConfigurado,
   siesaActivo,
@@ -52,7 +53,10 @@ export async function estado(_req, res) {
 /** POST /api/siesa/recepciones/:id/inicial — reintento manual. */
 export async function reintentarInicial(req, res, next) {
   try {
-    const data = await SiesaEnvio.reintentarInicial(req.params.id, req.body?.enviado_por);
+    const data = await SiesaEnvio.reintentarInicial(
+      req.params.id,
+      quienHace(req, req.body?.enviado_por, "enviado_por"),
+    );
     res.status(data.estado === "ok" ? 201 : 502).json({ ok: data.estado === "ok", data });
   } catch (error) {
     next(error);
@@ -65,7 +69,10 @@ export async function reintentarInicial(req, res, next) {
  */
 export async function reintentarViscerasRecepcion(req, res, next) {
   try {
-    const data = await SiesaEnvio.reintentarViscerasRecepcion(req.params.id, req.body?.enviado_por);
+    const data = await SiesaEnvio.reintentarViscerasRecepcion(
+      req.params.id,
+      quienHace(req, req.body?.enviado_por, "enviado_por"),
+    );
     res.status(data.estado === "ok" ? 201 : 502).json({ ok: data.estado === "ok", data });
   } catch (error) {
     next(error);
@@ -82,7 +89,8 @@ export async function reintentarViscerasRecepcion(req, res, next) {
  */
 export async function reenviarViscerasLiquidacion(req, res, next) {
   try {
-    const { recepcion_ids, eliminado_en_siesa, por, motivo } = req.body;
+    const { recepcion_ids, eliminado_en_siesa, motivo } = req.body;
+    const por = quienHace(req, req.body.por, "por");
     const data = await SiesaEnvio.reenviarViscerasLiquidacion(req.params.id, {
       recepcionIds: recepcion_ids,
       eliminadoEnSiesa: eliminado_en_siesa,
@@ -110,7 +118,7 @@ export async function enviarOficial(req, res, next) {
   try {
     const data = await SiesaEnvio.enviarOficial(
       req.params.id,
-      req.body?.enviado_por,
+      quienHace(req, req.body?.enviado_por, "enviado_por"),
       req.body?.tercero,
     );
     // 207: algunas sedes salieron y otras no. El front muestra el detalle.
@@ -139,7 +147,10 @@ export async function previsualizarAjusteVisceras(req, res, next) {
  */
 export async function enviarAjusteVisceras(req, res, next) {
   try {
-    const data = await SiesaEnvio.enviarAjusteVisceras(req.params.id, req.body?.enviado_por);
+    const data = await SiesaEnvio.enviarAjusteVisceras(
+      req.params.id,
+      quienHace(req, req.body?.enviado_por, "enviado_por"),
+    );
     res.status(data.completo ? 200 : 207).json({ ok: data.completo, ...data });
   } catch (error) {
     next(error);
@@ -156,7 +167,7 @@ export async function anularAjusteVisceras(req, res, next) {
   try {
     const data = await SiesaEnvio.anularAjusteVisceras(req.params.id, {
       recepcionId: req.body?.recepcion_id,
-      por: req.body?.por,
+      por: quienHace(req, req.body?.por, "por"),
       motivo: req.body?.motivo,
     });
     res.json({ ok: true, ...data });
@@ -174,7 +185,7 @@ export async function resolver(req, res, next) {
   try {
     const data = await SiesaEnvio.resolver(req.params.id, {
       resultado: req.body?.resultado,
-      por: req.body?.por,
+      por: quienHace(req, req.body?.por, "por"),
     });
     res.json({ ok: true, data });
   } catch (error) {
@@ -189,7 +200,7 @@ export async function resolver(req, res, next) {
 export async function anularOficiales(req, res, next) {
   try {
     const data = await SiesaEnvio.anularOficiales(req.params.id, {
-      por: req.body?.por,
+      por: quienHace(req, req.body?.por, "por"),
       motivo: req.body?.motivo,
       inicialesAnuladas: Boolean(req.body?.iniciales_anuladas),
     });

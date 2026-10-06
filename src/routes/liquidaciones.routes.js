@@ -1,8 +1,12 @@
 import { Router } from "express";
 import * as LiquidacionesController from "../controllers/liquidaciones.controller.js";
 import { validators } from "../middleware/validators.js";
+import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
 const router = Router();
+
+// Todo este router es del panel del admin (autorización: middleware/authCarnes.js).
+router.use(requireAdminCarnes);
 
 router.get("/", LiquidacionesController.listar);
 router.post("/", validators.crearLiquidacion, LiquidacionesController.crear);

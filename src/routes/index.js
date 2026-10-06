@@ -10,8 +10,14 @@ import recibidoresRoutes from "./recibidores.routes.js";
 import recepcionesProveedorRoutes from "./recepcionesProveedor.routes.js";
 import { verificarEmail } from "../services/email.service.js";
 import { sandboxOn } from "../config/sandbox.js";
+import { autenticar } from "../middleware/authCarnes.js";
 
 const router = Router();
+
+// Autenticación con interruptor `CARNES_AUTH` (off | reportar | exigir). En `off`
+// —el valor por defecto— no hace nada. `/health*` y las preflight CORS quedan
+// siempre afuera (lo resuelve el propio middleware). Ver middleware/auth.js.
+router.use(autenticar);
 
 router.use("/sedes", sedesRoutes);
 router.use("/plantilla", plantillaRoutes);

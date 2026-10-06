@@ -1,4 +1,5 @@
 import * as AdminModel from "../models/RecepcionProveedorAdmin.model.js";
+import { conQuienHace } from "../middleware/auth.js";
 
 /**
  * GET /api/recepciones-proveedor?estado&proveedor_id&sede_id&desde&hasta&factura&limite
@@ -41,7 +42,10 @@ export async function detalle(req, res, next) {
  */
 export async function corregirFacturaSiesa(req, res, next) {
   try {
-    const { aviso, ...data } = await AdminModel.corregirFacturaSiesa(req.datosValidados.id, req.body);
+    const { aviso, ...data } = await AdminModel.corregirFacturaSiesa(
+      req.datosValidados.id,
+      conQuienHace(req, req.body, "por"),
+    );
     res.json({ ok: true, data, ...(aviso && { aviso }) });
   } catch (error) {
     next(error);
@@ -58,7 +62,10 @@ export async function corregirFacturaSiesa(req, res, next) {
  */
 export async function anular(req, res, next) {
   try {
-    const { envios_anulados, ...data } = await AdminModel.anular(req.datosValidados.id, req.body);
+    const { envios_anulados, ...data } = await AdminModel.anular(
+      req.datosValidados.id,
+      conQuienHace(req, req.body, "por"),
+    );
     res.json({ ok: true, data, envios_anulados });
   } catch (error) {
     // Igual que `finalizar`: el 500 parcial lleva el detalle de los envíos ya
