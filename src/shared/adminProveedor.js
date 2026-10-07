@@ -345,6 +345,36 @@ export function decidirAnulacion({ estado }) {
   return { accion: "anular" };
 }
 
+// ─── Eliminar ──────────────────────────────────────────────────────────────
+
+/**
+ * Estados de envío que dicen que SIESA tiene (o puede tener) el documento vigente.
+ * En una recepción Anulada no deberían existir: `anular` exige resolverlos antes.
+ */
+const ENVIOS_VIGENTES = new Set(["ok", "enviando", "sin_confirmar", "duplicado"]);
+
+/**
+ * ¿Se puede ELIMINAR la recepción? Solo una Anulada, típicamente una prueba que ya
+ * no aporta nada en la lista. Borra también sus envíos a SIESA (la FK es
+ * `ON DELETE RESTRICT`), así que se exige que ninguno siga vigente: los anulados y
+ * los fallidos se pueden borrar; un `ok` o uno sin resolver no.
+ *
+ * @returns {{accion: "eliminar"} | {accion: "rechazar", status: 409, codigo: string, mensaje: string}}
+ */
+export function decidirEliminacion({ estado, envios = [] }) {
+  const rechazo = (codigo, mensaje) => ({ accion: "rechazar", status: 409, codigo, mensaje });
+  if (estado !== ESTADOS.ANULADA) {
+    return rechazo("RECEPCION_NO_ANULADA", "Solo se puede eliminar una recepción anulada.");
+  }
+  if (envios.some((e) => ENVIOS_VIGENTES.has(e.estado))) {
+    return rechazo(
+      "ENVIO_VIGENTE",
+      "Tiene un envío a SIESA que no figura anulado: resolvelo antes de eliminar la recepción.",
+    );
+  }
+  return { accion: "eliminar" };
+}
+
 // ─── Acciones del detalle ──────────────────────────────────────────────────
 
 const permitida = (extra = {}) => ({ permitido: true, codigo: null, motivo: null, ...extra });
@@ -356,6 +386,7 @@ const denegada = (codigo, motivo, extra = {}) => ({ permitido: false, codigo, mo
  * pantalla muestra un botón solo si va a funcionar, sin duplicar las reglas.
  *
  *   descartar               solo un borrador (DELETE /:id).
+ *   eliminar                solo una anulada, con sus envíos (DELETE /:id/admin).
  *   anular                  `requiere_anulado_en_siesa` si hay envíos ok: el body
  *                           tiene que traer `anulado_en_siesa: true`.
  *   corregir_factura        Finalizada y sin entrada vigente u ok.
@@ -373,6 +404,10 @@ export function armarAcciones({ estado, envios = [], activo, decisionNotaCredito
     estado === ESTADOS.BORRADOR
       ? permitida()
       : denegada("RECEPCION_NO_BORRADOR", "Solo se puede descartar un borrador.");
+
+  const eliminacion = decidirEliminacion({ estado, envios });
+  const eliminar =
+    eliminacion.accion === "eliminar" ? permitida() : denegada(eliminacion.codigo, eliminacion.mensaje);
 
   let anular;
   const anulacion = decidirAnulacion({ estado });
@@ -405,6 +440,7 @@ export function armarAcciones({ estado, envios = [], activo, decisionNotaCredito
 
   return {
     descartar,
+    eliminar,
     anular,
     corregir_factura: corregirFactura,
     reintentar_siesa: reintentarSiesa,

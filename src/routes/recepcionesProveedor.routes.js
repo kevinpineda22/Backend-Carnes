@@ -73,6 +73,8 @@ router.post(
   validators.anularRecepcionProveedor,
   AdminController.anular,
 );
+// Eliminar de verdad una recepción Anulada (con sus envíos): limpia las pruebas.
+router.delete("/:id/admin", requireAdminCarnes, validators.idParam, AdminController.eliminar);
 
 // Descartar un borrador: deja de existir (no cambia de estado). Es el mismo
 // endpoint para el recibidor que abrió por error y para el admin que descarta un

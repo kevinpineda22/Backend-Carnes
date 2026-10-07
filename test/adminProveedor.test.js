@@ -12,6 +12,7 @@ import {
   datosBorrador,
   decidirAnulacion,
   decidirCorreccionFactura,
+  decidirEliminacion,
   decidirEstadoCorreccion,
   enLotes,
   facturaSiesaEfectiva,
@@ -491,4 +492,29 @@ test("acciones: la anulación con un envío ok y otro sin confirmar lo bloquea e
   const a = armarAcciones({ estado: "Enviada_SIESA", envios, activo: true, decisionNotaCredito: null });
   assert.equal(a.anular.permitido, false);
   assert.equal(a.anular.codigo, "ENVIO_SIN_RESOLVER");
+});
+
+test("decidirEliminacion: solo una Anulada, y sin envíos vigentes", () => {
+  for (const estado of ["Borrador", "Finalizada", "Enviada_SIESA"]) {
+    const d = decidirEliminacion({ estado });
+    assert.equal(d.accion, "rechazar", estado);
+    assert.equal(d.codigo, "RECEPCION_NO_ANULADA");
+  }
+  assert.deepEqual(decidirEliminacion({ estado: "Anulada" }), { accion: "eliminar" });
+  assert.deepEqual(
+    decidirEliminacion({ estado: "Anulada", envios: [{ estado: "anulado" }, { estado: "error" }] }),
+    { accion: "eliminar" },
+  );
+  for (const estado of ["ok", "enviando", "sin_confirmar", "duplicado"]) {
+    const d = decidirEliminacion({ estado: "Anulada", envios: [{ estado: "anulado" }, { estado }] });
+    assert.equal(d.accion, "rechazar", estado);
+    assert.equal(d.codigo, "ENVIO_VIGENTE");
+  }
+});
+
+test("armarAcciones: eliminar solo se permite en una Anulada", () => {
+  assert.equal(armarAcciones({ estado: "Anulada", envios: [{ estado: "anulado" }], activo: true }).eliminar.permitido, true);
+  const finalizada = armarAcciones({ estado: "Finalizada", envios: [], activo: true }).eliminar;
+  assert.equal(finalizada.permitido, false);
+  assert.equal(finalizada.codigo, "RECEPCION_NO_ANULADA");
 });

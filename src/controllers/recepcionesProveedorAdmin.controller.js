@@ -53,6 +53,22 @@ export async function corregirFacturaSiesa(req, res, next) {
 }
 
 /**
+ * DELETE /api/recepciones-proveedor/:id/admin
+ * Body: { por }
+ *
+ * Elimina una recepción Anulada junto con sus envíos a SIESA. Ver `AdminModel.eliminar`.
+ */
+export async function eliminar(req, res, next) {
+  try {
+    const { por } = conQuienHace(req, req.body || {}, "por");
+    const data = await AdminModel.eliminar(req.datosValidados.id, { por: por || "sin usuario" });
+    res.json({ ok: true, ...data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * POST /api/recepciones-proveedor/:id/anular
  * Body: { por, motivo, anulado_en_siesa? }
  *

@@ -20,6 +20,7 @@ import {
   datosBorrador,
   decidirAnulacion,
   decidirCorreccionFactura,
+  decidirEliminacion,
   enLotes,
   facturaSiesaEfectiva,
   itemsConDevuelto,
@@ -406,6 +407,52 @@ export async function anular(id, { por, motivo, anulado_en_siesa = false }) {
 
   console.log(`🚫 Recepción de proveedor #${id} anulada por ${por}: ${motivo}`);
   return { ...data[0], envios_anulados: anulados };
+}
+
+/**
+ * Elimina de verdad una recepción Anulada y sus envíos a SIESA (`decidirEliminacion`).
+ * Es para sacar de la lista las pruebas que ya no aportan nada.
+ *
+ * Los envíos se borran primero: la FK desde `carnes_siesa_envios` es
+ * `ON DELETE RESTRICT`. Sus referencias quedan en el log, que es el único rastro
+ * de los documentos anulados en SIESA una vez borrados acá.
+ *
+ * FALLO PARCIAL: si se borran los envíos pero no la recepción, queda Anulada y sin
+ * envíos; repetir la acción la termina de borrar.
+ *
+ * @param {number|string} id
+ * @param {{por: string}} p
+ */
+export async function eliminar(id, { por }) {
+  const cabecera = await leerCabeceraBasica(id);
+  const envios = await SiesaEnvio.enviosDeRecepcionProveedor(id);
+  const decision = decidirEliminacion({ estado: cabecera.estado, envios });
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+
+  const rastro = envios.map((e) => `${e.tipo} ${e.referencia || "sin referencia"} (${e.estado})`).join(", ");
+  console.log(
+    `🗑️  Eliminando recepción de proveedor #${id} (factura ${cabecera.factura}), pedido por ${por}. ` +
+      `Envíos: ${rastro || "ninguno"}`,
+  );
+
+  if (envios.length) {
+    const { error: errorEnvios } = await supabase.from(TABLE_ENVIOS).delete().eq("recepcion_proveedor_id", id);
+    if (errorEnvios) fallo(errorEnvios, "Error al eliminar los envíos de la recepción");
+  }
+
+  // Condicional a Anulada: nada la saca de ese estado, pero si pasara no se borra.
+  const { data, error } = await supabase
+    .from(TABLE)
+    .delete()
+    .eq("id", id)
+    .eq("estado", ESTADOS.ANULADA)
+    .select("id");
+  if (error) fallo(error, "Error al eliminar la recepción");
+  if (!data?.length) {
+    throw createError(409, "La recepción cambió mientras se eliminaba.", "RECEPCION_CAMBIO");
+  }
+
+  return { eliminada: Number(id), envios_eliminados: envios.length };
 }
 
 /** Los envíos quedaron anulados pero el estado no se pudo cambiar: ver `anular`. */
