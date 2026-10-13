@@ -48,7 +48,11 @@ import * as SiesaEnvio from "./SiesaEnvio.model.js";
 const TABLE = "carnes_proveedor_recepciones";
 const TABLE_ITEMS = "carnes_proveedor_recepcion_items";
 const TABLE_ENVIOS = "carnes_siesa_envios";
-const MIGRACIONES = ["sql/022_proveedores.sql", "sql/026_firma_proveedor_devolucion.sql"];
+const MIGRACIONES = [
+  "sql/022_proveedores.sql",
+  "sql/026_firma_proveedor_devolucion.sql",
+  "sql/028_proveedor_descuento_secciones.sql",
+];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */
 function fallo(error, contexto) {
@@ -208,8 +212,8 @@ export async function detalle(id, ahora = new Date()) {
       ...cabecera,
       factura_siesa_efectiva: facturaSiesaEfectiva(cabecera),
       ...datosBorrador(cabecera, ahora),
-      items: itemsConDevuelto(items),
-      resumen: resumenRecepcion(items),
+      items: itemsConDevuelto(items, { descuentoPct: cabecera.descuento_pct }),
+      resumen: resumenRecepcion(items, { descuentoPct: cabecera.descuento_pct }),
     },
     envios,
     siesa: siesaDeEnvios(envios),

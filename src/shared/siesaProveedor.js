@@ -37,9 +37,10 @@
  *
  * ─── Sin Descuentos, sin IVA ───────────────────────────────────────────────
  *
- * El valor es bruto (sin IVA ni descuentos, decisión del negocio) y la clave
- * `Descuentos` NO viaja ni como arreglo vacío: el conector valida la sección
- * apenas la clave existe y responde 400 (ver `armarEntradaDirecta`).
+ * El valor es sin IVA. Si el proveedor tiene descuento (`recepcion.descuento_pct`,
+ * p. ej. Bucanero 5 %), VALOR_BRUTO ya lleva el valor NETO, aplicado por renglón
+ * (`aplicarDescuento`). La clave `Descuentos` NO viaja ni como arreglo vacío:
+ * el conector valida la sección apenas la clave existe y responde 400 (ver `armarEntradaDirecta`).
  *
  * ─── Consecutivo ───────────────────────────────────────────────────────────
  *
@@ -59,6 +60,8 @@ import {
   facturaCabeEnSiesa,
   normalizarUnidad,
   validarRecepcion,
+  aplicarDescuento,
+  etiquetaSeccion,
   valorDevuelto,
 } from "./proveedorValores.js";
 
@@ -101,12 +104,14 @@ export const consecutivoNotaCreditoProveedor = (recepcionId) => Number(recepcion
 
 /** Nombre con el que se nombra un renglón en un mensaje: equivalencia, si no la descripción de SIESA, si no el código. */
 function nombreRenglon(item) {
-  return (
+  const nombre =
     String(item?.equivalencia ?? "").trim() ||
     String(item?.descripcion_item ?? "").trim() ||
     String(item?.codigo_item ?? "").trim() ||
-    `#${item?.id ?? "?"}`
-  );
+    `#${item?.id ?? "?"}`;
+  // Con secciones el mismo producto sale dos veces: el mensaje tiene que distinguirlos.
+  const seccion = etiquetaSeccion(item?.seccion);
+  return seccion ? `${nombre} (${seccion})` : nombre;
 }
 
 /** Los errores de `validarRecepcion`, dichos con el nombre del renglón. */
@@ -236,7 +241,7 @@ const razonSocialDe = (recepcion) =>
  * Cada uno con su unidad (KL o UND).
  *
  * @param {object} p
- * @param {object} p.recepcion    cabecera de `carnes_proveedor_recepciones`: id, proveedor_nit,
+ * @param {object} p.recepcion    cabecera de `carnes_proveedor_recepciones`: id, proveedor_nit, descuento_pct,
  *                                proveedor_sucursal, proveedor_razon_social, factura, factura_siesa,
  *                                bodega_siesa, codigo_co, fecha_recepcion, y `sede { nombre }`
  * @param {Array}  p.items        renglones de `carnes_proveedor_recepcion_items`
@@ -266,7 +271,9 @@ export function armarEntradaProveedor({ recepcion, items = [], consecutivo, conf
         item,
         unidad,
         cantidad: ajustarCantidadAUnidad(item.cantidad, unidad),
-        valor: Number(item.valor_total) || 0,
+        // El descuento del proveedor se aplica POR RENGLÓN: VALOR_BRUTO y los totales
+        // llevan el valor neto, igual que el resumen que ve el recibidor.
+        valor: aplicarDescuento(Number(item.valor_total) || 0, recepcion?.descuento_pct),
       };
     });
 
@@ -352,7 +359,7 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
       item,
       unidad,
       cantidad: ajustarCantidadAUnidad(item.cantidad_devuelta, unidad),
-      valor: valorDevuelto(item),
+      valor: aplicarDescuento(valorDevuelto(item), recepcion?.descuento_pct),
     };
   });
 

@@ -568,3 +568,61 @@ test("siesaEntrada: los helpers exportados se comportan igual que siempre", () =
   assert.equal(notasDocumento("A", "", "C"), "A - C");
   assert.equal(notasDocumento("A".repeat(300), "B", "C").length, 255);
 });
+
+// ─── Descuento del proveedor (Bucanero 5 %) ─────────────────────────────────
+
+const RECEPCION_DESCUENTO = { ...RECEPCION, descuento_pct: 5 };
+
+test("armarEntradaProveedor: con descuento, VALOR_BRUTO y totales llevan el valor neto por renglón", () => {
+  const { payload, resumen, bloqueos } = armarEntradaProveedor({
+    recepcion: RECEPCION_DESCUENTO,
+    items: [KILOS, UNIDADES],
+    config: CONFIG,
+  });
+  assert.deepEqual(bloqueos, []);
+  // 2.000.000 → 1.900.000 y 66.000 → 62.700.
+  assert.equal(payload.Movimientos[0].VALOR_BRUTO, decimal(1900000, 0));
+  assert.equal(payload.Movimientos[1].VALOR_BRUTO, decimal(62700, 0));
+  assert.equal(resumen.totalValor, 1962700);
+});
+
+test("armarEntradaProveedor: el mismo item en dos secciones viaja como dos movimientos, cada uno con su descuento", () => {
+  const { payload, resumen } = armarEntradaProveedor({
+    recepcion: RECEPCION_DESCUENTO,
+    items: [
+      { ...UNIDADES, id: 10, seccion: "despresado", valor_total: 1001, valor_unitario: null, valor_fuente: "total", cantidad: 1 },
+      { ...UNIDADES, id: 11, seccion: "sin_despresar", valor_total: 1001, valor_unitario: null, valor_fuente: "total", cantidad: 1 },
+    ],
+    config: CONFIG,
+  });
+  assert.equal(payload.Movimientos.length, 2);
+  assert.deepEqual(
+    payload.Movimientos.map((m) => m.VALOR_BRUTO),
+    [decimal(951, 0), decimal(951, 0)],
+  );
+  assert.equal(resumen.totalValor, 1902);
+});
+
+test("armarEntradaProveedor: sin descuento_pct el valor no cambia", () => {
+  const { payload } = armar();
+  assert.equal(payload.Movimientos[0].VALOR_BRUTO, decimal(2000000, 0));
+});
+
+test("armarNotaCreditoProveedor: con descuento, el valor devuelto también va neto", () => {
+  const { payload, resumen } = armarNotaCreditoProveedor({
+    recepcion: RECEPCION_DESCUENTO,
+    items: [KILOS, UNIDADES],
+    config: CONFIG_NC,
+  });
+  // 10 de 100 kg sobre 2.000.000 = 200.000 → 190.000.
+  assert.equal(payload.Movimientos[0].VALOR_BRUTO, decimal(190000, 0));
+  assert.equal(resumen.totalValor, 190000);
+});
+
+test("armarEntradaProveedor: los bloqueos nombran la sección del renglón", () => {
+  const libras = { ...KILOS, unidad: "LB", seccion: "sin_despresar" };
+  const { bloqueos } = armar({ items: [libras] });
+  assert.ok(bloqueos.some((b) => b.includes("Molida (Sin despresar)")), bloqueos.join(" | "));
+  const sinSeccion = armar({ items: [{ ...KILOS, unidad: "LB" }] }).bloqueos;
+  assert.ok(sinSeccion.some((b) => b.includes("Molida") && !/despresar/i.test(b)), sinSeccion.join(" | "));
+});

@@ -332,6 +332,26 @@ export function valorDevuelto({ cantidad, valor_total, cantidad_devuelta } = {})
   return Math.round((total * acotada) / c);
 }
 
+const ETIQUETAS_SECCION = { despresado: "Despresado", sin_despresar: "Sin despresar" };
+
+/** "despresado" → "Despresado"; sin sección o desconocida → "". */
+export function etiquetaSeccion(seccion) {
+  return ETIQUETAS_SECCION[seccion] || "";
+}
+
+/**
+ * Valor con el descuento del proveedor aplicado, en pesos enteros. Se aplica POR
+ * RENGLÓN (no sobre el total) para que lo que se muestra sume exactamente lo que
+ * viaja a SIESA. Sin descuento (0, vacío o inválido) devuelve el valor tal cual.
+ */
+export function aplicarDescuento(valor, pct) {
+  const v = aNumero(valor);
+  const p = aNumero(pct);
+  if (!Number.isFinite(v)) return 0;
+  if (!Number.isFinite(p) || p <= 0) return v;
+  return Math.round(v * (1 - p / 100));
+}
+
 // ─── Validación ────────────────────────────────────────────────────────────
 
 /**
@@ -436,9 +456,14 @@ export function validarRecepcion(items = []) {
  * Resumen para mostrar antes de firmar. Solo cuenta renglones con cantidad > 0;
  * el total es lo facturado (la devolución NO se resta: la entrada a SIESA lleva
  * el monto completo y lo devuelto sale en nota crédito aparte).
+ *
+ * `descuentoPct` es el descuento de la recepción (snapshot del proveedor): se
+ * aplica por renglón, y solo entonces el resumen agrega `subtotal` (bruto),
+ * `descuento` y `descuento_pct`.
  */
-export function resumenRecepcion(items = []) {
+export function resumenRecepcion(items = [], { descuentoPct = 0 } = {}) {
   let renglones = 0;
+  let subtotal = 0;
   let total = 0;
   let totalDevuelto = 0;
   let conDevolucion = 0;
@@ -446,11 +471,20 @@ export function resumenRecepcion(items = []) {
     if (!(aNumero(item?.cantidad) > 0)) continue;
     renglones += 1;
     const t = aNumero(item.valor_total);
-    if (Number.isFinite(t)) total += t;
+    if (Number.isFinite(t)) {
+      subtotal += t;
+      total += aplicarDescuento(t, descuentoPct);
+    }
     if (aNumero(item.cantidad_devuelta) > 0) {
       conDevolucion += 1;
-      totalDevuelto += valorDevuelto(item);
+      totalDevuelto += aplicarDescuento(valorDevuelto(item), descuentoPct);
     }
   }
-  return { renglones, total, total_devuelto: totalDevuelto, renglones_con_devolucion: conDevolucion };
+  const resumen = { renglones, total, total_devuelto: totalDevuelto, renglones_con_devolucion: conDevolucion };
+  // Con descuento, `total` y `total_devuelto` ya son NETOS (suma de renglones
+  // descontados). Sin descuento el resumen queda exactamente como siempre.
+  if (aNumero(descuentoPct) > 0) {
+    return { ...resumen, subtotal, descuento: subtotal - total, descuento_pct: aNumero(descuentoPct) };
+  }
+  return resumen;
 }

@@ -161,7 +161,12 @@ const MIGRACIONES = [
  * Talleres no tiene por qué nombrar archivos que ellas no usan.
  */
 const ARCHIVO_SQL_PROVEEDOR = "sql/023_siesa_proveedor.sql";
-const MIGRACIONES_PROVEEDOR = [...MIGRACIONES, "sql/022_proveedores.sql", ARCHIVO_SQL_PROVEEDOR];
+const MIGRACIONES_PROVEEDOR = [
+  ...MIGRACIONES,
+  "sql/022_proveedores.sql",
+  ARCHIVO_SQL_PROVEEDOR,
+  "sql/028_proveedor_descuento_secciones.sql",
+];
 
 /**
  * Consecutivo propio para enlazar cabecera y movimientos dentro de un envío.
@@ -2661,7 +2666,7 @@ const TABLA_ITEMS_PROVEEDOR = "carnes_proveedor_recepcion_items";
 const COLUMNAS_RECEPCION_PROVEEDOR =
   "id, proveedor_id, proveedor_nit, proveedor_sucursal, proveedor_razon_social, " +
   "factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion, " +
-  "estado, recibido_por, finalizado_at, siesa_at, sede:carnes_sedes ( id, codigo_co, nombre )";
+  "estado, recibido_por, finalizado_at, siesa_at, descuento_pct, sede:carnes_sedes ( id, codigo_co, nombre )";
 
 /** Los envíos SIN `payload` ni `respuesta` (pesan): para decidir y para el detalle. */
 const COLUMNAS_ENVIO_PROVEEDOR =

@@ -52,7 +52,11 @@ import {
 
 const TABLE = "carnes_proveedor_recepciones";
 const TABLE_ITEMS = "carnes_proveedor_recepcion_items";
-const MIGRACIONES = ["sql/022_proveedores.sql", "sql/026_firma_proveedor_devolucion.sql"];
+const MIGRACIONES = [
+  "sql/022_proveedores.sql",
+  "sql/026_firma_proveedor_devolucion.sql",
+  "sql/028_proveedor_descuento_secciones.sql",
+];
 
 /**
  * Columnas de la cabecera que ve el RECIBIDOR. Se nombran una por una (nada de
@@ -64,7 +68,7 @@ const CAMPOS_CABECERA = `
   id, proveedor_id, proveedor_nit, proveedor_sucursal, proveedor_razon_social,
   factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion,
   estado, recibido_por, abierto_at, recibidor_nombre, recibidor_otro,
-  finalizado_at, siesa_at, observaciones, created_at, updated_at,
+  finalizado_at, siesa_at, observaciones, created_at, updated_at, descuento_pct,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -159,23 +163,31 @@ function bloqueoDeApertura(decision) {
  * Inserta los renglones de la plantilla ignorando los que ya existen.
  *
  * `ignoreDuplicates` (ON CONFLICT DO NOTHING) sobre `(recepcion_id,
- * equivalencia_id)` hace que repetir la operación sea inofensivo: dos teléfonos
+ * equivalencia_id, seccion)` hace que repetir la operación sea inofensivo: dos teléfonos
  * reanudando el mismo borrador vacío, o un reintento, no duplican renglones.
  */
-async function materializarRenglones(recepcionId, equivalencias) {
-  const filas = renglonesDesdePlantilla(equivalencias, recepcionId);
+async function materializarRenglones(recepcionId, equivalencias, secciones = false) {
+  const filas = renglonesDesdePlantilla(equivalencias, recepcionId, { secciones });
   if (!filas.length) return null;
   const { error } = await supabase
     .from(TABLE_ITEMS)
-    .upsert(filas, { onConflict: "recepcion_id,equivalencia_id", ignoreDuplicates: true });
+    .upsert(filas, { onConflict: "recepcion_id,equivalencia_id,seccion", ignoreDuplicates: true });
   return error || null;
 }
 
 /** Reanuda un borrador existente; si quedó sin renglones (falló una apertura anterior) los vuelve a crear. */
-async function reanudar(id, equivalencias) {
+async function reanudar(id, equivalencias, proveedor) {
   const items = await leerItems(id);
   if (!items.length) {
-    const error = await materializarRenglones(id, equivalencias);
+    // Los renglones se crean con las secciones de HOY del proveedor: el descuento
+    // se refresca en la misma operación para que secciones y descuento no diverjan.
+    const { error: errorDescuento } = await supabase
+      .from(TABLE)
+      .update({ descuento_pct: proveedor.descuento_pct ?? 0 })
+      .eq("id", id)
+      .eq("estado", ESTADOS.BORRADOR);
+    if (errorDescuento) fallo(errorDescuento, "Error al actualizar el descuento");
+    const error = await materializarRenglones(id, equivalencias, proveedor.secciones_despresado === true);
     // 23503: la cabecera desapareció entre la lectura y el insert (la descartó
     // quien la había abierto). Se trata como 404 para que `abrir` vuelva a decidir.
     if (error?.code === "23503") throw createError(404, "Recepción no encontrada.");
@@ -200,7 +212,7 @@ export async function abrir({ proveedor_id, factura, qr_token, recibido_por }) {
   // 1. Proveedor activo y con plantilla. Sin plantilla no hay qué recibir.
   const { data: proveedor, error: errorProveedor } = await supabase
     .from("carnes_proveedores")
-    .select("id, nit, sucursal, razon_social")
+    .select("id, nit, sucursal, razon_social, descuento_pct, secciones_despresado")
     .eq("id", proveedor_id)
     .eq("activo", true)
     .maybeSingle();
@@ -254,7 +266,7 @@ export async function abrir({ proveedor_id, factura, qr_token, recibido_por }) {
     if (decision.accion === "bloquear") throw bloqueoDeApertura(decision);
     if (decision.accion === "reanudar") {
       try {
-        return resultado(await reanudar(decision.id, equivalencias), true);
+        return resultado(await reanudar(decision.id, equivalencias, proveedor), true);
       } catch (e) {
         // La ganadora descartó su borrador justo entre la búsqueda y la lectura:
         // no es un 404 para quien abre, es volver a decidir (ahora puede crear).
@@ -271,6 +283,8 @@ export async function abrir({ proveedor_id, factura, qr_token, recibido_por }) {
         proveedor_nit: proveedor.nit,
         proveedor_sucursal: proveedor.sucursal,
         proveedor_razon_social: proveedor.razon_social,
+        // Snapshot: cambiar el descuento del maestro no altera recepciones ya abiertas.
+        descuento_pct: proveedor.descuento_pct ?? 0,
         factura: facturaTexto,
         factura_clave: clave,
         sede_id: sede.id,
@@ -289,7 +303,7 @@ export async function abrir({ proveedor_id, factura, qr_token, recibido_por }) {
     // 5. Renglones. Si fallan NO queda una cabecera sin renglones: es una pantalla
     // vacía que no se puede usar y que el admin vería. No hay transacción (Supabase
     // va por HTTP), así que se deshace a mano, y solo si sigue en Borrador.
-    const errorItems = await materializarRenglones(cabecera.id, equivalencias);
+    const errorItems = await materializarRenglones(cabecera.id, equivalencias, proveedor.secciones_despresado === true);
     if (errorItems) {
       const { error: errorLimpieza } = await supabase
         .from(TABLE)
@@ -457,7 +471,11 @@ export async function descartar(id) {
 /** Lo que devuelve `finalizar`: la recepción como la ve el recibidor (SIN firma ni cédula) y su resumen. */
 async function resultadoFinalizar(id, yaFinalizada) {
   const recepcion = await obtener(id);
-  return { recepcion, resumen: resumenRecepcion(recepcion.items), yaFinalizada };
+  return {
+    recepcion,
+    resumen: resumenRecepcion(recepcion.items, { descuentoPct: recepcion.descuento_pct }),
+    yaFinalizada,
+  };
 }
 
 /**
@@ -532,7 +550,7 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data, prove
   // Con mercancía devuelta firma también el representante del proveedor (sobre los
   // renglones de la base, no sobre lo que diga el cliente).
   const firmaProveedor = armarFirmaProveedor({
-    resumen: resumenRecepcion(items),
+    resumen: resumenRecepcion(items, { descuentoPct: cabecera.descuento_pct }),
     firmante: proveedor_firmante,
   });
   if (!firmaProveedor.ok) throw createError(firmaProveedor.status, firmaProveedor.mensaje, firmaProveedor.codigo);

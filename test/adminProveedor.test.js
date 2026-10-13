@@ -22,6 +22,7 @@ import {
   notaCreditoAdmin,
 } from "../src/shared/adminProveedor.js";
 import { decidirNotaCredito } from "../src/shared/siesaProveedorEnvio.js";
+import { resumenRecepcion } from "../src/shared/proveedorValores.js";
 
 // Lo que decide el lado ADMIN de las recepciones de proveedor: qué columnas salen,
 // qué acciones hay, qué se rechaza al corregir la referencia o anular. Todo puro.
@@ -230,6 +231,18 @@ test("itemsConDevuelto: valor_devuelto calculado, 0 sin cantidad", () => {
   assert.equal(b.valor_devuelto, 0);
   assert.equal(c.valor_devuelto, 0);
   assert.equal(a.cantidad, 10, "el resto del renglón queda igual");
+});
+
+test("itemsConDevuelto: con descuento el valor_devuelto es neto por renglón y suma el resumen", () => {
+  const items = [
+    item({ cantidad: 10, valor_total: 1_000_000, cantidad_devuelta: 1 }),
+    item({ cantidad: 10, valor_total: 20_020, cantidad_devuelta: 5 }),
+  ];
+  const filas = itemsConDevuelto(items, { descuentoPct: 5 });
+  // 100.000 → 95.000 y 10.010 → 9.510 (empate .5 sube).
+  assert.deepEqual(filas.map((f) => f.valor_devuelto), [95000, 9510]);
+  const resumen = resumenRecepcion(items, { descuentoPct: 5 });
+  assert.equal(filas.reduce((a, f) => a + f.valor_devuelto, 0), resumen.total_devuelto);
 });
 
 test("marcarResolvibles: sin_confirmar y enviando abandonado se pueden resolver; el resto no", () => {

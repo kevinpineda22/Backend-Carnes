@@ -26,6 +26,7 @@ import {
   LARGO_FACTURA_SIESA,
   facturaCabeEnSiesa,
   normalizarFactura,
+  aplicarDescuento,
   resumenRecepcion,
   valorDevuelto,
 } from "./proveedorValores.js";
@@ -51,7 +52,7 @@ export const COLUMNAS_LISTA_ADMIN = `
   factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion,
   estado, recibido_por, abierto_at, recibidor_nombre, recibidor_otro,
   finalizado_at, siesa_at, anulado_por, anulado_at, motivo_anulacion,
-  created_at, updated_at,
+  created_at, updated_at, descuento_pct,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -157,7 +158,7 @@ function motivosDeAtencion({ cabecera, resumen, siesa, notaCreditoEstado, borrad
  * @param {{cabecera: object, items?: object[], envios?: object[], ahora?: Date}} p
  */
 export function armarFilaListado({ cabecera, items = [], envios = [], ahora = new Date() }) {
-  const resumen = resumenRecepcion(items);
+  const resumen = resumenRecepcion(items, { descuentoPct: cabecera.descuento_pct });
   const borrador = datosBorrador(cabecera, ahora);
 
   let siesa = null;
@@ -187,9 +188,13 @@ export function armarFilaListado({ cabecera, items = [], envios = [], ahora = ne
 
 // ─── Detalle ───────────────────────────────────────────────────────────────
 
-/** Los renglones con su `valor_devuelto` CALCULADO (no se guarda: no puede quedar viejo). */
-export function itemsConDevuelto(items = []) {
-  return items.map((item) => ({ ...item, valor_devuelto: valorDevuelto(item) }));
+/**
+ * Los renglones con su `valor_devuelto` CALCULADO (no se guarda: no puede quedar
+ * viejo). Con descuento es el valor NETO, el mismo de la nota crédito a SIESA,
+ * para que los renglones sumen el "Devuelto" del resumen.
+ */
+export function itemsConDevuelto(items = [], { descuentoPct = 0 } = {}) {
+  return items.map((item) => ({ ...item, valor_devuelto: aplicarDescuento(valorDevuelto(item), descuentoPct) }));
 }
 
 /**

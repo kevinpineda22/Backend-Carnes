@@ -191,21 +191,32 @@ export function avisosDeFactura(factura) {
   ];
 }
 
+/** Secciones de la pantalla para los proveedores con `secciones_despresado`, en el orden en que se muestran. */
+export const SECCIONES_DESPRESADO = ["despresado", "sin_despresar"];
+
 /**
  * Los renglones de una recepción nueva: uno por fila de la plantilla, con todo lo
  * que identifica el ítem COPIADO (snapshot). Editar la plantilla después no
  * cambia una recepción ya abierta. `equivalencia_id` solo dice de dónde salió.
+ *
+ * Con `secciones` (proveedor con `secciones_despresado`) la plantilla sale DOS
+ * veces: primero todas las filas en "despresado" y luego todas en "sin_despresar".
+ * Es el mismo codigo_item, solo una separación visual. Sin secciones, `seccion` es ''.
  */
-export function renglonesDesdePlantilla(equivalencias = [], recepcionId) {
-  return equivalencias.map((e) => ({
-    recepcion_id: recepcionId,
-    equivalencia_id: e.id,
-    codigo_item: e.codigo_item,
-    descripcion_item: e.descripcion_item ?? null,
-    unidad: e.unidad,
-    equivalencia: e.equivalencia ?? "",
-    orden: e.orden ?? 0,
-  }));
+export function renglonesDesdePlantilla(equivalencias = [], recepcionId, { secciones = false } = {}) {
+  const grupos = secciones ? SECCIONES_DESPRESADO : [""];
+  return grupos.flatMap((seccion) =>
+    equivalencias.map((e) => ({
+      recepcion_id: recepcionId,
+      equivalencia_id: e.id,
+      codigo_item: e.codigo_item,
+      descripcion_item: e.descripcion_item ?? null,
+      unidad: e.unidad,
+      equivalencia: e.equivalencia ?? "",
+      orden: e.orden ?? 0,
+      seccion,
+    })),
+  );
 }
 
 // ─── Errores de la base ────────────────────────────────────────────────────

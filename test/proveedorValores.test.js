@@ -39,6 +39,7 @@ import {
   validarRenglon,
   validarRecepcion,
   resumenRecepcion,
+  aplicarDescuento,
 } from "../src/shared/proveedorValores.js";
 
 // ─── Arreglo compartido con el gemelo del frontend ─────────────────────────
@@ -597,6 +598,46 @@ const CASOS = [
     entrada: [[]],
     esperado: { renglones: 0, total: 0, total_devuelto: 0, renglones_con_devolucion: 0 },
   },
+  {
+    fn: "resumenRecepcion",
+    nombre: "con descuento: el total es la suma de renglones descontados y agrega subtotal y descuento",
+    entrada: [
+      [
+        { ...BASE, id: 1, cantidad: 10, valor_total: 1001, cantidad_devuelta: 0 },
+        { ...BASE, id: 2, cantidad: 10, valor_total: 1001, cantidad_devuelta: 0 },
+        { ...BASE, id: 3, cantidad: 10, valor_total: 2000000, cantidad_devuelta: 5, motivo_devolucion: "Mal estado" },
+        VACIO,
+      ],
+      { descuentoPct: 5 },
+    ],
+    // 1001 * 0,95 = 950,95 → 951 por renglón (2 × 951), y 2.000.000 → 1.900.000.
+    // Devuelto: la mitad de 2.000.000 = 1.000.000 → 950.000.
+    esperado: {
+      renglones: 3,
+      total: 951 + 951 + 1900000,
+      total_devuelto: 950000,
+      renglones_con_devolucion: 1,
+      subtotal: 1001 + 1001 + 2000000,
+      descuento: 1001 + 1001 + 2000000 - (951 + 951 + 1900000),
+      descuento_pct: 5,
+    },
+  },
+  {
+    fn: "resumenRecepcion",
+    nombre: "descuento 0 deja el resumen idéntico al de siempre",
+    entrada: [[{ ...BASE, id: 1, cantidad: 10, valor_total: 1001, cantidad_devuelta: 0 }], { descuentoPct: 0 }],
+    esperado: { renglones: 1, total: 1001, total_devuelto: 0, renglones_con_devolucion: 0 },
+  },
+  { fn: "aplicarDescuento", nombre: "5 % redondea a pesos enteros", entrada: [2000000, 5], esperado: 1900000 },
+  { fn: "aplicarDescuento", nombre: "redondea por renglón (1001 → 951)", entrada: [1001, 5], esperado: 951 },
+  { fn: "aplicarDescuento", nombre: "sin porcentaje devuelve el valor tal cual", entrada: [1234.5, 0], esperado: 1234.5 },
+  { fn: "aplicarDescuento", nombre: "porcentaje vacío o inválido no descuenta", entrada: [1000, undefined], esperado: 1000 },
+  { fn: "aplicarDescuento", nombre: "empate .5 sube (10010 al 5 % = 9509,5 → 9510)", entrada: [10010, 5], esperado: 9510 },
+  { fn: "aplicarDescuento", nombre: "otro empate .5 (30 al 5 % = 28,5 → 29)", entrada: [30, 5], esperado: 29 },
+  { fn: "aplicarDescuento", nombre: "valor fraccionario se redondea a peso entero", entrada: [1234.56, 5], esperado: 1173 },
+  { fn: "aplicarDescuento", nombre: "valor 0 da 0", entrada: [0, 5], esperado: 0 },
+  { fn: "aplicarDescuento", nombre: "porcentaje 0 es identidad, sin redondear", entrada: [10010.4, 0], esperado: 10010.4 },
+  { fn: "aplicarDescuento", nombre: "valor vacío da 0", entrada: [null, 5], esperado: 0 },
 ];
 
 const FUNCIONES = {
@@ -617,6 +658,7 @@ const FUNCIONES = {
   validarRenglon,
   validarRecepcion,
   resumenRecepcion,
+  aplicarDescuento,
 };
 
 for (const caso of CASOS) {

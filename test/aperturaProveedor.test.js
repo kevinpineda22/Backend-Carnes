@@ -213,6 +213,7 @@ test("renglonesDesdePlantilla: snapshot completo, equivalencia vacía por defect
       unidad: "KL",
       equivalencia: "Pollo 1",
       orden: 1,
+      seccion: "",
     },
     {
       recepcion_id: 99,
@@ -222,9 +223,32 @@ test("renglonesDesdePlantilla: snapshot completo, equivalencia vacía por defect
       unidad: "UND",
       equivalencia: "",
       orden: 0,
+      seccion: "",
     },
   ]);
   assert.deepEqual(renglonesDesdePlantilla([], 99), []);
+});
+
+test("renglonesDesdePlantilla: con secciones sale la plantilla dos veces, despresado primero", () => {
+  const plantilla = [
+    { id: 11, codigo_item: "1234", descripcion_item: "PECHUGA", unidad: "KL", equivalencia: "Pechuga", orden: 1 },
+    { id: 12, codigo_item: "5678", descripcion_item: "MUSLO", unidad: "KL", equivalencia: "Muslo", orden: 2 },
+  ];
+  const filas = renglonesDesdePlantilla(plantilla, 99, { secciones: true });
+  assert.equal(filas.length, 4);
+  assert.deepEqual(
+    filas.map((f) => [f.seccion, f.equivalencia_id, f.codigo_item]),
+    [
+      ["despresado", 11, "1234"],
+      ["despresado", 12, "5678"],
+      ["sin_despresar", 11, "1234"],
+      ["sin_despresar", 12, "5678"],
+    ],
+  );
+  // Es el mismo item de SIESA: solo cambia la sección.
+  const { seccion: _a, ...primera } = filas[0];
+  const { seccion: _b, ...tercera } = filas[2];
+  assert.deepEqual(primera, tercera);
 });
 
 // ─── Errores de la base ────────────────────────────────────────────────────
