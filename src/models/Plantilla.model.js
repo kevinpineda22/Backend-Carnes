@@ -1,6 +1,7 @@
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
 import { cambiosDeFila, agruparPorColumnas } from "../shared/plantillaCambios.js";
+import { revisarCodigosTabla, conflictoConGuardados } from "../shared/plantillaCodigoTabla.js";
 
 /* =============================================
    La plantilla que edita el admin.
@@ -28,6 +29,44 @@ function tabla(catalogo) {
   const t = TABLAS[catalogo];
   if (!t) throw createError(400, `Catálogo desconocido: "${catalogo}".`);
   return t;
+}
+
+/**
+ * Revisa el «Orden prov.» (`codigo_tabla`) antes de escribir cortes: faltantes,
+ * repetidos en el envío y choques con filas guardadas que no vienen en él (ver
+ * `shared/plantillaCodigoTabla.js`). Solo aplica al catálogo `items`.
+ */
+async function verificarCodigosTabla(catalogo, especie, filas) {
+  if (catalogo !== "items") return;
+  const problema = revisarCodigosTabla(filas);
+  if (problema) throw createError(problema.status, problema.mensaje, problema.codigo);
+
+  const codigos = [...new Set(filas.map((f) => Number(f.codigo_tabla)))];
+  if (!codigos.length) return;
+  const { data, error } = await supabase
+    .from(tabla(catalogo))
+    .select("id, codigo_tabla, descripcion, activo")
+    .eq("especie", especie)
+    .in("codigo_tabla", codigos);
+  if (error) throw new Error(`Error al revisar el Orden prov.: ${error.message}`);
+  const choque = conflictoConGuardados(filas, data || []);
+  if (choque) throw createError(choque.status, choque.mensaje, choque.codigo);
+}
+
+/**
+ * Error de escritura: el "duplicate key" del índice único de `codigo_tabla` es un
+ * 409 legible (p. ej. dos cortes que intercambian número en el mismo guardado);
+ * lo demás sigue siendo un error del servidor.
+ */
+function errorDeEscritura(catalogo, accion, error) {
+  if (error?.code === "23505") {
+    return createError(
+      409,
+      "Dos cortes quedaron con el mismo «Orden prov.». Revisá los números y guardá de nuevo.",
+      "ORDEN_PROV_EN_USO",
+    );
+  }
+  return new Error(`Error al ${accion} ${catalogo}: ${error.message}`);
 }
 
 /** Columnas que el cliente puede escribir, por catálogo. */
@@ -104,12 +143,13 @@ export async function listarTodo(especie, opciones) {
 }
 
 export async function crear(catalogo, especie, fila) {
+  await verificarCodigosTabla(catalogo, especie, [fila]);
   const { data, error } = await supabase
     .from(tabla(catalogo))
     .insert({ ...limpiar(catalogo, fila), especie })
     .select("*")
     .single();
-  if (error) throw new Error(`Error al crear en ${catalogo}: ${error.message}`);
+  if (error) throw errorDeEscritura(catalogo, "crear en", error);
   return data;
 }
 
@@ -118,6 +158,18 @@ export async function actualizar(catalogo, id, cambios) {
   if (Object.keys(limpio).length === 0) {
     throw createError(400, "No hay campos válidos para actualizar.");
   }
+  if (catalogo === "items" && "codigo_tabla" in limpio) {
+    const { data: actual } = await supabase
+      .from(tabla(catalogo))
+      .select("especie, descripcion")
+      .eq("id", id)
+      .maybeSingle();
+    if (actual) {
+      await verificarCodigosTabla(catalogo, actual.especie, [
+        { id, descripcion: limpio.descripcion ?? actual.descripcion, codigo_tabla: limpio.codigo_tabla },
+      ]);
+    }
+  }
 
   const { data, error } = await supabase
     .from(tabla(catalogo))
@@ -125,7 +177,7 @@ export async function actualizar(catalogo, id, cambios) {
     .eq("id", id)
     .select("*")
     .maybeSingle();
-  if (error) throw new Error(`Error al actualizar ${catalogo}: ${error.message}`);
+  if (error) throw errorDeEscritura(catalogo, "actualizar", error);
   if (!data) throw createError(404, "Registro no encontrado.");
   return data;
 }
@@ -166,6 +218,7 @@ export async function desactivar(catalogo, id) {
  */
 export async function guardarLote(catalogo, especie, filas = []) {
   const t = tabla(catalogo);
+  await verificarCodigosTabla(catalogo, especie, filas);
 
   const nuevas = filas.filter((f) => !f.id);
   const existentes = filas.filter((f) => f.id);
@@ -181,7 +234,7 @@ export async function guardarLote(catalogo, especie, filas = []) {
   const grupos = agruparPorColumnas(nuevas.map((f) => ({ ...limpiar(catalogo, f), especie })));
   for (const grupo of grupos) {
     const { data, error } = await supabase.from(t).insert(grupo).select("id");
-    if (error) throw new Error(`Error al crear en ${catalogo}: ${error.message}`);
+    if (error) throw errorDeEscritura(catalogo, "crear en", error);
     idsNuevos.push(...(data || []).map((f) => f.id));
     creados += grupo.length;
   }
@@ -217,7 +270,7 @@ export async function guardarLote(catalogo, especie, filas = []) {
     await Promise.all(
       pendientes.slice(i, i + TANDA).map(async ({ id, cambios }) => {
         const { error } = await supabase.from(t).update(cambios).eq("id", id);
-        if (error) throw new Error(`Error al actualizar ${catalogo} #${id}: ${error.message}`);
+        if (error) throw errorDeEscritura(catalogo, `actualizar #${id} de`, error);
       }),
     );
   }

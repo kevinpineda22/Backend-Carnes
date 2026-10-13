@@ -106,7 +106,17 @@ const verificarSedeSchema = z.object({
 /** Fila de la plantilla de cortes. */
 const itemSchema = z.object({
   id: z.coerce.number().int().positive().optional(),
-  codigo_tabla: z.coerce.number().int().nonnegative(),
+  // Vacío llega como null y no como 0: si no, varias filas sin número chocaban en
+  // el índice único y el admin veía un 500. Que falte lo reporta el modelo con
+  // los nombres de los cortes (`shared/plantillaCodigoTabla.js`).
+  codigo_tabla: z.preprocess(
+    (v) => (v === "" ? null : v),
+    z.coerce
+      .number({ invalid_type_error: "El Orden prov. tiene que ser un número." })
+      .int("El Orden prov. tiene que ser un número entero.")
+      .nonnegative("El Orden prov. no puede ser negativo.")
+      .nullable(),
+  ).optional(),
   codigo_item: codigoSiesa("El código de SIESA es obligatorio"),
   descripcion: z.string().trim().min(1, "La descripción es obligatoria"),
   costo_base: z.coerce.number().nonnegative().default(0),
