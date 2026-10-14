@@ -21,6 +21,10 @@ import {
   esMigracionFaltante,
 } from "../shared/migraciones.js";
 import { COLUMNAS_RECEPCION } from "../shared/recepcionColumnas.js";
+import {
+  armarSedesFaltantes,
+  ventanaBusqueda,
+} from "../shared/sedesFaltantes.js";
 
 const TABLE = "carnes_liquidaciones";
 const TABLE_GASTOS = "carnes_liquidacion_gastos";
@@ -946,8 +950,8 @@ export async function previsualizar(id) {
  * Es un AVISO, no un bloqueo: a veces de verdad no se mandó a una sede. La
  * decisión es del admin; lo que no puede pasar es que no se entere.
  *
- * Para cada sede que falta se busca si hay una recepción de esa especie y ese
- * día en cualquier estado. Cambia por completo qué hacer: "hay una cerrada sin
+ * Para cada sede que falta se busca si hay una recepción de esa especie, en
+ * cualquier estado, en los días de la entrega (`shared/sedesFaltantes.js`). Cambia por completo qué hacer: "hay una cerrada sin
  * vincular" se resuelve vinculándola; "no hay ninguna" es preguntar si de
  * verdad no se mandó.
  *
@@ -968,48 +972,22 @@ async function buscarSedesFaltantes(liquidacion) {
   const faltantes = (sedes || []).filter((s) => !vinculadas.has(s.id));
   if (faltantes.length === 0) return [];
 
-  // Una sola consulta para todas las sedes que faltan, no una por sede.
+  // Una sola consulta para todas las sedes que faltan, no una por sede. La
+  // ventana cubre los días de lo ya vinculado (una entrega puede recibirse en
+  // días distintos), no solo la fecha de la liquidación.
+  const { desde, hasta } = ventanaBusqueda(liquidacion);
   const { data: candidatas } = await supabase
     .from("carnes_recepciones")
-    .select("id, sede_id, estado, liquidacion_id")
+    .select("id, sede_id, estado, liquidacion_id, fecha_ingreso")
     .eq("especie", liquidacion.especie)
-    .eq("fecha_ingreso", liquidacion.fecha)
+    .gte("fecha_ingreso", desde)
+    .lte("fecha_ingreso", hasta)
     .in(
       "sede_id",
       faltantes.map((s) => s.id),
-    )
-    .order("id", { ascending: false });
+    );
 
-  const porSede = new Map();
-  for (const r of candidatas || []) {
-    if (!porSede.has(r.sede_id)) porSede.set(r.sede_id, r);
-  }
-
-  return faltantes.map((s) => {
-    const r = porSede.get(s.id);
-    let pista;
-    if (!r) {
-      pista = "sin_recepcion";
-    } else if (r.liquidacion_id && r.liquidacion_id !== liquidacion.id) {
-      pista = "en_otra_liquidacion";
-    } else if (r.estado === ESTADOS.APROBADO) {
-      pista = "aprobada_sin_vincular";
-    } else if (r.estado === ESTADOS.BORRADOR) {
-      pista = "en_curso";
-    } else if (r.estado === ESTADOS.RECHAZADO) {
-      pista = "rechazada";
-    } else {
-      pista = "otro_estado";
-    }
-    return {
-      sede_id: s.id,
-      nombre: s.nombre,
-      pista,
-      recepcion_id: r?.id ?? null,
-      estado: r?.estado ?? null,
-      liquidacion_id: r?.liquidacion_id ?? null,
-    };
-  });
+  return armarSedesFaltantes(liquidacion, faltantes, candidatas || []);
 }
 
 /**
