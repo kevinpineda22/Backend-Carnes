@@ -108,16 +108,19 @@ test("la cabecera lleva su propia referencia en PENDIENTE y en las notas", () =>
   assert.equal(d.NIT, "70329554");
 });
 
-test("fechas distintas entre recepciones: se bloquea, no se elige una", () => {
-  const otraFecha = { ...LOPEZ, fecha_ingreso: "2026-09-24" };
-  const { bloqueos, payload } = armarEntradaLiquidacion({
+test("fechas distintas entre recepciones: la CEA lleva la más antigua, sin bloquear", () => {
+  const despues = { ...LOPEZ, fecha_ingreso: "2026-09-24" };
+  const antes = { ...BARBOSA, fecha_ingreso: "2026-09-21" };
+  const { bloqueos, payload, resumen } = armarEntradaLiquidacion({
     liquidacionId: 6,
-    recepciones: [BARBOSA, otraFecha],
+    // La más antigua no va primera: no depende del orden de las recepciones.
+    recepciones: [despues, antes],
     consecutivo: 63,
     config: CONFIG,
   });
-  assert.ok(bloqueos.some((b) => /fechas distintas/.test(b)), JSON.stringify(bloqueos));
-  assert.equal(payload.Documentos[0].FECHA, "");
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Documentos[0].FECHA, "20260921");
+  assert.equal(resumen.fecha, "20260921");
 });
 
 test("una sede con bloqueo frena el documento entero y se nombra", () => {

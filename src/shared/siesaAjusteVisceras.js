@@ -63,7 +63,7 @@ import {
   ajustarCantidadAUnidad,
   decimalesDeUnidad,
 } from "./visceras.js";
-import { coMovimiento, fechaSiesa } from "./siesaEntrada.js";
+import { coMovimiento, fechaMasAntigua, fechaSiesa } from "./siesaEntrada.js";
 
 /** El `tipo` de envío en `carnes_siesa_envios`. */
 export const TIPO_AJUSTE_VISCERAS = "ajuste_visceras";
@@ -563,9 +563,9 @@ export function referenciaAjusteLiquidacion(liquidacionId) {
  * sede. Los movimientos de todas las sedes se numeran de corrido: `NRO_REGISTRO`
  * es la posición dentro del documento, no dentro de la sede.
  *
- * La fecha es UNA, con la misma regla de la CEA consolidada: todas las
- * recepciones de una liquidación llegan el mismo día, y si no, se bloquea en vez
- * de elegir una por las otras. Cuentan solo las sedes que aportan renglones.
+ * La fecha es UNA, con la misma regla de la CEA consolidada: si las recepciones
+ * son de días distintos, va la más antigua. Cuentan solo las sedes que aportan
+ * renglones.
  *
  * Todo o nada: el bloqueo de UNA sede (sin bodega, sin CO, sin costo, sin fecha)
  * bloquea el documento entero. Una sede sin vísceras no aporta ni bloquea.
@@ -628,14 +628,8 @@ export function armarAjusteViscerasLiquidacion({
 
   const aportan = porSede.filter((s) => !s.vacio);
   const fechas = [...new Set(aportan.map((s) => fechaSiesa(s.fecha)).filter(Boolean))];
-  if (fechas.length > 1) {
-    bloqueos.push(
-      `Las recepciones tienen fechas distintas (${fechas.join(", ")}). El ajuste lleva una sola ` +
-        "fecha: revisá la fecha de ingreso de cada recepción.",
-    );
-  }
   // Sin ninguna fecha, cada sede ya lo dijo en su bloqueo.
-  const fecha = fechas.length === 1 ? fechas[0] : null;
+  const fecha = fechaMasAntigua(fechas);
 
   const movimientos = aportan
     .flatMap((s) => s.movimientos)

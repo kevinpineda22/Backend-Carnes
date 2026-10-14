@@ -582,13 +582,13 @@ test("consolidado: la configuración que falta se dice UNA vez, no una por sede"
   assert.match(bloqueos[0], /coDocumento, unidadNegocio/);
 });
 
-test("consolidado: fechas distintas entre las sedes que aportan bloquean (misma regla de la CEA)", () => {
+test("consolidado: fechas distintas entre las sedes que aportan → la más antigua (misma regla de la CEA)", () => {
   const otraFecha = sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, {
     fecha_ingreso: "2026-09-28",
   });
-  const { bloqueos } = armarLiq([LLANO, otraFecha]);
-  assert.equal(bloqueos.length, 1);
-  assert.match(bloqueos[0], /fechas distintas \(20260927, 20260928\)/);
+  const { bloqueos, payload } = armarLiq([otraFecha, LLANO]);
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Documentos[0].FECHA_DOCTO, "20260927");
 });
 
 test("consolidado: la fecha de una sede SIN vísceras no cuenta", () => {

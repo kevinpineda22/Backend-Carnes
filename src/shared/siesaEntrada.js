@@ -128,6 +128,18 @@ export function fechaSiesa(iso) {
 }
 
 /**
+ * La fecha de un documento consolidado cuando las recepciones son de días
+ * distintos: la MÁS ANTIGUA (regla de contabilidad). Una entrega puede
+ * recibirse en varios días y el documento lleva una sola fecha.
+ *
+ * @param {string[]} fechas AAAAMMDD (las inválidas ya filtradas)
+ * @returns {string|null}
+ */
+export function fechaMasAntigua(fechas = []) {
+  return [...fechas].sort()[0] ?? null;
+}
+
+/**
  * Centro de operación del movimiento, en el formato del plano (3 caracteres).
  *
  * `carnes_sedes.codigo_co` guarda "01".."08"; el plano pide "001". Se rellena
@@ -371,8 +383,8 @@ export function armarEntradaDirecta({
  * Todo o nada: si una sede tiene un bloqueo, no sale el documento. Es el precio
  * de que sea uno solo, y es lo que pidió contabilidad.
  *
- * La fecha es UNA: todas las recepciones de una liquidación llegan el mismo
- * día. Si no, se bloquea en vez de elegir una fecha por las otras.
+ * La fecha es UNA. Si las recepciones son de días distintos, va la más antigua
+ * (`fechaMasAntigua`, regla de contabilidad).
  *
  * @param {object} p
  * @param {number} p.liquidacionId
@@ -424,14 +436,8 @@ export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], conse
   }
 
   const fechas = [...new Set(porSede.map((s) => fechaSiesa(s.fecha)).filter(Boolean))];
-  if (fechas.length > 1) {
-    bloqueos.push(
-      `Las recepciones tienen fechas distintas (${fechas.join(", ")}). La CEA lleva una sola ` +
-        "fecha: revisá la fecha de ingreso de cada recepción.",
-    );
-  }
   // Sin ninguna fecha, cada sede ya lo dijo en su bloqueo.
-  const fecha = fechas.length === 1 ? fechas[0] : null;
+  const fecha = fechaMasAntigua(fechas);
 
   // Movimientos de todas las sedes, numerados de corrido: `NRO_REGISTRO` es la
   // posición dentro del documento, no dentro de la sede.
