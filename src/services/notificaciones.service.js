@@ -1,4 +1,5 @@
 import { sendEmail, destinatariosAdmin, destinatariosAnulacion } from "./email.service.js";
+import { armarConfirmacion } from "../shared/confirmacionRecepcion.js";
 
 /* =============================================
    Avisos por correo del módulo de carnes.
@@ -354,4 +355,50 @@ export async function notificarAnularIniciales(liquidacion, iniciales, oficial) 
     subject: `Anular ${iniciales.length} entrada(s) inicial(es) — liquidación #${liquidacion?.id} · ${especie}`,
     html,
   });
+}
+
+/**
+ * Envía el correo armado por `armarConfirmacion` a quien hizo la recepción.
+ * Nunca lanza y sin destinatario válido no manda nada: solo deja un log. No lleva
+ * copia al admin; ese ya recibe su propio aviso.
+ */
+async function enviarConfirmacion(tipo, recepcion, items, resumen) {
+  try {
+    const correo = armarConfirmacion(tipo, recepcion, items, resumen);
+    if (!correo) {
+      console.log(
+        `[email] Confirmación de la recepción #${recepcion?.id} omitida: ` +
+          `"recibido_por" vacío o sin forma de correo.`,
+      );
+      return { success: false, omitido: true };
+    }
+    return await sendEmail(correo);
+  } catch (e) {
+    console.error(`[email] Confirmación de la recepción #${recepcion?.id} falló: ${e?.message}`);
+    return { success: false, error: e?.message || "Error al armar la confirmación" };
+  }
+}
+
+/**
+ * Confirma a quien recibió (talleres) que su recepción quedó registrada.
+ * Best-effort: nunca lanza. Se espera igual que el aviso al admin (Vercel congela
+ * la función al responder).
+ *
+ * @param {object} recepcion  fila de `carnes_recepciones` + `sede`
+ * @param {object[]} items    renglones de `carnes_recepcion_items`
+ */
+export function notificarConfirmacionRecibidor(recepcion, items = []) {
+  return enviarConfirmacion("talleres", recepcion, items, null);
+}
+
+/**
+ * Confirma a quien recibió (proveedores) que la recepción quedó registrada, con
+ * subtotal, descuento y total neto si el proveedor tiene descuento.
+ *
+ * @param {object} recepcion  recepción finalizada de `carnes_proveedor_recepciones`
+ * @param {object[]} items    renglones
+ * @param {object} resumen    `resumenRecepcion(items, { descuentoPct })`
+ */
+export function notificarConfirmacionProveedor(recepcion, items = [], resumen = null) {
+  return enviarConfirmacion("proveedor", recepcion, items, resumen);
 }

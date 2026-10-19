@@ -2,6 +2,7 @@ import * as RecepcionProveedorModel from "../models/RecepcionProveedor.model.js"
 import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.js";
 import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
+import { notificarConfirmacionProveedor } from "../services/notificaciones.service.js";
 
 /**
  * POST /api/recepciones-proveedor/abrir
@@ -106,17 +107,23 @@ export async function finalizar(req, res, next) {
       conQuienHace(req, req.body, "recibido_por"),
     );
     // Nunca lanza: la recepción ya está firmada y lo que falle acá viaja en la respuesta.
-    const { cambios, ...despues } = await PostFinalizarProveedor.despuesDeFinalizar({
-      recepcion,
-      resumen,
-      yaFinalizada,
-    });
+    //
+    // La confirmación a quien recibió sale en paralelo con SIESA (que puede tardar
+    // hasta 45 s) y se ESPERA: en Vercel la función se congela al responder. Solo
+    // en la firma real; un reintento (`yaFinalizada`) no vuelve a mandarla.
+    const [{ cambios, ...despues }, confirmacion] = await Promise.all([
+      PostFinalizarProveedor.despuesDeFinalizar({ recepcion, resumen, yaFinalizada }),
+      yaFinalizada
+        ? Promise.resolve(null)
+        : notificarConfirmacionProveedor(recepcion, recepcion.items, resumen),
+    ]);
     res.json({
       ok: true,
       // Si la entrada quedó ok, la recepción ya pasó a Enviada_SIESA: que `data` lo diga.
       data: cambios ? { ...recepcion, ...cambios } : recepcion,
       resumen,
       ya_finalizada: yaFinalizada,
+      confirmacion,
       ...despues,
     });
   } catch (error) {

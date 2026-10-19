@@ -1,5 +1,5 @@
 import * as RecepcionModel from "../models/Recepcion.model.js";
-import { notificarRecepcionFinalizada } from "../services/notificaciones.service.js";
+import { notificarRecepcionFinalizada, notificarConfirmacionRecibidor } from "../services/notificaciones.service.js";
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
 import { conQuienHace } from "../middleware/auth.js";
@@ -219,8 +219,13 @@ export async function finalizar(req, res, next) {
     // Las vísceras de res (CEI) salen en paralelo con la entrada inicial si
     // CARNES_SIESA_VISCERAS_AL_CIERRE está prendida; apagada devuelve "apagado"
     // sin tocar la base.
-    const [notificacion, siesa, siesaVisceras] = await Promise.all([
+    //
+    // La confirmación a quien recibió (`recibido_por`) es un correo aparte del
+    // aviso al admin. Solo se llega acá en la transición real Borrador → Aprobado:
+    // un reintento sobre una recepción ya cerrada lo corta `finalizar` con 409.
+    const [notificacion, confirmacion, siesa, siesaVisceras] = await Promise.all([
       notificarRecepcionFinalizada(data, data.items),
+      notificarConfirmacionRecibidor(data, data.items),
       SiesaEnvio.enviarInicial(data.id, data.recibido_por),
       SiesaEnvio.enviarViscerasRecepcion(data.id, data.recibido_por),
       DesposteModel.vincularAnticipada(data.id),
@@ -230,6 +235,7 @@ export async function finalizar(req, res, next) {
       ok: true,
       data,
       notificacion,
+      confirmacion,
       siesa: { estado: siesa.estado, referencia: siesa.referencia ?? null, error: siesa.error ?? null },
       siesa_visceras: {
         estado: siesaVisceras.estado,
