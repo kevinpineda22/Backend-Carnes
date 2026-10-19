@@ -15,6 +15,10 @@ router.get("/", requireAdminCarnes, RecepcionesController.listar);
 // esta línea abajo el POST entraría por otra ruta con id = "abrir".
 router.post("/abrir", validators.abrirRecepcion, RecepcionesController.abrir);
 
+// "Mi historial" del recibidor. ANTES de "/:id": si no, "mias" se leería como un id.
+// Sin `requireAdminCarnes`: es del recibidor y filtra por su propio correo.
+router.get("/mias", validators.listarMisRecepciones, RecepcionesController.listarMias);
+
 router.get("/:id", RecepcionesController.obtener);
 // Lo mismo más quién recibió y su firma (sql/027). Aparte de "/:id" a propósito:
 // esa la lee también el recibidor desde el celular y no debe llevar la firma ni

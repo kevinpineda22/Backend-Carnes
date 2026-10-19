@@ -56,6 +56,7 @@ const SIN_GUARD_DE_ADMIN = [
   "GET /proveedores",
   // Recepciones de talleres: flujo del recibidor.
   "POST /recepciones/abrir",
+  "GET /recepciones/mias",
   "GET /recepciones/:id",
   "DELETE /recepciones/:id",
   "PATCH /recepciones/:id",
@@ -64,6 +65,7 @@ const SIN_GUARD_DE_ADMIN = [
   "POST /recepciones/:id/finalizar",
   // Recepciones de proveedor: flujo del recibidor.
   "POST /recepciones-proveedor/abrir",
+  "GET /recepciones-proveedor/mias",
   "GET /recepciones-proveedor/:id",
   "PATCH /recepciones-proveedor/:id",
   "POST /recepciones-proveedor/:id/finalizar",

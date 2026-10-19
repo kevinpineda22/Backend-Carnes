@@ -3,6 +3,11 @@ import { createError } from "./errorHandler.js";
 import { ESTADOS as ESTADOS_PROVEEDOR } from "../shared/estadosProveedor.js";
 import { normalizarFactura } from "../shared/proveedorValores.js";
 import { LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
+import {
+  LIMITE_HISTORIAL_DEFECTO,
+  LIMITE_HISTORIAL_MAX,
+  OFFSET_HISTORIAL_MAX,
+} from "../shared/historialRecibidor.js";
 import { TOPE_COLUMNAS_CARGA, TOPE_FILAS_CARGA } from "../shared/plantillaProveedor.js";
 
 /* =============================================
@@ -523,6 +528,40 @@ const listarRecepcionesProveedorQuerySchema = z
     message: "desde no puede ser posterior a hasta.",
   });
 
+/**
+ * "Mi historial" del recibidor (Talleres y Proveedores). El correo es obligatorio:
+ * con `CARNES_AUTH` activo el controlador lo reemplaza por el de la sesión, pero
+ * sin él la petición no tiene sentido. Las fechas son opcionales (el modelo puro
+ * pone la ventana de 60 días).
+ */
+const listarMisRecepcionesQuerySchema = z
+  .object({
+    recibido_por: correo("El correo del recibidor no es válido."),
+    desde: fechaFiltro("debe ser una fecha AAAA-MM-DD."),
+    hasta: fechaFiltro("debe ser una fecha AAAA-MM-DD."),
+    limite: z.preprocess(
+      vacioASinFiltro,
+      z.coerce
+        .number({ invalid_type_error: "no es válido." })
+        .int("no es válido.")
+        .min(1, "no es válido.")
+        .max(LIMITE_HISTORIAL_MAX, `no puede pasar de ${LIMITE_HISTORIAL_MAX}.`)
+        .default(LIMITE_HISTORIAL_DEFECTO),
+    ),
+    offset: z.preprocess(
+      vacioASinFiltro,
+      z.coerce
+        .number({ invalid_type_error: "no es válido." })
+        .int("no es válido.")
+        .min(0, "no es válido.")
+        .max(OFFSET_HISTORIAL_MAX, "no es válido.")
+        .default(0),
+    ),
+  })
+  .refine((v) => !v.desde || !v.hasta || v.desde <= v.hasta, {
+    message: "desde no puede ser posterior a hasta.",
+  });
+
 /** Corregir la referencia de factura para SIESA: quién y la referencia nueva (el formato lo valida el modelo puro). */
 const corregirFacturaSiesaProveedorSchema = z.object({
   por: correo("El correo de quien corrige no es válido."),
@@ -631,6 +670,7 @@ export const validators = {
   finalizarRecepcionProveedor: validar(finalizarRecepcionProveedorSchema),
   reintentarSiesaProveedor: validar(reintentarSiesaProveedorSchema),
   listarRecepcionesProveedor: validar(listarRecepcionesProveedorQuerySchema, "query"),
+  listarMisRecepciones: validar(listarMisRecepcionesQuerySchema, "query"),
   corregirFacturaSiesaProveedor: validar(corregirFacturaSiesaProveedorSchema),
   anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
 

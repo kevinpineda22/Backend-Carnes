@@ -19,6 +19,11 @@ router.post(
   RecepcionesProveedorController.abrir,
 );
 
+// "Mi historial" del recibidor. ANTES de "/:id": si no, "mias" se leería como un id
+// (y `idParam` lo rechazaría con 400). Sin `requireAdminCarnes`: es del recibidor
+// y filtra por su propio correo.
+router.get("/mias", validators.listarMisRecepciones, RecepcionesProveedorController.listarMias);
+
 // Para reanudar el borrador tras recargar (sin firma ni cédula).
 router.get("/:id", validators.idParam, RecepcionesProveedorController.obtener);
 

@@ -2,7 +2,9 @@ import * as RecepcionModel from "../models/Recepcion.model.js";
 import { notificarRecepcionFinalizada, notificarConfirmacionRecibidor } from "../services/notificaciones.service.js";
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
-import { conQuienHace } from "../middleware/auth.js";
+import { conQuienHace, quienHace } from "../middleware/auth.js";
+import { hoyBogota } from "../shared/proveedorValores.js";
+import { normalizarCorreo, ventanaHistorial } from "../shared/historialRecibidor.js";
 
 /**
  * POST /api/recepciones/abrir
@@ -42,6 +44,25 @@ export async function listar(req, res, next) {
   try {
     const data = await RecepcionModel.listar(req.query);
     res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/recepciones/mias?recibido_por=&desde=&hasta=&limite=&offset=
+ *
+ * "Mi historial": lo que recibió la cuenta de la sesión. Con `CARNES_AUTH`
+ * activo el correo sale del token y el de la query se ignora (`quienHace`).
+ * Sin firma ni cédula.
+ */
+export async function listarMias(req, res, next) {
+  try {
+    const { recibido_por, desde, hasta, limite, offset } = req.datosValidados;
+    const correo = normalizarCorreo(quienHace(req, recibido_por, "recibido_por"));
+    const ventana = ventanaHistorial({ desde, hasta }, hoyBogota());
+    const { recepciones, hay_mas } = await RecepcionModel.listarMias({ correo, ...ventana, limite, offset });
+    res.json({ ok: true, data: recepciones, limite, offset, hay_mas, ...ventana });
   } catch (error) {
     next(error);
   }

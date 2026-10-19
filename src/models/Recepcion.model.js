@@ -15,6 +15,16 @@ import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visce
 import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcionColumnas.js";
 import { armarRecibidor, idRecibidorListado, validarFirma } from "../shared/finalizarProveedor.js";
 import * as RecibidorModel from "./Recibidor.model.js";
+import { agruparPor, enLotes } from "../shared/adminProveedor.js";
+import {
+  COLUMNAS_HISTORIAL_TALLERES,
+  COLUMNAS_ITEMS_HISTORIAL_TALLERES,
+  RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
+  armarFilaTalleres,
+  escaparParaIlike,
+  filtrarHistorial,
+  paginar,
+} from "../shared/historialRecibidor.js";
 
 const TABLE = "carnes_recepciones";
 const TABLE_ITEMS = "carnes_recepcion_items";
@@ -121,6 +131,61 @@ export async function listar({
   const { data, error } = await q;
   if (error) throw new Error(`Error al listar recepciones: ${error.message}`);
   return data || [];
+}
+
+/**
+ * "Mi historial" del recibidor: las recepciones de Talleres que hizo `correo`,
+ * de la más reciente a la más antigua, sin borradores.
+ *
+ * Una consulta para las cabeceras y otra por tanda de renglones (nunca una por
+ * recepción). `ilike` con el correo escapado compara sin importar mayúsculas; el
+ * filtro en JS es la red de seguridad por si algún comodín se colara. Sin firma ni
+ * cédula: las columnas se nombran en `shared/historialRecibidor.js`.
+ *
+ * @returns {{ recepciones: object[], hay_mas: boolean }}
+ */
+export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_HISTORIAL_TALLERES)
+    .ilike("recibido_por", escaparParaIlike(correo))
+    .neq("estado", ESTADOS.BORRADOR)
+    .gte("fecha_ingreso", desde)
+    .lte("fecha_ingreso", hasta)
+    .order("fecha_ingreso", { ascending: false })
+    .order("id", { ascending: false })
+    .range(offset, offset + limite);
+  if (error) throw new Error(`Error al leer tu historial: ${error.message}`);
+
+  const { filas, hay_mas } = paginar(data || [], limite);
+  const cabeceras = filtrarHistorial(filas, correo);
+  if (!cabeceras.length) return { recepciones: [], hay_mas };
+
+  const respuestas = await Promise.all(
+    enLotes(
+      cabeceras.map((c) => c.id),
+      RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
+    ).map((lote) =>
+      supabase
+        .from(TABLE_ITEMS)
+        .select(COLUMNAS_ITEMS_HISTORIAL_TALLERES)
+        .in("recepcion_id", lote)
+        .gt("cantidad", 0),
+    ),
+  );
+  const items = [];
+  for (const { data: filasItems, error: errorItems } of respuestas) {
+    if (errorItems) throw new Error(`Error al leer los renglones: ${errorItems.message}`);
+    items.push(...(filasItems || []));
+  }
+  const itemsPor = agruparPor(items, "recepcion_id");
+
+  return {
+    recepciones: cabeceras.map((cabecera) =>
+      armarFilaTalleres({ cabecera, items: itemsPor[String(cabecera.id)] || [] }),
+    ),
+    hay_mas,
+  };
 }
 
 // ─── Apertura ──────────────────────────────────────────────────────────────

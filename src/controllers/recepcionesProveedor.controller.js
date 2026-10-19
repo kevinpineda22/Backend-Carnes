@@ -3,6 +3,8 @@ import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.
 import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
 import { notificarConfirmacionProveedor } from "../services/notificaciones.service.js";
+import { hoyBogota } from "../shared/proveedorValores.js";
+import { normalizarCorreo, ventanaHistorial } from "../shared/historialRecibidor.js";
 
 /**
  * POST /api/recepciones-proveedor/abrir
@@ -36,6 +38,25 @@ export async function abrir(req, res, next) {
         verificacion: error.verificacion,
       });
     }
+    next(error);
+  }
+}
+
+/**
+ * GET /api/recepciones-proveedor/mias?recibido_por=&desde=&hasta=&limite=&offset=
+ *
+ * "Mi historial": las facturas que firmó la cuenta de la sesión. Con
+ * `CARNES_AUTH` activo el correo sale del token y el de la query se ignora
+ * (`quienHace`). Sin firma ni cédula.
+ */
+export async function listarMias(req, res, next) {
+  try {
+    const { recibido_por, desde, hasta, limite, offset } = req.datosValidados;
+    const correo = normalizarCorreo(quienHace(req, recibido_por, "recibido_por"));
+    const ventana = ventanaHistorial({ desde, hasta }, hoyBogota());
+    const { recepciones, hay_mas } = await RecepcionProveedorModel.listarMias({ correo, ...ventana, limite, offset });
+    res.json({ ok: true, data: recepciones, limite, offset, hay_mas, ...ventana });
+  } catch (error) {
     next(error);
   }
 }

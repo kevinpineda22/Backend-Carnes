@@ -10,6 +10,16 @@ import {
   validarRecepcion,
 } from "../shared/proveedorValores.js";
 import * as RecibidorModel from "./Recibidor.model.js";
+import { agruparPor, enLotes } from "../shared/adminProveedor.js";
+import {
+  COLUMNAS_HISTORIAL_PROVEEDOR,
+  COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR,
+  RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
+  armarFilaProveedor,
+  escaparParaIlike,
+  filtrarHistorial,
+  paginar,
+} from "../shared/historialRecibidor.js";
 import {
   avisosDeFactura,
   decidirApertura,
@@ -129,6 +139,62 @@ export async function obtener(id) {
   const cabecera = await leerCabecera(id);
   const items = await leerItems(id);
   return { ...cabecera, items };
+}
+
+/**
+ * "Mi historial" del recibidor: las facturas de proveedor que firmó `correo`,
+ * de la más reciente a la más antigua, sin borradores. El total sale de
+ * `resumenRecepcion` con el descuento de la recepción (neto).
+ *
+ * Una consulta para las cabeceras y otra por tanda de renglones (nunca una por
+ * recepción). `ilike` con el correo escapado compara sin importar mayúsculas; el
+ * filtro en JS es la red de seguridad por si algún comodín se colara. Sin firma ni
+ * cédula: las columnas se nombran en `shared/historialRecibidor.js`.
+ *
+ * @returns {{ recepciones: object[], hay_mas: boolean }}
+ */
+export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_HISTORIAL_PROVEEDOR)
+    .ilike("recibido_por", escaparParaIlike(correo))
+    .neq("estado", ESTADOS.BORRADOR)
+    .gte("fecha_recepcion", desde)
+    .lte("fecha_recepcion", hasta)
+    .order("fecha_recepcion", { ascending: false })
+    .order("id", { ascending: false })
+    .range(offset, offset + limite);
+  if (error) fallo(error, "Error al leer tu historial");
+
+  const { filas, hay_mas } = paginar(data || [], limite);
+  const cabeceras = filtrarHistorial(filas, correo);
+  if (!cabeceras.length) return { recepciones: [], hay_mas };
+
+  const respuestas = await Promise.all(
+    enLotes(
+      cabeceras.map((c) => c.id),
+      RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
+    ).map((lote) =>
+      supabase
+        .from(TABLE_ITEMS)
+        .select(COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR)
+        .in("recepcion_id", lote)
+        .gt("cantidad", 0),
+    ),
+  );
+  const items = [];
+  for (const { data: filasItems, error: errorItems } of respuestas) {
+    if (errorItems) fallo(errorItems, "Error al leer los renglones");
+    items.push(...(filasItems || []));
+  }
+  const itemsPor = agruparPor(items, "recepcion_id");
+
+  return {
+    recepciones: cabeceras.map((cabecera) =>
+      armarFilaProveedor({ cabecera, items: itemsPor[String(cabecera.id)] || [] }),
+    ),
+    hay_mas,
+  };
 }
 
 // ─── Abrir ─────────────────────────────────────────────────────────────────
