@@ -196,24 +196,28 @@ export function bloqueoAjusteFaltante() {
 // FACTURADOS completos —lo que dice la factura física del proveedor— y lo
 // devuelto sale en una nota crédito APARTE, con solo lo devuelto.
 //
-// Conector 258496 DEVOLUCIONES_DEV_CARNES_final: hermano de la CEA con clase 413
-// (devoluciones), concepto 402, motivo 06 y naturaleza 2 (salida), fijos del
-// lado de SIESA; `TIPO_DOCTO` y `NOTAS` (también por movimiento) son variables.
-// Reemplaza al 258258 (mismo nombre sin "_final", con TIPO_DOCTO fijo), que SIESA
-// rechazó: "plano [0 · 413] Compras comercial: la clase debe ser 408 o 420".
+// Conector 259954 Devoluciones_Directas_DEV_FINAL: tipo de documento CDP, C.O.
+// 001, clase 420, concepto 402, grupo 403, motivo 06 y naturaleza 2 (salida),
+// todos fijos del lado de SIESA. Reemplaza al 258496 (clase 413), que SIESA
+// rechazaba: "plano [0 · 413] Compras comercial: la clase debe ser 408 o 420".
+// Sus campos variables tienen nombres propios (CONSECUTIVO, FECHA_DOCTO,
+// NIT_TERCERO, DTO_REFERENCIA, C.O_MOVIMIENTO…): ver `armarNotaCreditoProveedor`.
 // Queda en elaboración (estado 0): alguien la revisa en SIESA antes de
 // contabilizar. Si algún día vuelve a faltar un valor, la nota crédito
 // NO se manda y queda bloqueada con un mensaje que dice qué falta
 // (`bloqueoNotaCreditoProveedor`).
 //
-// A diferencia de la CEA, la factura del proveedor viaja en `DOCTO_REFERENCIA`
+// A diferencia de la CEA, la factura del proveedor viaja en `DTO_REFERENCIA`
 // (f451_num_docto_referencia), no en `PENDIENTE` (ver `armarNotaCreditoProveedor`).
 export const DOCUMENTO_NOTA_CREDITO_PROVEEDOR = {
   /** Id del conector en SIESA, tal como está en la pantalla "Apis Dinámicas". */
-  idDocumento: "258496",
-  nombreDocumento: "DEVOLUCIONES_DEV_CARNES_final",
+  idDocumento: "259954",
+  nombreDocumento: "Devoluciones_Directas_DEV_FINAL",
 
-  /** Código del tipo de documento de la nota crédito (f350_id_tipo_docto). */
+  /**
+   * Código del tipo de documento de la nota crédito (f350_id_tipo_docto). Es fijo
+   * en el conector y NO viaja en el payload: se usa para anotar el envío.
+   */
   tipoDocto: "CDP",
   /** Unidad de negocio del movimiento: la misma de la CEA (003 = Carnes). */
   unidadNegocio: DOCUMENTO_CARNES.unidadNegocio,

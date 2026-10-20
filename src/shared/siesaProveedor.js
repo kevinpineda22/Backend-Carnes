@@ -318,15 +318,15 @@ export function armarEntradaProveedor({ recepcion, items = [], consecutivo, conf
  * `cantidad_devuelta` > 0, su cantidad devuelta y su valor proporcional
  * (`valorDevuelto`, calculado: no hay columna que pueda quedar vieja).
  *
- * El conector todavía no existe. Mientras `config.idDocumento`, `nombreDocumento`
+ * Si algún día falta el conector: mientras `config.idDocumento`, `nombreDocumento`
  * o `tipoDocto` falten, el armador devuelve el bloqueo
  * `bloqueoNotaCreditoProveedor` (más los demás que correspondan, para que quien
  * lo lea vea todo junto) y la nota crédito no sale.
  *
- * El JSON es PROVISIONAL: copia la forma de la CEA (Documentos + Movimientos, sin
- * Descuentos) con la factura del proveedor en `PENDIENTE`, y nombra la entrada
+ * Calza con el conector 259954: Documentos + Movimientos (sin Descuentos), con
+ * la factura del proveedor en `DTO_REFERENCIA`, y nombra la entrada
  * (`TC PRV R{n}`) en las notas para que quien la lea en SIESA sepa de cuál viene.
- * Cuando el conector exista, este es el único lugar que se ajusta.
+ * Si el conector cambia, este es el único lugar que se ajusta.
  *
  * @param {object} p
  * @param {object} p.recepcion     igual que en `armarEntradaProveedor`
@@ -363,19 +363,29 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
     };
   });
 
-  // El conector 258496 declara como variables TODOS estos campos: `TIPO_DOCTO`
-  // en Documentos y Movimientos, y `NOTAS` también por movimiento. SIESA
-  // rechaza tanto un campo que el conector no declara como uno declarado que
-  // no viaja, así que el payload tiene que calzar exacto con el conector.
-  const notasMovimiento = notasDocumento(referencia, `DEVOLUCION PROVEEDOR FACT ${base.pendiente}`.trim());
-  const movimientos = filas.map((f, n) => ({
-    ...armarMovimiento({ recepcion, config, consec, co: base.co, tipoDocto, n, ...f }),
-    NOTAS: notasMovimiento,
-  }));
+  // El conector 259954 tiene sus PROPIOS nombres de campo, distintos de los de la
+  // CEA, y no declara TIPO_DOCTO (CDP es fijo) ni NOTAS por movimiento. SIESA
+  // rechaza tanto un campo que el conector no declara como uno declarado que no
+  // viaja, así que el payload tiene que calzar exacto con el conector. Se arma
+  // con los mismos valores de la CEA y se renombra acá.
+  const movimientos = filas.map((f, n) => {
+    const m = armarMovimiento({ recepcion, config, consec, co: base.co, tipoDocto, n, ...f });
+    return {
+      CONSECUTIVO: m.NRO_DOCTO,
+      NRO_REGISTRO: m.NRO_REGISTRO,
+      BODEGA: m.BODEGA,
+      "C.O_MOVIMIENTO": m.CO_MOVIMIENTO,
+      UNIDAD_MEDIDA: m.UNIDAD_MEDIDA,
+      CANTIDAD: m.CANTIDAD,
+      VALOR_BRUTO: m.VALOR_BRUTO,
+      ITEM: m.ITEM,
+      UNIDAD_NEGOCIO: m.UNIDAD_NEGOCIO,
+    };
+  });
 
-  // El conector de devoluciones llama `DOCTO_REFERENCIA` a lo que la CEA llama
-  // `PENDIENTE`: es el mismo campo de SIESA (f451_num_docto_referencia).
-  const { PENDIENTE: doctoReferencia, ...cabecera } = armarDocumento({
+  // La factura del proveedor va en `DTO_REFERENCIA` (f451_num_docto_referencia):
+  // es lo que la CEA manda como `PENDIENTE`.
+  const cabecera = armarDocumento({
     recepcion,
     tipoDocto,
     consec,
@@ -387,7 +397,14 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
       razonSocialDe(recepcion),
     ),
   });
-  const documento = { ...cabecera, DOCTO_REFERENCIA: doctoReferencia };
+  const documento = {
+    CONSECUTIVO: cabecera.CONSECUTIVO_DOCTO,
+    FECHA_DOCTO: cabecera.FECHA,
+    NIT_TERCERO: cabecera.NIT,
+    NOTAS: cabecera.NOTAS,
+    SUCURSAL: cabecera.SUCURSAL,
+    DTO_REFERENCIA: cabecera.PENDIENTE,
+  };
 
   return {
     payload: { Documentos: [documento], Movimientos: movimientos },

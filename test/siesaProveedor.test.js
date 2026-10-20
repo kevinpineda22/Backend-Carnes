@@ -409,33 +409,35 @@ test("entrada: no muta la recepción ni los renglones", () => {
 
 // ─── La nota crédito ────────────────────────────────────────────────────────
 
-test("nota crédito: con el conector real (258496) no hay bloqueos y manda TIPO_DOCTO CDP y NOTAS por movimiento", () => {
+test("nota crédito: con el conector real (259954) no hay bloqueos, sin TIPO_DOCTO ni NOTAS por movimiento", () => {
   const { bloqueos, payload } = armarNotaCreditoProveedor({
     recepcion: RECEPCION,
     items: [KILOS, UNIDADES],
     config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   });
   assert.deepEqual(bloqueos, []);
-  assert.equal(payload.Documentos[0].TIPO_DOCTO, "CDP");
-  assert.equal(payload.Movimientos[0].TIPO_DOCTO, "CDP");
-  assert.ok(payload.Movimientos[0].NOTAS.length > 0);
+  // CDP es fijo en el conector: no viaja.
+  assert.equal("TIPO_DOCTO" in payload.Documentos[0], false);
+  assert.equal("TIPO_DOCTO" in payload.Movimientos[0], false);
+  assert.equal("NOTAS" in payload.Movimientos[0], false);
+  assert.ok(payload.Documentos[0].NOTAS.length > 0);
   assert.equal(payload.Movimientos.length, 1);
 });
 
-test("nota crédito: el payload calza EXACTO con los campos variables del conector 258496", () => {
+test("nota crédito: el payload calza EXACTO con los campos variables del conector 259954", () => {
   const { payload } = armarNotaCreditoProveedor({
     recepcion: RECEPCION,
     items: [KILOS, UNIDADES],
     config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
   });
-  // Lo que declara el conector como "Campo variable" (capturas del 06/10/2026).
+  // Lo que declara el conector como "Campo variable" (JSON y capturas del 20/10/2026).
   // SIESA rechaza un campo de más y también uno declarado que no viaja.
   assert.deepEqual(Object.keys(payload.Documentos[0]).sort(), [
-    "CONSECUTIVO_DOCTO", "DOCTO_REFERENCIA", "FECHA", "NIT", "NOTAS", "SUCURSAL", "TIPO_DOCTO",
+    "CONSECUTIVO", "DTO_REFERENCIA", "FECHA_DOCTO", "NIT_TERCERO", "NOTAS", "SUCURSAL",
   ]);
   assert.deepEqual(Object.keys(payload.Movimientos[0]).sort(), [
-    "BODEGA", "CANTIDAD", "CO_MOVIMIENTO", "ITEM", "NOTAS", "NRO_DOCTO", "NRO_REGISTRO",
-    "TIPO_DOCTO", "UNIDAD_MEDIDA", "UNIDAD_NEGOCIO", "VALOR_BRUTO",
+    "BODEGA", "C.O_MOVIMIENTO", "CANTIDAD", "CONSECUTIVO", "ITEM", "NRO_REGISTRO",
+    "UNIDAD_MEDIDA", "UNIDAD_NEGOCIO", "VALOR_BRUTO",
   ]);
 });
 
@@ -451,29 +453,26 @@ test("nota crédito: lleva SOLO lo devuelto, con el valor proporcional", () => {
   assert.deepEqual(payload, {
     Documentos: [
       {
-        TIPO_DOCTO: "NCP",
-        CONSECUTIVO_DOCTO: "126",
-        FECHA: "20260930",
-        NIT: "900123456",
-        SUCURSAL: "001",
+        CONSECUTIVO: "126",
+        FECHA_DOCTO: "20260930",
+        NIT_TERCERO: "900123456",
         NOTAS: "TC PRV N12 - DEVOLUCION PROVEEDOR FACT FE-00123 Lopez ENTRADA TC PRV R12 - NUTRESA S.A.S.",
-        DOCTO_REFERENCIA: "FE-00123",
+        SUCURSAL: "001",
+        DTO_REFERENCIA: "FE-00123",
       },
     ],
     Movimientos: [
       {
-        TIPO_DOCTO: "NCP",
-        NRO_DOCTO: "126",
+        CONSECUTIVO: "126",
         NRO_REGISTRO: "1",
         BODEGA: "B07",
-        CO_MOVIMIENTO: "007",
+        "C.O_MOVIMIENTO": "007",
         UNIDAD_MEDIDA: "KL",
         // 10 de 100 KL devueltos: 10 KL y el 10 % de $2.000.000.
         CANTIDAD: "10.000",
         VALOR_BRUTO: "200000",
         ITEM: "15167",
         UNIDAD_NEGOCIO: "003",
-        NOTAS: "TC PRV N12 - DEVOLUCION PROVEEDOR FACT FE-00123",
       },
     ],
   });
@@ -516,20 +515,20 @@ test("nota crédito: la factura de más de 12 caracteres también bloquea y no s
   const factura = "FE-1234567890";
   const { bloqueos, payload } = armarNC({ recepcion: { ...RECEPCION, factura } });
   assert.ok(bloqueos.some((b) => b.includes(factura) && /No se recorta/.test(b)));
-  assert.equal(payload.Documentos[0].DOCTO_REFERENCIA, factura);
+  assert.equal(payload.Documentos[0].DTO_REFERENCIA, factura);
 });
 
 test("nota crédito: factura_siesa también es la referencia de la nota", () => {
   const { payload, bloqueos } = armarNC({ recepcion: { ...RECEPCION, factura: "FE-1234567890-A", factura_siesa: "FE123" } });
   assert.deepEqual(bloqueos, []);
-  assert.equal(payload.Documentos[0].DOCTO_REFERENCIA, "FE123");
+  assert.equal(payload.Documentos[0].DTO_REFERENCIA, "FE123");
 });
 
 // ─── Configuración ──────────────────────────────────────────────────────────
 
-test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR apunta al conector 258496 de devoluciones", () => {
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, "258496");
-  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, "DEVOLUCIONES_DEV_CARNES_final");
+test("config: DOCUMENTO_NOTA_CREDITO_PROVEEDOR apunta al conector 259954 de devoluciones", () => {
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.idDocumento, "259954");
+  assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.nombreDocumento, "Devoluciones_Directas_DEV_FINAL");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.tipoDocto, "CDP");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.unidadNegocio, "003");
   assert.equal(DOCUMENTO_NOTA_CREDITO_PROVEEDOR.decimalesValor, 0);
