@@ -623,6 +623,14 @@ const listarMisRecepcionesQuerySchema = z
     message: "desde no puede ser posterior a hasta.",
   });
 
+/**
+ * "Recepciones en curso" del recibidor: solo los borradores que abrió su correo.
+ * Con `CARNES_AUTH` activo el controlador lo reemplaza por el de la sesión.
+ */
+const listarEnCursoQuerySchema = z.object({
+  recibido_por: correo("El correo del recibidor no es válido."),
+});
+
 /** Corregir la referencia de factura para SIESA: quién y la referencia nueva (el formato lo valida el modelo puro). */
 const corregirFacturaSiesaProveedorSchema = z.object({
   por: correo("El correo de quien corrige no es válido."),
@@ -736,6 +744,7 @@ export const validators = {
   reintentarSiesaProveedor: validar(reintentarSiesaProveedorSchema),
   listarRecepcionesProveedor: validar(listarRecepcionesProveedorQuerySchema, "query"),
   listarMisRecepciones: validar(listarMisRecepcionesQuerySchema, "query"),
+  listarEnCurso: validar(listarEnCursoQuerySchema, "query"),
   corregirFacturaSiesaProveedor: validar(corregirFacturaSiesaProveedorSchema),
   anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
 

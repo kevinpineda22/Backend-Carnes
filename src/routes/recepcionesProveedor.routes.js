@@ -26,9 +26,9 @@ router.post(
 router.get("/mias", validators.listarMisRecepciones, RecepcionesProveedorController.listarMias);
 
 // "Recepciones en curso": los borradores abiertos. ANTES de "/:id" (si no, "en-curso"
-// se leería como un id). Sin `requireAdminCarnes`: es del recibidor. Sin query: no hay
-// validator.
-router.get("/en-curso", RecepcionesProveedorController.listarEnCurso);
+// se leería como un id). Sin `requireAdminCarnes`: es del recibidor y filtra por su
+// propio correo.
+router.get("/en-curso", validators.listarEnCurso, RecepcionesProveedorController.listarEnCurso);
 
 // Búsqueda de cortes del catálogo para los "Cortes adicionales". ANTES de "/:id": si
 // no, "catalogo-cortes" se leería como un id. Sin `requireAdminCarnes`: es del recibidor.

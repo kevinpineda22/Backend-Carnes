@@ -211,18 +211,19 @@ export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
 }
 
 /**
- * "Recepciones en curso": todos los borradores abiertos (de todas las sedes; el
- * front los agrupa), el de actividad más reciente primero. Una consulta para las
+ * "Recepciones en curso": los borradores abiertos con el correo del recibidor (de
+ * todas las sedes; el front los agrupa), el de actividad más reciente primero. Una consulta para las
  * cabeceras y otra por tanda de borradores para los renglones (nunca una por
  * borrador); cada tanda se pagina porque una plantilla grande pasa de 1000 filas.
  * Sin firma ni cédula.
  *
  * @returns {object[]} filas de `armarFilaEnCurso`
  */
-export async function listarEnCurso() {
+export async function listarEnCurso({ correo }) {
   const { data, error } = await supabase
     .from(TABLE)
     .select(COLUMNAS_EN_CURSO)
+    .ilike("recibido_por", escaparParaIlike(correo))
     .eq("estado", ESTADOS.BORRADOR)
     .order("updated_at", { ascending: false })
     .order("id", { ascending: false })

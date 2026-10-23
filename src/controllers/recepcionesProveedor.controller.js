@@ -62,14 +62,17 @@ export async function listarMias(req, res, next) {
 }
 
 /**
- * GET /api/recepciones-proveedor/en-curso
+ * GET /api/recepciones-proveedor/en-curso?recibido_por=
  *
- * Los borradores abiertos (todas las sedes), con cuántos renglones ya tienen
- * cantidad. Sin firma ni cédula. Del flujo del recibidor: basta con sesión.
+ * Los borradores que abrió la cuenta de la sesión (todas las sedes), con cuántos
+ * renglones ya tienen cantidad. Con `CARNES_AUTH` activo el correo sale del token
+ * (`quienHace`). Sin firma ni cédula.
  */
 export async function listarEnCurso(req, res, next) {
   try {
-    const data = await RecepcionProveedorModel.listarEnCurso();
+    const { recibido_por } = req.datosValidados;
+    const correo = normalizarCorreo(quienHace(req, recibido_por, "recibido_por"));
+    const data = await RecepcionProveedorModel.listarEnCurso({ correo });
     res.json({ ok: true, data });
   } catch (error) {
     next(error);
