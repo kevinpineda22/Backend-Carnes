@@ -14,6 +14,14 @@ import { agruparPor, enLotes } from "../shared/adminProveedor.js";
 import * as CatalogoModel from "./Catalogo.model.js";
 import { planearCorteAdicional, resultadoQuitarAdicional } from "../shared/cortesAdicionales.js";
 import {
+  BORRADORES_POR_CONSULTA_ITEMS,
+  COLUMNAS_EN_CURSO,
+  COLUMNAS_ITEMS_EN_CURSO,
+  FILAS_POR_PAGINA_ITEMS,
+  LIMITE_EN_CURSO,
+  armarFilaEnCurso,
+} from "../shared/enCurso.js";
+import {
   COLUMNAS_HISTORIAL_PROVEEDOR,
   COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR,
   RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
