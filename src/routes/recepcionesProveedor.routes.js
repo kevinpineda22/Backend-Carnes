@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as RecepcionesProveedorController from "../controllers/recepcionesProveedor.controller.js";
 import * as AdminController from "../controllers/recepcionesProveedorAdmin.controller.js";
+import * as ProveedoresController from "../controllers/proveedores.controller.js";
 import { validators } from "../middleware/validators.js";
 import { requireAdminCarnes } from "../middleware/authCarnes.js";
 
@@ -24,6 +25,10 @@ router.post(
 // y filtra por su propio correo.
 router.get("/mias", validators.listarMisRecepciones, RecepcionesProveedorController.listarMias);
 
+// Búsqueda de cortes del catálogo para los "Cortes adicionales". ANTES de "/:id": si
+// no, "catalogo-cortes" se leería como un id. Sin `requireAdminCarnes`: es del recibidor.
+router.get("/catalogo-cortes", validators.buscarCortes, ProveedoresController.buscarCortes);
+
 // Para reanudar el borrador tras recargar (sin firma ni cédula).
 router.get("/:id", validators.idParam, RecepcionesProveedorController.obtener);
 
@@ -33,6 +38,19 @@ router.patch(
   validators.idParam,
   validators.guardarRecepcionProveedor,
   RecepcionesProveedorController.guardar,
+);
+
+// Cortes adicionales (fuera de la plantilla): agregar y quitar mientras es borrador.
+router.post(
+  "/:id/cortes-adicionales",
+  validators.idParam,
+  validators.agregarCorteAdicional,
+  RecepcionesProveedorController.agregarCorteAdicional,
+);
+router.delete(
+  "/:id/cortes-adicionales/:item_id",
+  validators.corteAdicionalParams,
+  RecepcionesProveedorController.quitarCorteAdicional,
 );
 
 // Firmar. Borrador -> Finalizada; sobre una ya firmada es un reintento que no vuelve a firmar.

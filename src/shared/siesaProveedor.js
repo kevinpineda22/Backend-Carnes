@@ -37,9 +37,9 @@
  *
  * ─── Sin Descuentos, sin IVA ───────────────────────────────────────────────
  *
- * El valor es sin IVA. Si el proveedor tiene descuento (`recepcion.descuento_pct`,
- * p. ej. Bucanero 5 %), VALOR_BRUTO ya lleva el valor NETO, aplicado por renglón
- * (`aplicarDescuento`). La clave `Descuentos` NO viaja ni como arreglo vacío:
+ * El valor es sin IVA. Si hay descuento (el global `recepcion.descuento_pct`, p. ej.
+ * Bucanero 5 %, o el propio de un renglón, que lo reemplaza: `pctEfectivo`),
+ * VALOR_BRUTO ya lleva el valor NETO, aplicado por renglón (`aplicarDescuento`). La clave `Descuentos` NO viaja ni como arreglo vacío:
  * el conector valida la sección apenas la clave existe y responde 400 (ver `armarEntradaDirecta`).
  *
  * ─── Consecutivo ───────────────────────────────────────────────────────────
@@ -62,6 +62,7 @@ import {
   validarRecepcion,
   aplicarDescuento,
   etiquetaSeccion,
+  pctEfectivo,
   valorDevuelto,
 } from "./proveedorValores.js";
 
@@ -271,9 +272,10 @@ export function armarEntradaProveedor({ recepcion, items = [], consecutivo, conf
         item,
         unidad,
         cantidad: ajustarCantidadAUnidad(item.cantidad, unidad),
-        // El descuento del proveedor se aplica POR RENGLÓN: VALOR_BRUTO y los totales
-        // llevan el valor neto, igual que el resumen que ve el recibidor.
-        valor: aplicarDescuento(Number(item.valor_total) || 0, recepcion?.descuento_pct),
+        // El descuento se aplica POR RENGLÓN, con el porcentaje efectivo del renglón
+        // (el propio o, si no tiene, el global): VALOR_BRUTO y los totales llevan el
+        // valor neto, igual que el resumen que ve el recibidor.
+        valor: aplicarDescuento(Number(item.valor_total) || 0, pctEfectivo(item, recepcion)),
       };
     });
 
@@ -359,7 +361,7 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
       item,
       unidad,
       cantidad: ajustarCantidadAUnidad(item.cantidad_devuelta, unidad),
-      valor: aplicarDescuento(valorDevuelto(item), recepcion?.descuento_pct),
+      valor: aplicarDescuento(valorDevuelto(item), pctEfectivo(item, recepcion)),
     };
   });
 

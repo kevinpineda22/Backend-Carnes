@@ -1,4 +1,5 @@
 import * as ProveedorModel from "../models/Proveedor.model.js";
+import * as CatalogoModel from "../models/Catalogo.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 
 /**
@@ -78,6 +79,42 @@ export async function cargarPlantilla(req, res, next) {
       desactivacion_omitida: plan.desactivacion_omitida,
       resumen: plan.resumen,
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/proveedores/catalogo-cortes?q=
+ * Busca cortes del catálogo por código o descripción (mínimo 2 caracteres). Lo usan
+ * el "Agregar corte" de la plantilla (admin) y los "Cortes adicionales" del recibidor.
+ */
+export async function buscarCortes(req, res, next) {
+  try {
+    const { q, limite } = req.datosValidados;
+    const data = await CatalogoModel.buscarCortes(q, { limite });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/proveedores/:id/plantilla/cortes
+ * Body: { por(correo), codigo_item, unidad }
+ *
+ * Agrega UN corte del catálogo a la plantilla del proveedor. 201 con la fila;
+ * 404 si el corte no está en el catálogo; 409 si ya está en la plantilla.
+ */
+export async function agregarCorte(req, res, next) {
+  try {
+    const { codigo_item, unidad, por } = conQuienHace(req, req.body, "por");
+    const { fila, reactivada } = await ProveedorModel.agregarCorte(req.datosValidados.id, {
+      codigo_item,
+      unidad,
+      por,
+    });
+    res.status(201).json({ ok: true, data: fila, reactivada });
   } catch (error) {
     next(error);
   }

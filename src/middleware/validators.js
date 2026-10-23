@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { createError } from "./errorHandler.js";
 import { ESTADOS as ESTADOS_PROVEEDOR } from "../shared/estadosProveedor.js";
-import { normalizarFactura } from "../shared/proveedorValores.js";
+import { normalizarFactura, normalizarUnidad, unidadValida } from "../shared/proveedorValores.js";
+import { LARGO_MIN_BUSQUEDA, LIMITE_BUSQUEDA, normalizarBusqueda } from "../shared/catalogoCortes.js";
 import { LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
 import {
   LIMITE_HISTORIAL_DEFECTO,
@@ -334,6 +335,60 @@ const cargarPlantillaProveedorSchema = z.object({
   aplicar: z.boolean({ invalid_type_error: "debe ser true o false." }).default(false),
 });
 
+// ─── Catálogo de cortes y "Agregar corte" ──────────────────────────────────
+
+/**
+ * GET .../catalogo-cortes?q=. El texto se SANEA (`normalizarBusqueda`) antes de
+ * medirlo: lo que llega al filtro `ilike` ya no trae comodines ni separadores.
+ */
+const buscarCortesQuerySchema = z.object({
+  q: z
+    .string({ required_error: "Escribí qué corte buscás.", invalid_type_error: "Escribí qué corte buscás." })
+    .transform(normalizarBusqueda)
+    .refine((v) => v.length >= LARGO_MIN_BUSQUEDA, `Escribí al menos ${LARGO_MIN_BUSQUEDA} caracteres.`),
+  limite: z.coerce
+    .number({ invalid_type_error: "El límite no es válido." })
+    .int("El límite no es válido.")
+    .min(1, "El límite no es válido.")
+    .max(LIMITE_BUSQUEDA, `El límite no puede pasar de ${LIMITE_BUSQUEDA}.`)
+    .optional(),
+});
+
+/** Unidad de un corte: solo KL o UND (las que SIESA acepta), tal como las normaliza el resto del módulo. */
+const unidadDeCorte = z
+  .string({ required_error: "Falta la unidad del corte.", invalid_type_error: "La unidad del corte no es válida." })
+  .transform(normalizarUnidad)
+  .refine(unidadValida, "La unidad del corte no es válida (solo KL o UND).");
+
+/** Un corte del catálogo se identifica por (código, unidad); la descripción la pone el servidor. */
+const corteDelCatalogo = {
+  codigo_item: codigoSiesa("Falta el código del corte.").refine(
+    (v) => v.length <= 20,
+    "El código del corte no puede pasar de 20 caracteres.",
+  ),
+  unidad: unidadDeCorte,
+};
+
+const agregarCorteProveedorSchema = z.object({
+  por: correo("El correo de quien agrega el corte no es válido."),
+  ...corteDelCatalogo,
+});
+
+const agregarCorteAdicionalSchema = z.object({
+  editado_por: correo("El correo de quien agrega el corte no es válido."),
+  ...corteDelCatalogo,
+});
+
+/** `:id` de la recepción + `:item_id` del renglón. */
+const corteAdicionalParamsSchema = z.object({
+  id: idParamSchema.shape.id,
+  item_id: z.coerce
+    .number({ invalid_type_error: "El corte no es válido." })
+    .int("El corte no es válido.")
+    .positive("El corte no es válido.")
+    .safe("El corte no es válido."),
+});
+
 // ─── Recepción de proveedor: abrir y autoguardar ───────────────────────────
 
 const abrirRecepcionProveedorSchema = z.object({
@@ -380,6 +435,10 @@ const numeroOTexto = z.union([z.string().max(200), z.number()]);
 const guardarRecepcionProveedorSchema = z.object({
   editado_por: correo("El correo de quien edita no es válido."),
   observaciones: z.string().max(20000).nullable().optional(),
+  // Descuento GLOBAL de la recepción (%). Solo la forma: el rango (0 a menos de
+  // 100, hasta 2 decimales) lo juzga `planearDescuentoGlobal` y un valor malo
+  // vuelve en `pendientes`, sin tumbar el autoguardado.
+  descuento_pct: numeroOTexto.nullish(),
   items: z
     .array(
       z.object({
@@ -396,6 +455,8 @@ const guardarRecepcionProveedorSchema = z.object({
         // El unitario que confirmó, como texto de plata con hasta 4 decimales
         // ("33.333,3333"); debe coincidir con el unitario resultante.
         confirmar_valor: z.string().max(250).nullish(),
+        // Descuento propio del renglón (%): REEMPLAZA al global. `null` o "" lo quita.
+        descuento_pct: numeroOTexto.nullish(),
       }),
     )
     .max(300, "Demasiados renglones en un solo guardado.")
@@ -664,6 +725,10 @@ export const validators = {
   listarProveedores: validar(listarProveedoresQuerySchema, "query"),
   idParam: validar(idParamSchema, "params"),
   cargarPlantillaProveedor: validar(cargarPlantillaProveedorSchema),
+  buscarCortes: validar(buscarCortesQuerySchema, "query"),
+  agregarCorteProveedor: validar(agregarCorteProveedorSchema),
+  agregarCorteAdicional: validar(agregarCorteAdicionalSchema),
+  corteAdicionalParams: validar(corteAdicionalParamsSchema, "params"),
 
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),

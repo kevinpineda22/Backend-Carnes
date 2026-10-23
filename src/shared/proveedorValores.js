@@ -340,9 +340,9 @@ export function etiquetaSeccion(seccion) {
 }
 
 /**
- * Valor con el descuento del proveedor aplicado, en pesos enteros. Se aplica POR
- * RENGLÓN (no sobre el total) para que lo que se muestra sume exactamente lo que
- * viaja a SIESA. Sin descuento (0, vacío o inválido) devuelve el valor tal cual.
+ * Valor con el descuento aplicado, en pesos enteros. Se aplica POR RENGLÓN (no
+ * sobre el total) para que lo que se muestra sume exactamente lo que viaja a
+ * SIESA. Sin descuento (0, vacío o inválido) devuelve el valor tal cual.
  */
 export function aplicarDescuento(valor, pct) {
   const v = aNumero(valor);
@@ -350,6 +350,54 @@ export function aplicarDescuento(valor, pct) {
   if (!Number.isFinite(v)) return 0;
   if (!Number.isFinite(p) || p <= 0) return v;
   return Math.round(v * (1 - p / 100));
+}
+
+/** Tope EXCLUSIVO del descuento: 100 % dejaría el renglón en 0. */
+export const DESCUENTO_MAX_EXCLUSIVO = 100;
+
+/**
+ * Interpreta un porcentaje digitado: número o texto ("5", "5,5", "5.25"), con
+ * hasta 2 decimales y 0 <= p < 100. Devuelve el número o `null` si no es válido.
+ * Vacío NO es válido acá: quien llama decide qué significa vacío (en un renglón
+ * es "quitar el descuento propio"; en la cabecera, no cambiar).
+ *
+ * A diferencia de la plata (`parsearPesos`), el punto SÍ es decimal: un
+ * porcentaje nunca llega a miles.
+ */
+export function parsearPorcentaje(valor) {
+  let n;
+  if (typeof valor === "number") {
+    n = valor;
+  } else if (typeof valor === "string") {
+    const texto = valor.trim();
+    if (!/^\d{1,2}(?:[.,]\d{1,2})?$/.test(texto)) return null;
+    n = Number(texto.replace(",", "."));
+  } else {
+    return null;
+  }
+  if (!Number.isFinite(n) || n < 0 || n >= DESCUENTO_MAX_EXCLUSIVO) return null;
+  // Hasta 2 decimales: 5.123 se rechaza en vez de redondearse en silencio.
+  if (Math.abs(Math.round(n * 100) - n * 100) > 1e-9) return null;
+  return redondear(n, 2);
+}
+
+/**
+ * El porcentaje que de verdad se le aplica a un renglón: el propio del renglón
+ * si lo tiene (REEMPLAZA al global, no se suman) y si no el de la recepción.
+ * `0` en el renglón es un valor: "este corte va sin descuento" aunque la
+ * recepción tenga uno. Solo `null`/vacío/inválido cae al global.
+ *
+ * Es el ÚNICO lugar que decide esto: resumen, entrada y nota crédito de SIESA,
+ * admin y correo lo usan. El gemelo del front (`valoresProveedor.js`) lo replica.
+ *
+ * @param {{descuento_pct?: *}} item
+ * @param {{descuento_pct?: *}} recepcion  la cabecera (su `descuento_pct` es el global)
+ */
+export function pctEfectivo(item, recepcion) {
+  const propio = aNumeroONull(item?.descuento_pct);
+  if (propio !== null && Number.isFinite(propio) && propio >= 0) return propio;
+  const global = aNumero(recepcion?.descuento_pct);
+  return Number.isFinite(global) && global > 0 ? global : 0;
 }
 
 // ─── Validación ────────────────────────────────────────────────────────────
@@ -420,6 +468,10 @@ export function validarRenglon(entrada) {
     errores.push("Tiene valor pero la cantidad es 0");
   }
 
+  if (!esVacio(item.descuento_pct) && parsearPorcentaje(item.descuento_pct) === null) {
+    errores.push("El descuento del renglón no es válido (de 0 a menos de 100, con hasta 2 decimales)");
+  }
+
   if (!esNumeroValido(devuelta)) {
     errores.push("La cantidad devuelta no es válida");
   } else if (devuelta > 0) {
@@ -457,34 +509,49 @@ export function validarRecepcion(items = []) {
  * el total es lo facturado (la devolución NO se resta: la entrada a SIESA lleva
  * el monto completo y lo devuelto sale en nota crédito aparte).
  *
- * `descuentoPct` es el descuento de la recepción (snapshot del proveedor): se
- * aplica por renglón, y solo entonces el resumen agrega `subtotal` (bruto),
- * `descuento` y `descuento_pct`.
+ * `descuentoPct` es el descuento GLOBAL de la recepción; cada renglón puede traer
+ * el suyo (`descuento_pct`) que lo reemplaza (`pctEfectivo`). Se aplica por
+ * renglón, y solo cuando algún renglón tiene descuento el resumen agrega
+ * `subtotal` (bruto), `descuento` y `descuento_pct` (el global). Si además algún
+ * renglón usa un porcentaje distinto del global agrega `descuento_variable: true`.
  */
 export function resumenRecepcion(items = [], { descuentoPct = 0 } = {}) {
+  const cabecera = { descuento_pct: descuentoPct };
+  const global = pctEfectivo(null, cabecera);
   let renglones = 0;
   let subtotal = 0;
   let total = 0;
   let totalDevuelto = 0;
   let conDevolucion = 0;
+  let hayDescuento = global > 0;
+  let variable = false;
   for (const item of items) {
     if (!(aNumero(item?.cantidad) > 0)) continue;
     renglones += 1;
+    const pct = pctEfectivo(item, cabecera);
+    if (pct > 0) hayDescuento = true;
+    if (pct !== global) variable = true;
     const t = aNumero(item.valor_total);
     if (Number.isFinite(t)) {
       subtotal += t;
-      total += aplicarDescuento(t, descuentoPct);
+      total += aplicarDescuento(t, pct);
     }
     if (aNumero(item.cantidad_devuelta) > 0) {
       conDevolucion += 1;
-      totalDevuelto += aplicarDescuento(valorDevuelto(item), descuentoPct);
+      totalDevuelto += aplicarDescuento(valorDevuelto(item), pct);
     }
   }
   const resumen = { renglones, total, total_devuelto: totalDevuelto, renglones_con_devolucion: conDevolucion };
   // Con descuento, `total` y `total_devuelto` ya son NETOS (suma de renglones
   // descontados). Sin descuento el resumen queda exactamente como siempre.
-  if (aNumero(descuentoPct) > 0) {
-    return { ...resumen, subtotal, descuento: subtotal - total, descuento_pct: aNumero(descuentoPct) };
+  if (hayDescuento) {
+    return {
+      ...resumen,
+      subtotal,
+      descuento: subtotal - total,
+      descuento_pct: global,
+      ...(variable ? { descuento_variable: true } : {}),
+    };
   }
   return resumen;
 }

@@ -1,4 +1,4 @@
-import { formatearPesos } from "./proveedorValores.js";
+import { formatearPesos, pctEfectivo } from "./proveedorValores.js";
 
 /* =============================================
    Armado PURO del correo de confirmación que recibe quien hizo una recepción.
@@ -57,7 +57,12 @@ export function renglonesRecibidos(items = []) {
 const fila = (etiqueta, valor) =>
   `<tr><td style="color:#6b7280;">${etiqueta}</td><td align="right"><strong>${valor}</strong></td></tr>`;
 
-function tablaRenglones(renglones, { conValor }) {
+/**
+ * `conDescuento` agrega la columna "Desc." con el porcentaje efectivo de cada
+ * renglón (el propio o el global de `recepcion`): cuando hay descuentos por
+ * corte, el total neto solo se explica si se ve cuál se aplicó a cuál.
+ */
+function tablaRenglones(renglones, { conValor, conDescuento = false, recepcion = null }) {
   const celda = "padding:6px 8px;border-bottom:1px solid #e5e7eb;";
   const cabecera =
     `<tr style="background:#f3f4f6;text-align:left;">` +
@@ -65,6 +70,7 @@ function tablaRenglones(renglones, { conValor }) {
     `<th style="${celda}" align="right">Cantidad</th>` +
     `<th style="${celda}">Unidad</th>` +
     (conValor ? `<th style="${celda}" align="right">Valor</th>` : "") +
+    (conDescuento ? `<th style="${celda}" align="right">Desc.</th>` : "") +
     `</tr>`;
   const cuerpo = renglones
     .map(
@@ -73,21 +79,33 @@ function tablaRenglones(renglones, { conValor }) {
         `<td style="${celda}" align="right">${cantidadTexto(i.cantidad)}</td>` +
         `<td style="${celda}">${esc(i.unidad || "KL")}</td>` +
         (conValor ? `<td style="${celda}" align="right">${esc(formatearPesos(i.valor_total))}</td>` : "") +
+        (conDescuento ? `<td style="${celda}" align="right">${esc(textoPct(pctEfectivo(i, recepcion)))}</td>` : "") +
         `</tr>`,
     )
     .join("");
   return `<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:13px;margin-bottom:20px;">${cabecera}${cuerpo}</table>`;
 }
 
-/** Subtotal / descuento / total neto (con descuento) o solo el total. */
+const textoPct = (pct) => (pct > 0 ? `${cantidadTexto(pct)}%` : "—");
+
+/** ¿El resumen trae algún descuento (global o por renglón)? */
+const hayDescuento = (resumen) => Number(resumen?.descuento_pct) > 0 || Number(resumen?.descuento) > 0;
+
+/**
+ * Subtotal / descuento / total neto (con descuento) o solo el total. Con
+ * porcentajes distintos por renglón no hay UN porcentaje que mostrar: la etiqueta
+ * va sin él y el detalle queda en la columna "Desc." de la tabla.
+ */
 function bloqueTotales(resumen) {
   if (!resumen) return "";
   const filas = [];
-  if (Number(resumen.descuento_pct) > 0) {
+  if (hayDescuento(resumen)) {
+    const etiqueta =
+      resumen.descuento_variable || !(Number(resumen.descuento_pct) > 0)
+        ? "Descuento"
+        : `Descuento (${esc(cantidadTexto(resumen.descuento_pct))}%)`;
     filas.push(fila("Subtotal", esc(formatearPesos(resumen.subtotal))));
-    filas.push(
-      fila(`Descuento (${esc(cantidadTexto(resumen.descuento_pct))}%)`, `- ${esc(formatearPesos(resumen.descuento))}`),
-    );
+    filas.push(fila(etiqueta, `- ${esc(formatearPesos(resumen.descuento))}`));
     filas.push(fila("Total neto", esc(formatearPesos(resumen.total))));
   } else {
     filas.push(fila("Total", esc(formatearPesos(resumen.total))));
@@ -168,7 +186,7 @@ export function armarConfirmacion(tipo, recepcion, items = [], resumen = null) {
         titulo: "Recepción de proveedor registrada",
         subtitulo: "La recepción quedó registrada correctamente.",
         filas,
-        cuerpo: `${tablaRenglones(renglones, { conValor: true })}${bloqueTotales(resumen)}${bloqueDevoluciones(items, resumen)}`,
+        cuerpo: `${tablaRenglones(renglones, { conValor: true, conDescuento: hayDescuento(resumen), recepcion })}${bloqueTotales(resumen)}${bloqueDevoluciones(items, resumen)}`,
         id: recepcion.id,
       }),
     };

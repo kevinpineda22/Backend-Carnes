@@ -6,6 +6,15 @@ import { requireAdminCarnes } from "../middleware/authCarnes.js";
 const router = Router();
 
 router.get("/", validators.listarProveedores, ProveedoresController.listar);
+// Búsqueda en el catálogo de cortes para "Agregar corte" de la plantilla. ANTES de
+// "/:id/...": "catalogo-cortes" no es un id. El recibidor tiene su propia ruta
+// (recepcionesProveedor.routes.js) con el mismo controlador.
+router.get(
+  "/catalogo-cortes",
+  requireAdminCarnes,
+  validators.buscarCortes,
+  ProveedoresController.buscarCortes,
+);
 // Las plantillas son del admin (PlantillasProveedor). El listado de arriba lo usa
 // también el selector del recibidor, por eso queda sin guard de admin.
 router.get(
@@ -22,6 +31,15 @@ router.put(
   validators.idParam,
   validators.cargarPlantillaProveedor,
   ProveedoresController.cargarPlantilla,
+);
+
+// Agregar UN corte del catálogo a la plantilla, sin pasar por el Excel.
+router.post(
+  "/:id/plantilla/cortes",
+  requireAdminCarnes,
+  validators.idParam,
+  validators.agregarCorteProveedor,
+  ProveedoresController.agregarCorte,
 );
 
 export default router;

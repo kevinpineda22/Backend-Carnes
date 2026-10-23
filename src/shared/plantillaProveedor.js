@@ -280,3 +280,49 @@ export function resumenParaRespuesta(plan) {
     desactivacion_omitida: plan.desactivacion_omitida,
   };
 }
+
+// ─── Agregar UN corte a mano ───────────────────────────────────────────────
+
+/**
+ * Qué pasa al agregar un corte del catálogo a la plantilla de un proveedor desde
+ * el admin ("Agregar corte"), frente a las filas que ya tiene (`existentes`:
+ * activas e inactivas, como en la carga de Excel).
+ *
+ *   · Ya hay una fila ACTIVA con el mismo (codigo_item, unidad), con cualquier
+ *     equivalencia → duplicado: no se agrega (el recibidor vería el item dos veces).
+ *   · Hay una fila INACTIVA con la llave exacta del UNIQUE (codigo_item, unidad,
+ *     equivalencia '') → se reactiva en vez de chocar con él.
+ *   · Si no → se crea al final de la plantilla (`orden` = el mayor + 1) y sin
+ *     equivalencia ('' = "Sin equivalencia").
+ *
+ * Un corte agregado a mano NO sobrevive a una recarga de Excel que no lo traiga:
+ * esa carga desactiva lo que ya no viene en la hoja (regla de la carga).
+ *
+ * @param {{ existentes?: object[], corte: { codigo_item: string, descripcion_item: string|null, unidad: string } }} p
+ * @returns {{ accion: "duplicado", mensaje: string }
+ *         | { accion: "reactivar", id: *, orden: number }
+ *         | { accion: "crear", fila: object }}
+ */
+export function planearCorteManual({ existentes = [], corte }) {
+  const codigo = String(corte.codigo_item).trim();
+  const mismoItem = existentes.filter(
+    (e) => String(e.codigo_item).trim() === codigo && e.unidad === corte.unidad,
+  );
+  if (mismoItem.some((e) => e.activo)) {
+    return { accion: "duplicado", mensaje: "Ese corte ya está en la plantilla del proveedor." };
+  }
+  const orden = existentes.reduce((max, e) => Math.max(max, Number(e.orden) || 0), 0) + 1;
+  const inactiva = mismoItem.find((e) => (e.equivalencia ?? "") === "");
+  if (inactiva) return { accion: "reactivar", id: inactiva.id, orden };
+  return {
+    accion: "crear",
+    fila: {
+      codigo_item: codigo,
+      descripcion_item: corte.descripcion_item ?? null,
+      unidad: corte.unidad,
+      equivalencia: "",
+      orden,
+      activo: true,
+    },
+  };
+}

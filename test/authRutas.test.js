@@ -66,8 +66,11 @@ const SIN_GUARD_DE_ADMIN = [
   // Recepciones de proveedor: flujo del recibidor.
   "POST /recepciones-proveedor/abrir",
   "GET /recepciones-proveedor/mias",
+  "GET /recepciones-proveedor/catalogo-cortes",
   "GET /recepciones-proveedor/:id",
   "PATCH /recepciones-proveedor/:id",
+  "POST /recepciones-proveedor/:id/cortes-adicionales",
+  "DELETE /recepciones-proveedor/:id/cortes-adicionales/:item_id",
   "POST /recepciones-proveedor/:id/finalizar",
   "DELETE /recepciones-proveedor/:id",
 ];

@@ -11,6 +11,8 @@ import {
 } from "../shared/proveedorValores.js";
 import * as RecibidorModel from "./Recibidor.model.js";
 import { agruparPor, enLotes } from "../shared/adminProveedor.js";
+import * as CatalogoModel from "./Catalogo.model.js";
+import { planearCorteAdicional, resultadoQuitarAdicional } from "../shared/cortesAdicionales.js";
 import {
   COLUMNAS_HISTORIAL_PROVEEDOR,
   COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR,
@@ -32,6 +34,7 @@ import {
 import {
   calcularPendientes,
   normalizarObservaciones,
+  planearDescuentoGlobal,
   planearGuardado,
   planearReintento,
   resolverRechazos,
@@ -66,6 +69,7 @@ const MIGRACIONES = [
   "sql/022_proveedores.sql",
   "sql/026_firma_proveedor_devolucion.sql",
   "sql/028_proveedor_descuento_secciones.sql",
+  "sql/029_cortes_adicionales_descuentos.sql",
 ];
 
 /**
@@ -79,6 +83,7 @@ const CAMPOS_CABECERA = `
   factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion,
   estado, recibido_por, abierto_at, recibidor_nombre, recibidor_otro,
   finalizado_at, siesa_at, observaciones, created_at, updated_at, descuento_pct,
+  descuento_pct_proveedor,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -249,7 +254,10 @@ async function reanudar(id, equivalencias, proveedor) {
     // se refresca en la misma operación para que secciones y descuento no diverjan.
     const { error: errorDescuento } = await supabase
       .from(TABLE)
-      .update({ descuento_pct: proveedor.descuento_pct ?? 0 })
+      .update({
+        descuento_pct: proveedor.descuento_pct ?? 0,
+        descuento_pct_proveedor: proveedor.descuento_pct ?? 0,
+      })
       .eq("id", id)
       .eq("estado", ESTADOS.BORRADOR);
     if (errorDescuento) fallo(errorDescuento, "Error al actualizar el descuento");
@@ -351,6 +359,9 @@ export async function abrir({ proveedor_id, factura, qr_token, recibido_por }) {
         proveedor_razon_social: proveedor.razon_social,
         // Snapshot: cambiar el descuento del maestro no altera recepciones ya abiertas.
         descuento_pct: proveedor.descuento_pct ?? 0,
+        // El descuento por defecto del proveedor, aparte del editable: es al que vuelve
+        // el global cuando el recibidor desmarca "Aplicar descuentos".
+        descuento_pct_proveedor: proveedor.descuento_pct ?? 0,
         factura: facturaTexto,
         factura_clave: clave,
         sede_id: sede.id,
@@ -433,9 +444,11 @@ async function escribirRenglones(recepcionId, actualizaciones) {
 /**
  * Autoguardado del borrador.
  *
- * Body validado: `{ editado_por, observaciones?, items: [{ id, cantidad?, valor?,
- * valor_fuente?, cantidad_devuelta?, motivo_devolucion?, confirmar_exceso?,
- * confirmar_valor? }] }` (`confirmar_valor` = unitario confirmado, como texto de plata).
+ * Body validado: `{ editado_por, observaciones?, descuento_pct?, items: [{ id, cantidad?,
+ * valor?, valor_fuente?, cantidad_devuelta?, motivo_devolucion?, confirmar_exceso?,
+ * confirmar_valor?, descuento_pct? }] }` (`confirmar_valor` = unitario confirmado, como
+ * texto de plata; `descuento_pct` de la cabecera = el global, el del renglón = el
+ * propio, que lo reemplaza, y vacío lo quita).
  *
  * La cabecera se actualiza de forma CONDICIONAL (`estado = 'Borrador'`) y los
  * renglones quedan protegidos por el trigger de la base; solo se escribe lo que
@@ -444,21 +457,28 @@ async function escribirRenglones(recepcionId, actualizaciones) {
  *
  * @returns {{recepcion: object, pendientes: object[], ignorados: *[], avisos: object[]}}
  */
-export async function guardar(id, { editado_por, observaciones, items: entradas = [] }) {
+export async function guardar(id, { editado_por, observaciones, descuento_pct, items: entradas = [] }) {
   const cabecera = await leerCabecera(id);
   if (cabecera.estado !== ESTADOS.BORRADOR) throw errorNoBorrador();
 
   const actuales = await leerItems(id);
   const plan = planearGuardado({ items: actuales, entradas, por: editado_por });
 
-  // Cabecera: solo `observaciones`, y solo si cambió. La condición de estado va
-  // en el propio UPDATE: si alguien firmó entre la lectura y acá, son 0 filas.
-  // Las observaciones se recortan a su tope en vez de rechazar el guardado.
+  // Cabecera: `observaciones` y el descuento global, y solo si cambiaron. La
+  // condición de estado va en el propio UPDATE: si alguien firmó entre la lectura
+  // y acá, son 0 filas. Las observaciones se recortan a su tope en vez de rechazar
+  // el guardado; un descuento global inválido se rechaza solo a él (`pendientes`).
+  const cambiosCabecera = {};
   const textoObservaciones = normalizarObservaciones(observaciones);
   if (observaciones !== undefined && textoObservaciones !== (cabecera.observaciones || null)) {
+    cambiosCabecera.observaciones = textoObservaciones;
+  }
+  const descuentoGlobal = planearDescuentoGlobal({ actual: cabecera.descuento_pct, entrada: descuento_pct });
+  if (descuentoGlobal.cambio !== null) cambiosCabecera.descuento_pct = descuentoGlobal.cambio;
+  if (Object.keys(cambiosCabecera).length) {
     const { data, error } = await supabase
       .from(TABLE)
-      .update({ observaciones: textoObservaciones })
+      .update(cambiosCabecera)
       .eq("id", id)
       .eq("estado", ESTADOS.BORRADOR)
       .select("id");
@@ -466,7 +486,7 @@ export async function guardar(id, { editado_por, observaciones, items: entradas 
     if (!data?.length) throw errorNoBorrador();
   }
 
-  let rechazos = plan.rechazos;
+  let rechazos = descuentoGlobal.rechazo ? [...plan.rechazos, descuentoGlobal.rechazo] : plan.rechazos;
   const conflictos = await escribirRenglones(id, plan.actualizaciones);
 
   // Renglones que otro guardado tocó entre la lectura y la escritura: UNA segunda
@@ -659,4 +679,57 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data, prove
   if (!data?.length) return resolverTrasConflicto(id);
 
   return resultadoFinalizar(id, false);
+}
+
+// ─── Cortes adicionales ────────────────────────────────────────────────────
+
+/**
+ * Agrega a un borrador un corte del catálogo que no está en su plantilla. Las
+ * reglas (qué renglón se crea, qué duplicados se rechazan, sin sección) viven en
+ * `shared/cortesAdicionales.js`; el corte se resuelve en el catálogo y el renglón
+ * se crea con SUS datos, no con lo que mande el cliente.
+ *
+ * El INSERT lo cubre el guardián de renglones de sql/022: si la recepción se firmó
+ * entre la lectura y la escritura, la base lo rechaza y sale el 409 de siempre. Un
+ * corte repetido que se cuele entre dos peticiones lo frena el índice único
+ * parcial de sql/029 (23505).
+ *
+ * @returns {Promise<object>} el renglón creado
+ */
+export async function agregarCorteAdicional(id, { codigo_item, unidad, por }) {
+  const cabecera = await leerCabecera(id);
+  if (cabecera.estado !== ESTADOS.BORRADOR) throw errorNoBorrador();
+
+  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad });
+  if (!corte) throw createError(404, "Ese corte no está en el catálogo.", "CORTE_NO_ENCONTRADO");
+
+  const plan = planearCorteAdicional({ recepcionId: id, items: await leerItems(id), corte });
+  if (!plan.ok) throw createError(plan.status, plan.mensaje, plan.codigo);
+
+  const { data, error } = await supabase.from(TABLE_ITEMS).insert(plan.fila).select("*").single();
+  if (esRecepcionNoBorrador(error)) throw errorNoBorrador();
+  if (esViolacionUnica(error)) throw createError(409, "Ese corte ya está en los cortes adicionales.", "CORTE_YA_EXISTE");
+  if (error) fallo(error, "Error al agregar el corte");
+
+  console.log(`➕ Corte adicional ${corte.codigo_item} (${corte.unidad}) en la recepción #${id} por ${por}`);
+  return data;
+}
+
+/**
+ * Quita un corte adicional de un borrador, de forma atómica: la función SQL
+ * `carnes_quitar_corte_adicional` (sql/029) bloquea la cabecera, exige Borrador,
+ * borra solo un renglón de ESTA recepción con origen 'adicional' y toca el
+ * `updated_at` de la cabecera en la misma transacción. Los renglones de la
+ * plantilla no se quitan. El código que devuelve se traduce en
+ * `resultadoQuitarAdicional`.
+ */
+export async function quitarCorteAdicional(id, itemId) {
+  const { data, error } = await supabase.rpc("carnes_quitar_corte_adicional", {
+    p_recepcion_id: id,
+    p_item_id: itemId,
+  });
+  if (error) fallo(error, "Error al quitar el corte");
+  const resultado = resultadoQuitarAdicional(data);
+  if (!resultado.ok) throw createError(resultado.status, resultado.mensaje, resultado.codigo);
+  return { id: itemId };
 }

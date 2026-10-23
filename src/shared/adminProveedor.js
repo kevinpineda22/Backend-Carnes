@@ -27,6 +27,7 @@ import {
   facturaCabeEnSiesa,
   normalizarFactura,
   aplicarDescuento,
+  pctEfectivo,
   resumenRecepcion,
   valorDevuelto,
 } from "./proveedorValores.js";
@@ -68,7 +69,7 @@ export const COLUMNAS_DETALLE_ADMIN = `
 `;
 
 /** Lo que el listado necesita de los renglones: solo lo que entra en el resumen. */
-export const COLUMNAS_ITEMS_RESUMEN = "recepcion_id, cantidad, valor_total, cantidad_devuelta";
+export const COLUMNAS_ITEMS_RESUMEN = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct";
 
 /** Lo que el listado necesita de los envíos: sin `payload` ni `respuesta` (pesan). */
 export const COLUMNAS_ENVIOS_LISTA = "id, recepcion_proveedor_id, tipo, estado, referencia, enviado_at";
@@ -191,10 +192,15 @@ export function armarFilaListado({ cabecera, items = [], envios = [], ahora = ne
 /**
  * Los renglones con su `valor_devuelto` CALCULADO (no se guarda: no puede quedar
  * viejo). Con descuento es el valor NETO, el mismo de la nota crédito a SIESA,
- * para que los renglones sumen el "Devuelto" del resumen.
+ * para que los renglones sumen el "Devuelto" del resumen. `descuento_pct_efectivo`
+ * es el porcentaje que de verdad se aplicó al renglón (el propio o el global).
  */
 export function itemsConDevuelto(items = [], { descuentoPct = 0 } = {}) {
-  return items.map((item) => ({ ...item, valor_devuelto: aplicarDescuento(valorDevuelto(item), descuentoPct) }));
+  const cabecera = { descuento_pct: descuentoPct };
+  return items.map((item) => {
+    const pct = pctEfectivo(item, cabecera);
+    return { ...item, descuento_pct_efectivo: pct, valor_devuelto: aplicarDescuento(valorDevuelto(item), pct) };
+  });
 }
 
 /**

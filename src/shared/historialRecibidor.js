@@ -45,7 +45,7 @@ export const COLUMNAS_HISTORIAL_PROVEEDOR = `
 `;
 
 /** Renglones de Proveedores para el listado (los de `resumenRecepcion`). */
-export const COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR = "recepcion_id, cantidad, valor_total, cantidad_devuelta";
+export const COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct";
 
 const aNumero = (v) => {
   const n = Number(v);
@@ -146,6 +146,10 @@ export function armarFilaProveedor({ cabecera, items = [] }) {
     estado: cabecera.estado,
     recibidor_nombre: cabecera.recibidor_nombre ?? null,
     descuento_pct: aNumero(cabecera.descuento_pct),
+    // Monto descontado y si los renglones usan porcentajes distintos: el listado no
+    // puede nombrar UN porcentaje cuando hay descuentos por corte.
+    descuento: resumen.descuento ?? 0,
+    descuento_variable: resumen.descuento_variable === true,
     total: resumen.total,
     renglones: resumen.renglones,
   };

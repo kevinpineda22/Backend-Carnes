@@ -6,8 +6,10 @@ import {
   filasAGuardar,
   idsADesactivarDelPlan,
   planearCargaPlantilla,
+  planearCorteManual,
   validarFormaFilas,
 } from "../shared/plantillaProveedor.js";
+import * as CatalogoModel from "./Catalogo.model.js";
 
 /* =============================================
    Catálogo de proveedores del recibidor.
@@ -207,4 +209,58 @@ export async function cargarPlantilla(id, { filas, aplicar = false, por }) {
     guardadas: aGuardar.length,
     desactivadas: aDesactivar.length,
   };
+}
+
+/* =============================================
+   "Agregar corte" desde el admin (POST /proveedores/:id/plantilla/cortes).
+
+   Suma UNA fila a la plantilla sin pasar por el Excel. El corte se resuelve en el
+   catálogo (`Catalogo.model.js`): la descripción sale de ahí, no del cliente, y un
+   código que el sistema no conoce se rechaza. La regla (duplicado / reactivar /
+   crear) vive en `planearCorteManual`.
+   ============================================= */
+
+/**
+ * @returns {Promise<{ fila: object, reactivada: boolean }>}
+ */
+export async function agregarCorte(id, { codigo_item, unidad, por }) {
+  await leerProveedorActivo(id);
+
+  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad });
+  if (!corte) {
+    throw createError(404, "Ese corte no está en el catálogo.", "CORTE_NO_ENCONTRADO");
+  }
+
+  const existentes = await leerEquivalenciasExistentes(id);
+  const plan = planearCorteManual({ existentes, corte });
+  if (plan.accion === "duplicado") throw createError(409, plan.mensaje, "CORTE_YA_EXISTE");
+
+  let fila;
+  if (plan.accion === "reactivar") {
+    const { data, error } = await supabase
+      .from("carnes_proveedor_equivalencias")
+      .update({ activo: true, orden: plan.orden, descripcion_item: corte.descripcion_item })
+      .eq("id", plan.id)
+      .eq("proveedor_id", id)
+      .select(CAMPOS_EQUIVALENCIA)
+      .single();
+    if (error) fallarSiFaltaMigracion(error, "No se pudo agregar el corte", MIGRACIONES);
+    fila = data;
+  } else {
+    const { data, error } = await supabase
+      .from("carnes_proveedor_equivalencias")
+      .insert({ proveedor_id: id, ...plan.fila })
+      .select(CAMPOS_EQUIVALENCIA)
+      .single();
+    // 23505: otro admin agregó el mismo corte entre la lectura y la escritura.
+    if (error?.code === "23505") throw createError(409, "Ese corte ya está en la plantilla del proveedor.", "CORTE_YA_EXISTE");
+    if (error) fallarSiFaltaMigracion(error, "No se pudo agregar el corte", MIGRACIONES);
+    fila = data;
+  }
+
+  console.log(
+    `➕ Corte ${corte.codigo_item} (${corte.unidad}) agregado a la plantilla del proveedor #${id} por ${por}` +
+      (plan.accion === "reactivar" ? " (reactivado)" : ""),
+  );
+  return { fila, reactivada: plan.accion === "reactivar" };
 }

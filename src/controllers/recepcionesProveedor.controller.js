@@ -77,8 +77,10 @@ export async function obtener(req, res, next) {
 
 /**
  * PATCH /api/recepciones-proveedor/:id
- * Body: { editado_por, observaciones?, items: [{ id, cantidad?, valor?, valor_fuente?,
- *   cantidad_devuelta?, motivo_devolucion?, confirmar_exceso?, confirmar_valor? }] }
+ * Body: { editado_por, observaciones?, descuento_pct?, items: [{ id, cantidad?, valor?,
+ *   valor_fuente?, cantidad_devuelta?, motivo_devolucion?, confirmar_exceso?, confirmar_valor?,
+ *   descuento_pct? }] }  (`descuento_pct`: el global en la cabecera; en un renglón su propio
+ *   porcentaje, que lo reemplaza, y `null` lo quita)
  *
  * Autoguardado. SIEMPRE 200 si el borrador se pudo escribir: lo que no se pudo
  * aplicar (valor que no se entiende) o falta confirmar vuelve en `pendientes`, y
@@ -91,6 +93,43 @@ export async function guardar(req, res, next) {
       conQuienHace(req, req.body, "editado_por"),
     );
     res.json({ ok: true, data: recepcion, pendientes, ignorados, avisos });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/recepciones-proveedor/:id/cortes-adicionales
+ * Body: { editado_por, codigo_item, unidad }
+ *
+ * Agrega a un borrador un corte del catálogo que no está en la plantilla. 201 con
+ * el renglón creado (`item`); 404 si el corte no está en el catálogo; 409 si ya
+ * está en la recepción o si ya no es un borrador.
+ */
+export async function agregarCorteAdicional(req, res, next) {
+  try {
+    const { editado_por, codigo_item, unidad } = conQuienHace(req, req.body, "editado_por");
+    const item = await RecepcionProveedorModel.agregarCorteAdicional(req.datosValidados.id, {
+      codigo_item,
+      unidad,
+      por: editado_por,
+    });
+    res.status(201).json({ ok: true, item });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * DELETE /api/recepciones-proveedor/:id/cortes-adicionales/:item_id
+ * Quita un corte adicional de un borrador. 409 si el renglón es de la plantilla o la
+ * recepción ya no es un borrador; 404 si no existe.
+ */
+export async function quitarCorteAdicional(req, res, next) {
+  try {
+    const { id, item_id } = req.datosValidados;
+    const data = await RecepcionProveedorModel.quitarCorteAdicional(id, item_id);
+    res.json({ ok: true, ...data });
   } catch (error) {
     next(error);
   }

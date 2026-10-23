@@ -22,6 +22,10 @@
  *     escritura (ni toca `updated_at` de la cabecera).
  *   · Confirmar más de 800 KL o un valor implausible guarda quién y cuándo, atado
  *     al valor exacto confirmado (ver `excesoConfirmado` / `valorConfirmado`).
+ *   · Descuentos: el global de la recepción lo planea `planearDescuentoGlobal` y el
+ *     propio de cada renglón (`descuento_pct`) el paso 5 de `planearGuardado`. En un
+ *     renglón, vacío (`null` o "") QUITA el descuento propio y vuelve al global; un
+ *     porcentaje inválido se rechaza solo a él (`descuento_invalido`).
  *
  * ─── Qué es `pendientes` ───────────────────────────────────────────────────
  *
@@ -42,6 +46,7 @@ import {
   excedeUmbral,
   excesoConfirmado,
   parsearPesos,
+  parsearPorcentaje,
   valorConfirmado,
   valorPlausible,
 } from "./proveedorValores.js";
@@ -70,6 +75,7 @@ const ESCALA = {
   cantidad_devuelta: 3,
   exceso_confirmado_cantidad: 3,
   valor_confirmado_unitario: 4,
+  descuento_pct: 2,
 };
 
 function esVacio(valor) {
@@ -121,6 +127,29 @@ function cambio(columna, anterior, nuevo) {
     return redondear(a, ESCALA[columna]) !== redondear(n, ESCALA[columna]);
   }
   return (anterior ?? null) !== (nuevo ?? null);
+}
+
+/** Mensaje de un porcentaje de descuento fuera de regla (0 a menos de 100, hasta 2 decimales). */
+export const MENSAJE_DESCUENTO = "El descuento debe ser de 0 a menos de 100, con hasta 2 decimales";
+
+/**
+ * Plan del descuento GLOBAL de la cabecera. `entrada` undefined = no vino (sin
+ * cambio). Un valor vacío cuenta como 0 (sin descuento); la basura se rechaza.
+ *
+ * El rechazo viaja en `pendientes` con `item_id: null` (es de la cabecera), igual
+ * que un renglón rechazado: el autoguardado no se cae por un porcentaje mal escrito.
+ *
+ * @returns {{ cambio: number|null, rechazo: {item_id: null, tipo: string, mensaje: string}|null }}
+ */
+export function planearDescuentoGlobal({ actual, entrada } = {}) {
+  if (entrada === undefined) return { cambio: null, rechazo: null };
+  // Vacío en el GLOBAL es 0 (sin descuento): el global siempre tiene un número.
+  const pct = esVacio(entrada) ? 0 : parsearPorcentaje(entrada);
+  if (pct === null) {
+    return { cambio: null, rechazo: { item_id: null, tipo: "descuento_invalido", mensaje: MENSAJE_DESCUENTO } };
+  }
+  const anterior = Number(actual);
+  return { cambio: Number.isFinite(anterior) && redondear(anterior, 2) === pct ? null : pct, rechazo: null };
 }
 
 /** Mensajes y tipos de un renglón, deduplicados por tipo. */
@@ -326,6 +355,17 @@ export function planearGuardado({ items = [], entradas = [], por, ahora = new Da
         } else {
           rechazar("confirmacion_ignorada", "La confirmación no coincide con el valor unitario actual");
         }
+      }
+    }
+
+    // ── 5. Descuento propio del renglón ───────────────────────────────────
+    // Vacío lo quita (vuelve al global); un valor válido REEMPLAZA al global.
+    if (entrada.descuento_pct !== undefined) {
+      const pct = esVacio(entrada.descuento_pct) ? null : parsearPorcentaje(entrada.descuento_pct);
+      if (!esVacio(entrada.descuento_pct) && pct === null) {
+        rechazar("descuento_invalido", MENSAJE_DESCUENTO);
+      } else if (cambio("descuento_pct", actual.descuento_pct, pct)) {
+        cambios.descuento_pct = pct;
       }
     }
 
