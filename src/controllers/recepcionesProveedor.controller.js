@@ -62,6 +62,21 @@ export async function listarMias(req, res, next) {
 }
 
 /**
+ * GET /api/recepciones-proveedor/en-curso
+ *
+ * Los borradores abiertos (todas las sedes), con cuántos renglones ya tienen
+ * cantidad. Sin firma ni cédula. Del flujo del recibidor: basta con sesión.
+ */
+export async function listarEnCurso(req, res, next) {
+  try {
+    const data = await RecepcionProveedorModel.listarEnCurso();
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * GET /api/recepciones-proveedor/:id
  * Cabecera + renglones para reanudar. Sin firma ni cédula del recibidor: el
  * detalle completo del admin llega en un corte posterior.

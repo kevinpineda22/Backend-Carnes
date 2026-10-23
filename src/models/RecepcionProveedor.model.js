@@ -202,6 +202,52 @@ export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
   };
 }
 
+/**
+ * "Recepciones en curso": todos los borradores abiertos (de todas las sedes; el
+ * front los agrupa), el de actividad más reciente primero. Una consulta para las
+ * cabeceras y otra por tanda de borradores para los renglones (nunca una por
+ * borrador); cada tanda se pagina porque una plantilla grande pasa de 1000 filas.
+ * Sin firma ni cédula.
+ *
+ * @returns {object[]} filas de `armarFilaEnCurso`
+ */
+export async function listarEnCurso() {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_EN_CURSO)
+    .eq("estado", ESTADOS.BORRADOR)
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(LIMITE_EN_CURSO);
+  if (error) fallo(error, "Error al leer las recepciones en curso");
+  const cabeceras = data || [];
+  if (!cabeceras.length) return [];
+
+  const tandas = enLotes(
+    cabeceras.map((c) => c.id),
+    BORRADORES_POR_CONSULTA_ITEMS,
+  );
+  const porTanda = await Promise.all(tandas.map((ids) => leerItemsEnCurso(ids)));
+  const itemsPor = agruparPor(porTanda.flat(), "recepcion_id");
+
+  return cabeceras.map((cabecera) => armarFilaEnCurso({ cabecera, items: itemsPor[String(cabecera.id)] || [] }));
+}
+
+async function leerItemsEnCurso(ids) {
+  const items = [];
+  for (let desde = 0; ; desde += FILAS_POR_PAGINA_ITEMS) {
+    const { data, error } = await supabase
+      .from(TABLE_ITEMS)
+      .select(COLUMNAS_ITEMS_EN_CURSO)
+      .in("recepcion_id", ids)
+      .order("id")
+      .range(desde, desde + FILAS_POR_PAGINA_ITEMS - 1);
+    if (error) fallo(error, "Error al leer los renglones");
+    items.push(...(data || []));
+    if ((data || []).length < FILAS_POR_PAGINA_ITEMS) return items;
+  }
+}
+
 // ─── Abrir ─────────────────────────────────────────────────────────────────
 
 /**
