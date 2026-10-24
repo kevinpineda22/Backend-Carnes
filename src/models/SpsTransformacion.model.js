@@ -50,3 +50,26 @@ export async function obtener(id) {
   if (!data) throw createError(404, "Transformación no encontrada.");
   return data;
 }
+
+const TABLA_CORRIDAS = "sps_transformaciones_corridas";
+const LIMITE_CORRIDAS = 1000;
+
+/**
+ * GET — corridas del flujo (una fila por ejecución, con historial). Recibe `entorno`,
+ * `fecha_desde` y `fecha_hasta` ya validados. El controlador deja la última por fecha.
+ */
+export async function listarCorridas(filtros = {}) {
+  let q = supabase
+    .from(TABLA_CORRIDAS)
+    .select("*")
+    .order("fecha", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(LIMITE_CORRIDAS);
+  if (filtros.entorno) q = q.eq("entorno", filtros.entorno);
+  if (filtros.fecha_desde) q = q.gte("fecha", filtros.fecha_desde);
+  if (filtros.fecha_hasta) q = q.lte("fecha", filtros.fecha_hasta);
+
+  const { data, error } = await q;
+  if (error) throw createError(500, "Error al listar las corridas de transformación.");
+  return data || [];
+}

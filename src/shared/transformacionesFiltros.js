@@ -82,3 +82,34 @@ export function normalizarFiltrosTransformaciones(query = {}) {
   if (co) filtros.co = co;
   return filtros;
 }
+
+/**
+ * Deja la última corrida por (entorno, fecha). Una fecha puede tener varias corridas
+ * (reintentos manuales, ejecuciones repetidas): manda la más reciente por `created_at`,
+ * y a igual `created_at`, la de mayor `id`.
+ *
+ * @param {Array<{entorno: string, fecha: string, created_at?: string, id?: number}>} filas
+ * @returns {Array} una fila por (entorno, fecha), ordenadas por fecha descendente.
+ */
+export function ultimaCorridaPorFecha(filas) {
+  const lista = Array.isArray(filas) ? filas : [];
+  const mejor = new Map();
+  const esMasReciente = (a, b) => {
+    const ta = a.created_at ? Date.parse(a.created_at) : 0;
+    const tb = b.created_at ? Date.parse(b.created_at) : 0;
+    if (ta !== tb) return ta > tb;
+    return Number(a.id ?? 0) > Number(b.id ?? 0);
+  };
+  for (const fila of lista) {
+    const clave = `${fila.entorno}|${fila.fecha}`;
+    const actual = mejor.get(clave);
+    if (!actual || esMasReciente(fila, actual)) mejor.set(clave, fila);
+  }
+  return [...mejor.values()].sort((a, b) =>
+    a.fecha === b.fecha
+      ? String(a.entorno).localeCompare(String(b.entorno))
+      : a.fecha < b.fecha
+        ? 1
+        : -1,
+  );
+}

@@ -10,6 +10,8 @@ router.use(requireAdminCarnes);
 
 // Solo lectura: la tabla la escribe otro proceso.
 router.get("/", TransformacionesController.listar);
+// Debe ir ANTES de "/:id": si no, "corridas" cae en la validación del id y responde 400.
+router.get("/corridas", TransformacionesController.listarCorridas);
 router.get(
   "/:id",
   (req, _res, next) => {
