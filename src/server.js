@@ -50,7 +50,7 @@ app.use((req, res) => {
     pedida: req.originalUrl,
     vista: req.url,
     montadas: ["/", "/api/health", "/api/sedes", "/api/plantilla/:especie",
-               "/api/recepciones", "/api/liquidaciones", "/api/siesa"],
+               "/api/recepciones", "/api/liquidaciones", "/api/siesa", "/api/transformaciones"],
   });
 });
 

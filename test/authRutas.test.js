@@ -28,6 +28,10 @@ const ARCHIVOS_DE_RUTAS = {
   "recepciones.routes.js": ["/recepciones", (await import("../src/routes/recepciones.routes.js")).default],
   "liquidaciones.routes.js": ["/liquidaciones", (await import("../src/routes/liquidaciones.routes.js")).default],
   "siesa.routes.js": ["/siesa", (await import("../src/routes/siesa.routes.js")).default],
+  "transformaciones.routes.js": [
+    "/transformaciones",
+    (await import("../src/routes/transformaciones.routes.js")).default,
+  ],
   "desposte.routes.js": ["/desposte", (await import("../src/routes/desposte.routes.js")).default],
   "proveedores.routes.js": ["/proveedores", (await import("../src/routes/proveedores.routes.js")).default],
   "recibidores.routes.js": ["/recibidores", (await import("../src/routes/recibidores.routes.js")).default],
@@ -137,9 +141,9 @@ test("rutas: EXACTAMENTE estas quedan sin requireAdminCarnes; todas las demás l
   assert.equal(new Set(claves).size, claves.length, "ruta repetida: el recorrido o el router está mal");
 });
 
-test("rutas: los routers de panel completo (plantilla, liquidaciones, siesa, desposte) están protegidos de punta a punta", () => {
+test("rutas: los routers de panel completo (plantilla, liquidaciones, siesa, desposte, transformaciones) están protegidos de punta a punta", () => {
   const todas = recorrer(indice, "", [], montajes);
-  for (const prefijo of ["/plantilla", "/liquidaciones", "/siesa", "/desposte"]) {
+  for (const prefijo of ["/plantilla", "/liquidaciones", "/siesa", "/desposte", "/transformaciones"]) {
     const deRouter = todas.filter((r) => r.clave.split(" ")[1].startsWith(prefijo));
     assert.ok(deRouter.length > 0, prefijo);
     assert.ok(deRouter.every((r) => r.protegido), `${prefijo} tiene una ruta sin guard`);
