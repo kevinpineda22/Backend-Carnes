@@ -240,10 +240,15 @@ export function consolidarLiquidacion({
 
   const totalCosteado = sedes.reduce((a, s) => a + s.costeo.totalCosteado, 0);
 
+  // Cabezas de la liquidación: la suma de `novillos` de cada recepción (en cerdo
+  // el mismo campo cuenta canales). Mismo universo de recepciones que los kilos.
+  const totalNovillos = recepciones.reduce((a, r) => a + num(r.novillos), 0);
+
   return {
     totalGastos: Number(totalGastos.toFixed(2)),
     cuadre,
     totalKilos: Number(totalKilos.toFixed(3)),
+    totalNovillos: Number(totalNovillos.toFixed(2)),
     costoPromedioKilo: totalKilos > 0 ? Number((totalGastos / totalKilos).toFixed(4)) : 0,
     totalCosteado: Number(totalCosteado.toFixed(2)),
     sedes,

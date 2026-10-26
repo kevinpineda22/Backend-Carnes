@@ -112,21 +112,9 @@ export function cantidadAlmacenada(cantidad, unidad) {
 
 // ─── Fecha y factura ───────────────────────────────────────────────────────
 
-const FORMATO_FECHA_BOGOTA = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "America/Bogota",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
-/**
- * Fecha calendario de Bogotá (YYYY-MM-DD). NO `toISOString().slice(0, 10)`: eso
- * es UTC y entre las 7 p. m. y medianoche de Bogotá ya marca el día siguiente
- * (el bug de `Recepcion.model.js` en Talleres).
- */
-export function hoyBogota(fecha = new Date()) {
-  return FORMATO_FECHA_BOGOTA.format(fecha);
-}
+// Fuente única de "hoy en Colombia": shared/fechaBogota.js (se reexporta para
+// no tocar a quien ya la importa de acá).
+export { hoyBogota } from "./fechaBogota.js";
 
 /**
  * `factura` es lo que se muestra (recortada, mayúsculas, espacios colapsados);

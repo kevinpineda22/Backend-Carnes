@@ -5,6 +5,7 @@ import {
   puedeCerrarCosteo,
 } from "../shared/consolidado.js";
 import { ESTADOS } from "../shared/estados.js";
+import { hoyBogota } from "../shared/fechaBogota.js";
 import { calcularValorGasto } from "../shared/gastos.js";
 import {
   CONCEPTO_RETOMAS,
@@ -154,7 +155,7 @@ export async function crear({
     .from(TABLE)
     .insert({
       especie,
-      fecha: fecha || new Date().toISOString().slice(0, 10),
+      fecha: fecha || hoyBogota(),
       proveedor,
       viceras_bonificacion,
       estado: ESTADOS_LIQUIDACION.ABIERTA,

@@ -10,6 +10,7 @@ import {
   puedeEditarCantidades,
   puedeCorregirComoAdmin,
 } from "../shared/estados.js";
+import { hoyBogota } from "../shared/fechaBogota.js";
 import { puedeEliminarRecepcion } from "../shared/eliminacionAdmin.js";
 import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visceras.js";
 import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcionColumnas.js";
@@ -304,7 +305,7 @@ export async function abrir({
 
   // La sede es la del QR. Si el front mandó una, ya se verificó que coincide.
   const sedeId = verificacion.sede.id;
-  const fecha = fecha_ingreso || new Date().toISOString().slice(0, 10);
+  const fecha = fecha_ingreso || hoyBogota();
 
   // Se buscan los DOS estados que el recibidor todavía puede tocar.
   //

@@ -388,3 +388,32 @@ test("el costeo se bloquea si los pagos no cuadran", () => {
   assert.equal(cierre.ok, false);
   assert.ok(cierre.bloqueos.some((b) => b.codigo === "pagos_no_cuadran"));
 });
+
+// ─── Total de novillos (panel "Resultado") ─────────────────────────────────
+
+const recConNovillos = (id, novillos) => ({
+  id,
+  sede_id: id,
+  novillos,
+  items: [{ tipo: "carne", codigo_item: "1", descripcion: "X", cantidad: 10, costo_base: 1000 }],
+});
+
+test("totalNovillos suma los novillos de todas las recepciones", () => {
+  const r = consolidarLiquidacion({
+    recepciones: [recConNovillos(1, 12), recConNovillos(2, "8"), recConNovillos(3, 5.5)],
+    gastos: [{ concepto: "Valor de la carne", valor: 30000, signo: 1 }],
+  });
+  assert.equal(r.totalNovillos, 25.5);
+});
+
+test("totalNovillos ignora recepciones sin novillos cargados (null, undefined, texto)", () => {
+  const r = consolidarLiquidacion({
+    recepciones: [recConNovillos(1, 10), recConNovillos(2, null), recConNovillos(3, undefined), recConNovillos(4, "abc")],
+    gastos: [],
+  });
+  assert.equal(r.totalNovillos, 10);
+});
+
+test("totalNovillos es 0 sin recepciones", () => {
+  assert.equal(consolidarLiquidacion({ recepciones: [], gastos: [] }).totalNovillos, 0);
+});
