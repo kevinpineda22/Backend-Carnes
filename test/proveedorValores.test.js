@@ -40,6 +40,7 @@ import {
   validarRecepcion,
   resumenRecepcion,
   aplicarDescuento,
+  ivaDeLinea,
 } from "../src/shared/proveedorValores.js";
 
 // ─── Arreglo compartido con el gemelo del frontend ─────────────────────────
@@ -638,6 +639,35 @@ const CASOS = [
   { fn: "aplicarDescuento", nombre: "valor 0 da 0", entrada: [0, 5], esperado: 0 },
   { fn: "aplicarDescuento", nombre: "porcentaje 0 es identidad, sin redondear", entrada: [10010.4, 0], esperado: 10010.4 },
   { fn: "aplicarDescuento", nombre: "valor vacío da 0", entrada: [null, 5], esperado: 0 },
+  // ivaDeLinea: IVA del grupo impositivo sobre el neto de UN renglón (sql/030)
+  { fn: "ivaDeLinea", nombre: "19 %", entrada: [100000, 19], esperado: 19000 },
+  { fn: "ivaDeLinea", nombre: "5 %", entrada: [100000, 5], esperado: 5000 },
+  { fn: "ivaDeLinea", nombre: "0 % no suma", entrada: [100000, 0], esperado: 0 },
+  { fn: "ivaDeLinea", nombre: "redondea a pesos enteros", entrada: [1003, 19], esperado: 191 },
+  { fn: "ivaDeLinea", nombre: "sin dato (null) no suma", entrada: [100000, null], esperado: 0 },
+  { fn: "ivaDeLinea", nombre: "el porcentaje puede venir como texto de la base", entrada: [100000, "19.00"], esperado: 19000 },
+  {
+    fn: "resumenRecepcion",
+    nombre: "IVA sobre el neto con descuento global",
+    entrada: [[{ ...BASE, iva_pct: 19 }], { descuentoPct: 10 }],
+    esperado: {
+      renglones: 1,
+      total: 180000,
+      total_devuelto: 0,
+      renglones_con_devolucion: 0,
+      iva: 34200,
+      total_con_iva: 214200,
+      subtotal: 200000,
+      descuento: 20000,
+      descuento_pct: 10,
+    },
+  },
+  {
+    fn: "resumenRecepcion",
+    nombre: "renglón sin iva_pct (histórico) no suma IVA ni agrega las claves",
+    entrada: [[{ ...BASE, iva_pct: null }]],
+    esperado: { renglones: 1, total: 200000, total_devuelto: 0, renglones_con_devolucion: 0 },
+  },
 ];
 
 const FUNCIONES = {
@@ -659,6 +689,7 @@ const FUNCIONES = {
   validarRecepcion,
   resumenRecepcion,
   aplicarDescuento,
+  ivaDeLinea,
 };
 
 for (const caso of CASOS) {

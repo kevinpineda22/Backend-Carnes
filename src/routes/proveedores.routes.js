@@ -15,6 +15,17 @@ router.get(
   validators.buscarCortes,
   ProveedoresController.buscarCortes,
 );
+// Grupos impositivos de SIESA (IVA por ítem). Del admin; ANTES de "/:id/...".
+router.get(
+  "/grupos-impositivos/estado",
+  requireAdminCarnes,
+  ProveedoresController.estadoGruposImpositivos,
+);
+router.post(
+  "/grupos-impositivos/sincronizar",
+  requireAdminCarnes,
+  ProveedoresController.sincronizarGruposImpositivos,
+);
 // Las plantillas son del admin (PlantillasProveedor). El listado de arriba lo usa
 // también el selector del recibidor, por eso queda sin guard de admin.
 router.get(

@@ -52,6 +52,7 @@ const MIGRACIONES = [
   "sql/022_proveedores.sql",
   "sql/026_firma_proveedor_devolucion.sql",
   "sql/028_proveedor_descuento_secciones.sql",
+  "sql/030_grupos_impositivos.sql",
 ];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */

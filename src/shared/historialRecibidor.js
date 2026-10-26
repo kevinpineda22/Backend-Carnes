@@ -45,7 +45,7 @@ export const COLUMNAS_HISTORIAL_PROVEEDOR = `
 `;
 
 /** Renglones de Proveedores para el listado (los de `resumenRecepcion`). */
-export const COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct";
+export const COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct, iva_pct";
 
 const aNumero = (v) => {
   const n = Number(v);
@@ -151,6 +151,10 @@ export function armarFilaProveedor({ cabecera, items = [] }) {
     descuento: resumen.descuento ?? 0,
     descuento_variable: resumen.descuento_variable === true,
     total: resumen.total,
+    // IVA de los grupos impositivos (sql/030). Sin IVA en los renglones (históricos),
+    // `iva` es 0 y `total_con_iva` es el mismo total.
+    iva: resumen.iva ?? 0,
+    total_con_iva: resumen.total_con_iva ?? resumen.total,
     renglones: resumen.renglones,
   };
 }

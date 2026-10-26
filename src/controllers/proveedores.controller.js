@@ -1,5 +1,6 @@
 import * as ProveedorModel from "../models/Proveedor.model.js";
 import * as CatalogoModel from "../models/Catalogo.model.js";
+import * as GrupoImpositivoModel from "../models/GrupoImpositivo.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 
 /**
@@ -115,6 +116,35 @@ export async function agregarCorte(req, res, next) {
       por,
     });
     res.status(201).json({ ok: true, data: fila, reactivada });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * GET /api/proveedores/grupos-impositivos/estado
+ * Cuántos ítems tiene el catálogo de grupos impositivos y cuándo se sincronizó por
+ * última vez (`ultima_sincronizacion` null = nunca).
+ */
+export async function estadoGruposImpositivos(_req, res, next) {
+  try {
+    const data = await GrupoImpositivoModel.estado();
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/proveedores/grupos-impositivos/sincronizar
+ * Trae de Connekta el grupo impositivo de cada ítem y lo guarda (solo lectura en
+ * SIESA: no crea nada allá). Tarda decenas de segundos. 409 si ya hay una en curso;
+ * 502 si Connekta falla o la lectura quedó incompleta (en ese caso no se escribió nada).
+ */
+export async function sincronizarGruposImpositivos(_req, res, next) {
+  try {
+    const data = await GrupoImpositivoModel.sincronizar();
+    res.json({ ok: true, data });
   } catch (error) {
     next(error);
   }

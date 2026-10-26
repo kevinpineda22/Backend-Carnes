@@ -69,7 +69,7 @@ export const COLUMNAS_DETALLE_ADMIN = `
 `;
 
 /** Lo que el listado necesita de los renglones: solo lo que entra en el resumen. */
-export const COLUMNAS_ITEMS_RESUMEN = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct";
+export const COLUMNAS_ITEMS_RESUMEN = "recepcion_id, cantidad, valor_total, cantidad_devuelta, descuento_pct, iva_pct";
 
 /** Lo que el listado necesita de los envíos: sin `payload` ni `respuesta` (pesan). */
 export const COLUMNAS_ENVIOS_LISTA = "id, recepcion_proveedor_id, tipo, estado, referencia, enviado_at";

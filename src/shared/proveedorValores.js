@@ -12,8 +12,10 @@
  *
  * ─── Plata ─────────────────────────────────────────────────────────────────
  *
- * Valores brutos: sin IVA ni descuentos (decisión del negocio). El recibidor
- * digita cantidad + (valor unitario O valor total); el otro se deriva.
+ * Valores brutos: ANTES de IVA y de descuentos (decisión del negocio). El
+ * recibidor digita cantidad + (valor unitario O valor total); el otro se deriva.
+ * El descuento y el IVA se calculan por renglón al mostrar (`aplicarDescuento`,
+ * `ivaDeLinea`); `valor_total` en la base sigue siendo el bruto.
  *
  *   · fuente = unitario → total = round(cantidad × unitario) (pesos enteros)
  *   · fuente = total    → unitario = total ÷ cantidad a 4 decimales; el total
@@ -352,6 +354,23 @@ export function aplicarDescuento(valor, pct) {
   return Math.round(v * (1 - p / 100));
 }
 
+/**
+ * IVA de UN renglón, en pesos enteros: `round(neto × iva_pct / 100)`, donde `neto`
+ * es el valor del renglón ya con su descuento (`aplicarDescuento`). Se calcula por
+ * renglón, igual que el descuento, para que el IVA mostrado sea la suma de las líneas.
+ *
+ * `iva_pct` null, vacío, inválido o 0 → 0: "sin dato" no suma IVA ni bloquea.
+ * Solo IVA: IPCU / ICO / IBUA no se calculan todavía.
+ *
+ * El gemelo del front (`valoresProveedor.js`) lo replica.
+ */
+export function ivaDeLinea(neto, ivaPct) {
+  const n = aNumero(neto);
+  const p = aNumeroONull(ivaPct);
+  if (!Number.isFinite(n) || p === null || !Number.isFinite(p) || p <= 0) return 0;
+  return Math.round((n * p) / 100);
+}
+
 /** Tope EXCLUSIVO del descuento: 100 % dejaría el renglón en 0. */
 export const DESCUENTO_MAX_EXCLUSIVO = 100;
 
@@ -514,6 +533,12 @@ export function validarRecepcion(items = []) {
  * renglón, y solo cuando algún renglón tiene descuento el resumen agrega
  * `subtotal` (bruto), `descuento` y `descuento_pct` (el global). Si además algún
  * renglón usa un porcentaje distinto del global agrega `descuento_variable: true`.
+ *
+ * IVA: cada renglón trae el `iva_pct` de su grupo impositivo (snapshot, sql/030) y
+ * se aplica sobre el valor ya descontado (`ivaDeLinea`). Solo cuando algún renglón
+ * tiene IVA mayor a 0 el resumen agrega `iva` y `total_con_iva` (= total + iva, lo
+ * que se le paga al proveedor). `total` sigue siendo el neto SIN IVA. Un renglón sin
+ * `iva_pct` (histórico o sin grupo) aporta 0 y no es error.
  */
 export function resumenRecepcion(items = [], { descuentoPct = 0 } = {}) {
   const cabecera = { descuento_pct: descuentoPct };
@@ -525,6 +550,8 @@ export function resumenRecepcion(items = [], { descuentoPct = 0 } = {}) {
   let conDevolucion = 0;
   let hayDescuento = global > 0;
   let variable = false;
+  let iva = 0;
+  let hayIva = false;
   for (const item of items) {
     if (!(aNumero(item?.cantidad) > 0)) continue;
     renglones += 1;
@@ -533,15 +560,24 @@ export function resumenRecepcion(items = [], { descuentoPct = 0 } = {}) {
     if (pct !== global) variable = true;
     const t = aNumero(item.valor_total);
     if (Number.isFinite(t)) {
+      const neto = aplicarDescuento(t, pct);
       subtotal += t;
-      total += aplicarDescuento(t, pct);
+      total += neto;
+      iva += ivaDeLinea(neto, item.iva_pct);
     }
+    if (aNumero(item.iva_pct) > 0) hayIva = true;
     if (aNumero(item.cantidad_devuelta) > 0) {
       conDevolucion += 1;
       totalDevuelto += aplicarDescuento(valorDevuelto(item), pct);
     }
   }
-  const resumen = { renglones, total, total_devuelto: totalDevuelto, renglones_con_devolucion: conDevolucion };
+  const resumen = {
+    renglones,
+    total,
+    total_devuelto: totalDevuelto,
+    renglones_con_devolucion: conDevolucion,
+    ...(hayIva ? { iva, total_con_iva: total + iva } : {}),
+  };
   // Con descuento, `total` y `total_devuelto` ya son NETOS (suma de renglones
   // descontados). Sin descuento el resumen queda exactamente como siempre.
   if (hayDescuento) {

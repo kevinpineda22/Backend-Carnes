@@ -110,6 +110,10 @@ function bloqueTotales(resumen) {
   } else {
     filas.push(fila("Total", esc(formatearPesos(resumen.total))));
   }
+  if (Number(resumen.iva) > 0) {
+    filas.push(fila("IVA", esc(formatearPesos(resumen.iva))));
+    filas.push(fila("Total a pagar", esc(formatearPesos(resumen.total_con_iva))));
+  }
   return `<table cellpadding="6" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:14px;margin-bottom:20px;">${filas.join("")}</table>`;
 }
 

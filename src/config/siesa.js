@@ -352,6 +352,32 @@ export function viscerasAlCierre() {
   return String(process.env.CARNES_SIESA_VISCERAS_AL_CIERRE || "").toLowerCase() === "true";
 }
 
+/**
+ * Endpoint y credenciales de las CONSULTAS de Connekta (solo lectura).
+ *
+ * A diferencia del importador (`conexionSiesa`), la consulta vive en la ruta que
+ * trae `CONNEKTA_BASE_URL` tal cual: `.../api/connekta/v3` + `/ejecutarconsulta`.
+ */
+export function conexionConsultas() {
+  return {
+    url: leer("CONNEKTA_BASE_URL").replace(/\/+$/, ""),
+    idCompania: leer("CONNEKTA_ID_COMPANIA"),
+    conniKey: leer("CONNI_KEY"),
+    conniToken: leer("CONNI_TOKEN"),
+  };
+}
+
+/** Qué le falta a la conexión de consultas (solo entorno), para el mensaje al admin. */
+export function faltantesConsultas() {
+  const c = conexionConsultas();
+  const faltan = [];
+  if (!c.url) faltan.push("CONNEKTA_BASE_URL");
+  if (!c.idCompania) faltan.push("CONNEKTA_ID_COMPANIA");
+  if (!c.conniKey) faltan.push("CONNI_KEY");
+  if (!c.conniToken) faltan.push("CONNI_TOKEN");
+  return faltan;
+}
+
 /** ¿Están las credenciales? Sin esto no se intenta ningún envío. */
 export function siesaConfigurado() {
   const c = conexionSiesa();

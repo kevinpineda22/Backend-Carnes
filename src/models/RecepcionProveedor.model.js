@@ -12,6 +12,8 @@ import {
 import * as RecibidorModel from "./Recibidor.model.js";
 import { agruparPor, enLotes } from "../shared/adminProveedor.js";
 import * as CatalogoModel from "./Catalogo.model.js";
+import * as GrupoImpositivoModel from "./GrupoImpositivo.model.js";
+import { conSnapshotIva, planearRefrescoIva } from "../shared/gruposImpositivos.js";
 import { planearCorteAdicional, resultadoQuitarAdicional } from "../shared/cortesAdicionales.js";
 import {
   BORRADORES_POR_CONSULTA_ITEMS,
@@ -82,6 +84,7 @@ const MIGRACIONES = [
   "sql/026_firma_proveedor_devolucion.sql",
   "sql/028_proveedor_descuento_secciones.sql",
   "sql/029_cortes_adicionales_descuentos.sql",
+  "sql/030_grupos_impositivos.sql",
 ];
 
 /**
@@ -328,8 +331,18 @@ function bloqueoDeApertura(decision) {
  * reanudando el mismo borrador vacío, o un reintento, no duplican renglones.
  */
 async function materializarRenglones(recepcionId, equivalencias, secciones = false) {
-  const filas = renglonesDesdePlantilla(equivalencias, recepcionId, { secciones });
-  if (!filas.length) return null;
+  const plantilla = renglonesDesdePlantilla(equivalencias, recepcionId, { secciones });
+  if (!plantilla.length) return null;
+  // Cada renglón nace con el grupo impositivo y el IVA de su ítem (snapshot, sql/030).
+  // Un fallo al leerlos se devuelve como los demás errores de esta función para que
+  // `abrir` limpie la cabecera.
+  let filas;
+  try {
+    const snapshots = await GrupoImpositivoModel.snapshotsParaCodigos(plantilla.map((f) => f.codigo_item));
+    filas = conSnapshotIva(plantilla, snapshots);
+  } catch (e) {
+    return e;
+  }
   const { error } = await supabase
     .from(TABLE_ITEMS)
     .upsert(filas, { onConflict: "recepcion_id,equivalencia_id,seccion", ignoreDuplicates: true });
@@ -356,8 +369,33 @@ async function reanudar(id, equivalencias, proveedor) {
     // quien la había abierto). Se trata como 404 para que `abrir` vuelva a decidir.
     if (error?.code === "23503") throw createError(404, "Recepción no encontrada.");
     if (error) fallo(error, "Error al cargar la plantilla");
+  } else {
+    await completarIvaFaltante(items);
   }
   return obtener(id);
+}
+
+/**
+ * Al reanudar un borrador: los renglones que se abrieron SIN dato de IVA (antes de la
+ * primera sincronización, o antes de sql/030) lo reciben ahora si ya hay respuesta.
+ * Los que ya traen dato no se tocan, ni siquiera si es 0 %. Es de mejor esfuerzo: un
+ * fallo acá no puede dejar al recibidor fuera de su propio borrador.
+ */
+async function completarIvaFaltante(items) {
+  try {
+    const sinDato = items.filter((i) => !i.grupo_impositivo && (i.iva_pct === null || i.iva_pct === undefined));
+    if (!sinDato.length) return;
+    const snapshots = await GrupoImpositivoModel.snapshotsParaCodigos(sinDato.map((i) => i.codigo_item));
+    for (const g of planearRefrescoIva(sinDato, snapshots)) {
+      const { error } = await supabase
+        .from(TABLE_ITEMS)
+        .update({ grupo_impositivo: g.grupo_impositivo, iva_pct: g.iva_pct })
+        .in("id", g.ids);
+      if (error) throw error;
+    }
+  } catch (e) {
+    console.error("⚠️ No se pudo completar el IVA de los renglones del borrador:", e?.message || e);
+  }
 }
 
 /**
@@ -796,7 +834,11 @@ export async function agregarCorteAdicional(id, { codigo_item, unidad, por }) {
   const plan = planearCorteAdicional({ recepcionId: id, items: await leerItems(id), corte });
   if (!plan.ok) throw createError(plan.status, plan.mensaje, plan.codigo);
 
-  const { data, error } = await supabase.from(TABLE_ITEMS).insert(plan.fila).select("*").single();
+  const [snapshot] = conSnapshotIva(
+    [plan.fila],
+    await GrupoImpositivoModel.snapshotsParaCodigos([corte.codigo_item]),
+  );
+  const { data, error } = await supabase.from(TABLE_ITEMS).insert(snapshot).select("*").single();
   if (esRecepcionNoBorrador(error)) throw errorNoBorrador();
   if (esViolacionUnica(error)) throw createError(409, "Ese corte ya está en los cortes adicionales.", "CORTE_YA_EXISTE");
   if (error) fallo(error, "Error al agregar el corte");
