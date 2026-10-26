@@ -22,13 +22,17 @@ import {
   armarFilaEnCurso,
 } from "../shared/enCurso.js";
 import {
+  COLUMNAS_ACTA_PROVEEDOR,
   COLUMNAS_HISTORIAL_PROVEEDOR,
+  COLUMNAS_ITEMS_ACTA_PROVEEDOR,
   COLUMNAS_ITEMS_HISTORIAL_PROVEEDOR,
+  ESTADOS_CON_ACTA,
   RECEPCIONES_POR_CONSULTA_ITEMS_HISTORIAL,
   armarFilaProveedor,
   escaparParaIlike,
   filtrarHistorial,
   paginar,
+  puedeEntregarActa,
 } from "../shared/historialRecibidor.js";
 import {
   avisosDeFactura,
@@ -255,6 +259,37 @@ async function leerItemsEnCurso(ids) {
     items.push(...(data || []));
     if ((data || []).length < FILAS_POR_PAGINA_ITEMS) return items;
   }
+}
+
+/**
+ * El acta de devolución de una recepción FIRMADA por `correo` (la del "Mi historial").
+ * Columnas nombradas (`COLUMNAS_ACTA_PROVEEDOR`): lleva firma y cédula porque el acta
+ * las imprime, así que se entrega solo a su dueña. No existe, es de otra cuenta, es
+ * un borrador o está anulada: el mismo 404, para no revelar que existe.
+ *
+ * @returns {object} cabecera + `items` (solo recibidos y devueltos)
+ */
+export async function obtenerActa({ id, correo }) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_ACTA_PROVEEDOR)
+    .eq("id", id)
+    .ilike("recibido_por", escaparParaIlike(correo))
+    .in("estado", ESTADOS_CON_ACTA)
+    .maybeSingle();
+  if (error) fallo(error, "Error al leer el acta");
+  if (!puedeEntregarActa(data, correo)) throw createError(404, "Recepción no encontrada.");
+
+  const { data: items, error: errorItems } = await supabase
+    .from(TABLE_ITEMS)
+    .select(COLUMNAS_ITEMS_ACTA_PROVEEDOR)
+    .eq("recepcion_id", id)
+    .gt("cantidad", 0)
+    .gt("cantidad_devuelta", 0)
+    .order("orden")
+    .order("id");
+  if (errorItems) fallo(errorItems, "Error al leer los renglones");
+  return { ...data, items: items || [] };
 }
 
 // ─── Abrir ─────────────────────────────────────────────────────────────────

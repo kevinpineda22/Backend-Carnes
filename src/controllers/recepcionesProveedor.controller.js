@@ -80,6 +80,25 @@ export async function listarEnCurso(req, res, next) {
 }
 
 /**
+ * GET /api/recepciones-proveedor/:id/acta?recibido_por=
+ *
+ * Lo que necesita el acta de devolución de una recepción firmada por la cuenta de
+ * la sesión (con `CARNES_AUTH` activo el correo sale del token: `quienHace`). Trae
+ * firma y cédula, por eso solo la entrega a su dueña. 404 si no existe, no es suya
+ * o no está firmada (no se filtra cuál de las tres).
+ */
+export async function obtenerActa(req, res, next) {
+  try {
+    const { id, recibido_por } = req.datosValidados;
+    const correo = normalizarCorreo(quienHace(req, recibido_por, "recibido_por"));
+    const data = await RecepcionProveedorModel.obtenerActa({ id, correo });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * GET /api/recepciones-proveedor/:id
  * Cabecera + renglones para reanudar. Sin firma ni cédula del recibidor: el
  * detalle completo del admin llega en un corte posterior.

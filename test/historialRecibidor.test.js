@@ -169,3 +169,23 @@ test("paginar: recorta a `limite` y avisa si había más", () => {
   assert.deepEqual(paginar([1, 2], 2), { filas: [1, 2], hay_mas: false });
   assert.deepEqual(paginar(undefined, 2), { filas: [], hay_mas: false });
 });
+
+test("puedeEntregarActa: solo firmada y de esa cuenta (sin importar mayúsculas)", async () => {
+  const { puedeEntregarActa, COLUMNAS_ACTA_PROVEEDOR, COLUMNAS_ITEMS_ACTA_PROVEEDOR } = await import(
+    "../src/shared/historialRecibidor.js"
+  );
+  const base = { estado: "Finalizada", recibido_por: "Ana@X.co" };
+  assert.equal(puedeEntregarActa(base, "ana@x.co"), true);
+  assert.equal(puedeEntregarActa({ ...base, estado: "Enviada_SIESA" }, "ana@x.co"), true);
+  assert.equal(puedeEntregarActa({ ...base, estado: "Borrador" }, "ana@x.co"), false);
+  assert.equal(puedeEntregarActa({ ...base, estado: "Anulada" }, "ana@x.co"), false);
+  assert.equal(puedeEntregarActa(base, "otra@x.co"), false);
+  assert.equal(puedeEntregarActa(base, ""), false);
+  assert.equal(puedeEntregarActa(null, "ana@x.co"), false);
+  // Lleva lo que imprime el acta y nada de la cabecera interna.
+  for (const c of ["firma_data", "recibidor_cedula", "proveedor_firma", "proveedor_firma_nombre", "proveedor_firma_documento"]) {
+    assert.ok(COLUMNAS_ACTA_PROVEEDOR.includes(c), c);
+  }
+  assert.doesNotMatch(COLUMNAS_ACTA_PROVEEDOR, /factura_clave|\*/);
+  assert.doesNotMatch(COLUMNAS_ITEMS_ACTA_PROVEEDOR, /\*/);
+});

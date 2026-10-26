@@ -162,3 +162,34 @@ export function armarFilaProveedor({ cabecera, items = [] }) {
 export function paginar(filas = [], limite) {
   return { filas: filas.slice(0, limite), hay_mas: filas.length > limite };
 }
+
+// ─── Acta de devolución del historial ──────────────────────────────────────
+
+/**
+ * Cabecera que necesita el acta de devolución (`armarActaDevolucion` del front).
+ * A diferencia del resto del historial SÍ lleva firma y cédula: es el acta que el
+ * propio recibidor firmó, y solo se entrega a la cuenta dueña de la recepción.
+ */
+export const COLUMNAS_ACTA_PROVEEDOR = `
+  id, proveedor_razon_social, proveedor_nit, proveedor_sucursal, factura,
+  factura_siesa, fecha_recepcion, finalizado_at, estado, recibido_por,
+  recibidor_nombre, recibidor_cedula, firma_data, proveedor_firma,
+  proveedor_firma_nombre, proveedor_firma_documento, descuento_pct,
+  sede:carnes_sedes ( id, nombre )
+`;
+
+/** Renglones del acta: los que entran en las líneas de devolución y su valor. */
+export const COLUMNAS_ITEMS_ACTA_PROVEEDOR =
+  "id, recepcion_id, codigo_item, descripcion_item, equivalencia, unidad, cantidad, valor_total, cantidad_devuelta, motivo_devolucion, descuento_pct";
+
+/** Estados en los que existe un acta firmada: ya finalizada y no anulada. */
+export const ESTADOS_CON_ACTA = [ESTADOS_PROVEEDOR.FINALIZADA, ESTADOS_PROVEEDOR.ENVIADA_SIESA];
+
+/**
+ * ¿Esta cabecera puede entregarse como acta a `correo`? Solo si es suya y está
+ * firmada (nunca borrador ni anulada). La consulta ya filtra por correo; esto es la
+ * red de seguridad contra un comodín de `ilike`.
+ */
+export function puedeEntregarActa(cabecera, correo) {
+  return Boolean(cabecera) && ESTADOS_CON_ACTA.includes(cabecera.estado) && mismoCorreo(cabecera.recibido_por, correo);
+}

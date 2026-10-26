@@ -631,6 +631,27 @@ const listarEnCursoQuerySchema = z.object({
   recibido_por: correo("El correo del recibidor no es válido."),
 });
 
+/** Acta de devolución del "Mi historial": el correo de quien la firmó (el `:id` lo valida `idParam`). */
+const actaRecepcionProveedorQuerySchema = z.object({
+  recibido_por: correo("El correo del recibidor no es válido."),
+});
+
+/**
+ * `:id` (params) + `recibido_por` (query) en un solo `datosValidados`: `validar` lo
+ * reemplaza en cada pasada, así que encadenar `idParam` y el de la query perdería el id.
+ */
+const validarActaRecepcionProveedor = (req, res, next) => {
+  validar(idParamSchema, "params")(req, res, (errorId) => {
+    if (errorId) return next(errorId);
+    const { id } = req.datosValidados;
+    validar(actaRecepcionProveedorQuerySchema, "query")(req, res, (errorQuery) => {
+      if (errorQuery) return next(errorQuery);
+      req.datosValidados = { ...req.datosValidados, id };
+      next();
+    });
+  });
+};
+
 /** Corregir la referencia de factura para SIESA: quién y la referencia nueva (el formato lo valida el modelo puro). */
 const corregirFacturaSiesaProveedorSchema = z.object({
   por: correo("El correo de quien corrige no es válido."),
@@ -745,6 +766,7 @@ export const validators = {
   listarRecepcionesProveedor: validar(listarRecepcionesProveedorQuerySchema, "query"),
   listarMisRecepciones: validar(listarMisRecepcionesQuerySchema, "query"),
   listarEnCurso: validar(listarEnCursoQuerySchema, "query"),
+  actaRecepcionProveedor: validarActaRecepcionProveedor,
   corregirFacturaSiesaProveedor: validar(corregirFacturaSiesaProveedorSchema),
   anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
 

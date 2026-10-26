@@ -126,3 +126,30 @@ test("guardar: campos pasados del largo de negocio NO dan 400 (el plan los manda
   assert.equal(error, undefined);
   assert.equal(body.observaciones.length, 2500); // el recorte a 2000 lo hace el modelo
 });
+
+test("acta: junta el id de la URL y el correo de la query", () => {
+  const req = { params: { id: "15" }, query: { recibido_por: CORREO } };
+  let error;
+  validators.actaRecepcionProveedor(req, {}, (e) => {
+    error = e;
+  });
+  assert.equal(error, undefined);
+  assert.deepEqual(req.datosValidados, { id: 15, recibido_por: CORREO });
+});
+
+test("acta: rechaza id o correo inválidos con 400", () => {
+  const casos = [
+    [{ id: "abc" }, { recibido_por: CORREO }, /id/i],
+    [{ id: "0" }, { recibido_por: CORREO }, /id/i],
+    [{ id: "15" }, {}, /correo/i],
+    [{ id: "15" }, { recibido_por: "no-es-correo" }, /correo/i],
+  ];
+  for (const [params, query, mensaje] of casos) {
+    let error;
+    validators.actaRecepcionProveedor({ params, query }, {}, (e) => {
+      error = e;
+    });
+    assert.equal(error?.statusCode, 400, JSON.stringify({ params, query }));
+    assert.match(error.message, mensaje);
+  }
+});

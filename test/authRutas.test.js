@@ -73,6 +73,7 @@ const SIN_GUARD_DE_ADMIN = [
   "GET /recepciones-proveedor/en-curso",
   "GET /recepciones-proveedor/catalogo-cortes",
   "GET /recepciones-proveedor/:id",
+  "GET /recepciones-proveedor/:id/acta",
   "PATCH /recepciones-proveedor/:id",
   "POST /recepciones-proveedor/:id/cortes-adicionales",
   "DELETE /recepciones-proveedor/:id/cortes-adicionales/:item_id",

@@ -34,6 +34,11 @@ router.get("/en-curso", validators.listarEnCurso, RecepcionesProveedorController
 // no, "catalogo-cortes" se leería como un id. Sin `requireAdminCarnes`: es del recibidor.
 router.get("/catalogo-cortes", validators.buscarCortes, ProveedoresController.buscarCortes);
 
+// Acta de devolución de "Mi historial": firma y cédula SOLO para quien firmó la
+// recepción (filtra por su correo). "/:id/acta" no choca con "/:id" (una sola
+// sección) ni con "/:id/admin"; va antes del "/:id" por orden de lectura.
+router.get("/:id/acta", validators.actaRecepcionProveedor, RecepcionesProveedorController.obtenerActa);
+
 // Para reanudar el borrador tras recargar (sin firma ni cédula).
 router.get("/:id", validators.idParam, RecepcionesProveedorController.obtener);
 
