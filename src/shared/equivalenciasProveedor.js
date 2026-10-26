@@ -201,7 +201,7 @@ export function normalizarHojaEquivalencias(filas, { topeFilas } = {}) {
   const { indiceFila, columnas } = enc;
   if (columnas.DESCITEM === undefined) {
     salida.advertencias.push(
-      'La hoja no trae la columna "Desc. item": los renglones sin equivalencia se mostrarán sin nombre.',
+      'La hoja no trae la columna "Desc. item": los productos sin equivalencia se mostrarán sin nombre.',
     );
   }
   if (topeFilas && ultima + 1 >= topeFilas) {

@@ -122,7 +122,7 @@ function bloqueosDeValidacion(items) {
   const bloqueos = [...generales];
   for (const e of errores) {
     const nombre = nombreRenglon(porId.get(e.item_id));
-    for (const m of e.mensajes) bloqueos.push(`Renglón "${nombre}": ${m}`);
+    for (const m of e.mensajes) bloqueos.push(`Producto "${nombre}": ${m}`);
   }
   return bloqueos;
 }
@@ -353,7 +353,7 @@ export function armarNotaCreditoProveedor({ recepcion, items = [], consecutivo, 
   const consec = String(consecutivo ?? consecutivoNotaCreditoProveedor(recepcion?.id));
 
   const devueltos = items.filter((i) => (Number(i?.cantidad) || 0) > 0 && (Number(i?.cantidad_devuelta) || 0) > 0);
-  if (devueltos.length === 0) bloqueos.push("La recepción no tiene renglones devueltos.");
+  if (devueltos.length === 0) bloqueos.push("La recepción no tiene productos devueltos.");
 
   const filas = devueltos.map((item) => {
     const unidad = normalizarUnidad(item.unidad);

@@ -459,7 +459,7 @@ const guardarRecepcionProveedorSchema = z.object({
         descuento_pct: numeroOTexto.nullish(),
       }),
     )
-    .max(300, "Demasiados renglones en un solo guardado.")
+    .max(300, "Demasiados productos en un solo guardado.")
     .default([]),
 });
 

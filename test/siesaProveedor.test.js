@@ -368,7 +368,7 @@ test("entrada: falta configuración del documento → bloqueo", () => {
 
 test("entrada: sin renglones con cantidad bloquea", () => {
   const { bloqueos, payload } = armar({ items: [{ ...UNIDADES, cantidad: 0, valor_unitario: null, valor_total: null, valor_fuente: null }] });
-  assert.ok(bloqueos.some((b) => /al menos un renglón/.test(b)));
+  assert.ok(bloqueos.some((b) => /al menos un producto/.test(b)));
   assert.equal(payload.Movimientos.length, 0);
 });
 
@@ -501,7 +501,7 @@ test("nota crédito: una devolución en UND usa los decimales de UND", () => {
 
 test("nota crédito: sin renglones devueltos bloquea", () => {
   const { bloqueos } = armarNC({ items: [{ ...KILOS, cantidad_devuelta: 0, motivo_devolucion: null }, UNIDADES] });
-  assert.ok(bloqueos.some((b) => /no tiene renglones devueltos/.test(b)));
+  assert.ok(bloqueos.some((b) => /no tiene productos devueltos/.test(b)));
 });
 
 test("nota crédito: una devolución mayor a lo recibido o sin motivo bloquea", () => {

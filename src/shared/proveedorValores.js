@@ -442,13 +442,13 @@ export function validarRenglon(entrada) {
       // SIESA recibe la cantidad ajustada a la unidad (UND 2,667 → 2,66). Si lo
       // guardado tiene más decimales, el total se calculó sobre otra cantidad y
       // no cuadraría con lo que llega a SIESA.
-      errores.push("La cantidad tiene más decimales de los que admite la unidad; guardá el renglón de nuevo");
+      errores.push("La cantidad tiene más decimales de los que admite la unidad; guardá el producto de nuevo");
     }
     if (!String(item.codigo_item ?? "").trim()) errores.push("Falta el código de item de SIESA");
 
     if (totalOk && unitarioOk) {
       if (!(total > 0)) {
-        errores.push("Falta el valor del renglón");
+        errores.push("Falta el valor del producto");
       } else if (total >= LIMITE_TOTAL || (unitario !== null && unitario >= LIMITE_UNITARIO)) {
         errores.push("El valor es demasiado grande");
       } else if (item.valor_fuente === "unitario" || item.valor_fuente === "total") {
@@ -462,7 +462,7 @@ export function validarRenglon(entrada) {
           r.valor_unitario !== null &&
           unitario !== null &&
           r.valor_unitario === redondear(unitario, 4);
-        if (!coincide) errores.push("Los valores no coinciden con la cantidad; guardá el renglón de nuevo");
+        if (!coincide) errores.push("Los valores no coinciden con la cantidad; guardá el producto de nuevo");
       } else {
         // Sin fuente no hay contra qué recalcular: un total suelto de $1 con un
         // unitario de $20.000 pasaría derecho a SIESA.
@@ -476,7 +476,7 @@ export function validarRenglon(entrada) {
   }
 
   if (!esVacio(item.descuento_pct) && parsearPorcentaje(item.descuento_pct) === null) {
-    errores.push("El descuento del renglón no es válido (de 0 a menos de 100, con hasta 2 decimales)");
+    errores.push("El descuento del producto no es válido (de 0 a menos de 100, con hasta 2 decimales)");
   }
 
   if (!esNumeroValido(devuelta)) {
@@ -502,7 +502,7 @@ export function validarRecepcion(items = []) {
     const mensajes = validarRenglon(item);
     if (mensajes.length) errores.push({ item_id: item?.id ?? null, mensajes });
   }
-  const generales = conCantidad === 0 ? ["Tiene que haber al menos un renglón con cantidad mayor a 0"] : [];
+  const generales = conCantidad === 0 ? ["Tiene que haber al menos un producto con cantidad mayor a 0"] : [];
   return {
     ok: errores.length === 0 && generales.length === 0,
     errores,

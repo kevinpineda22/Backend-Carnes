@@ -212,7 +212,7 @@ export function decidirReintentoEntrada({ estado, envios = [], activo }) {
  */
 export function decidirNotaCredito({ estado, items = [], envios = [], activo, bloqueos = [], manual = false }) {
   if (!hayDevoluciones(items)) {
-    return { accion: "no_requerida", estado: "no_requerida", motivo: "La recepción no tiene renglones devueltos." };
+    return { accion: "no_requerida", estado: "no_requerida", motivo: "La recepción no tiene productos devueltos." };
   }
   if (estado !== ESTADOS.FINALIZADA && estado !== ESTADOS.ENVIADA_SIESA) {
     return { accion: "no_aplica", estado: "pendiente", motivo: `La recepción está en "${estado}".` };

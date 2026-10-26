@@ -202,8 +202,9 @@ export function bloqueoAjusteFaltante() {
 // rechazaba: "plano [0 · 413] Compras comercial: la clase debe ser 408 o 420".
 // Sus campos variables tienen nombres propios (CONSECUTIVO, FECHA_DOCTO,
 // NIT_TERCERO, DTO_REFERENCIA, C.O_MOVIMIENTO…): ver `armarNotaCreditoProveedor`.
-// Queda en elaboración (estado 0): alguien la revisa en SIESA antes de
-// contabilizar. Si algún día vuelve a faltar un valor, la nota crédito
+// ATENCIÓN: desde el 26/10/2026 el estado fijo del conector es 1 =
+// Aprobado/Contabilizado (antes 0, en elaboración): la nota se contabiliza al
+// importarse, sin revisión previa en SIESA. Si algún día vuelve a faltar un valor, la nota crédito
 // NO se manda y queda bloqueada con un mensaje que dice qué falta
 // (`bloqueoNotaCreditoProveedor`).
 //

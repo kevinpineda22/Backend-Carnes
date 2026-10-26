@@ -71,7 +71,7 @@ const VACIO = {
 const MSG_EXCESO = "Más de 800 KL: falta la confirmación";
 const MSG_VALOR_20 =
   "El valor unitario ($ 20) está fuera del rango esperado ($ 1.000 a $ 150.000 por KL); hay que confirmarlo";
-const MSG_SIN_RENGLONES = "Tiene que haber al menos un renglón con cantidad mayor a 0";
+const MSG_SIN_RENGLONES = "Tiene que haber al menos un producto con cantidad mayor a 0";
 
 const CASOS = [
   // parsearPesos: "." solo miles, "," solo decimales ([J9])
@@ -380,7 +380,7 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "UND con 3 decimales no cuadra con lo que llega a SIESA",
     entrada: [{ ...BASE, unidad: "UND", cantidad: 2.667, valor_unitario: 20000, valor_total: 53340 }],
-    esperado: ["La cantidad tiene más decimales de los que admite la unidad; guardá el renglón de nuevo"],
+    esperado: ["La cantidad tiene más decimales de los que admite la unidad; guardá el producto de nuevo"],
   },
   {
     fn: "validarRenglon",
@@ -405,19 +405,19 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "cantidad sin valor",
     entrada: [{ ...BASE, valor_fuente: null, valor_unitario: null, valor_total: null }],
-    esperado: ["Falta el valor del renglón"],
+    esperado: ["Falta el valor del producto"],
   },
   {
     fn: "validarRenglon",
     nombre: "cantidad con total 0",
     entrada: [{ ...BASE, valor_unitario: 0, valor_total: 0 }],
-    esperado: ["Falta el valor del renglón"],
+    esperado: ["Falta el valor del producto"],
   },
   {
     fn: "validarRenglon",
     nombre: "total que no sale de cantidad × unitario",
     entrada: [{ ...BASE, valor_total: 199999 }],
-    esperado: ["Los valores no coinciden con la cantidad; guardá el renglón de nuevo"],
+    esperado: ["Los valores no coinciden con la cantidad; guardá el producto de nuevo"],
   },
   {
     fn: "validarRenglon",
@@ -429,7 +429,7 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "fuente total con unitario viejo",
     entrada: [{ ...BASE, cantidad: 3, valor_fuente: "total", valor_unitario: 33333, valor_total: 100000 }],
-    esperado: ["Los valores no coinciden con la cantidad; guardá el renglón de nuevo"],
+    esperado: ["Los valores no coinciden con la cantidad; guardá el producto de nuevo"],
   },
   { fn: "validarRenglon", nombre: "cantidad negativa", entrada: [{ ...BASE, cantidad: -1 }], esperado: ["La cantidad no es válida"] },
   {

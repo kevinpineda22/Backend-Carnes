@@ -81,7 +81,7 @@ async function leerItemsDeResumen(ids) {
   );
   const filas = [];
   for (const { data, error } of respuestas) {
-    if (error) fallo(error, "Error al leer los renglones");
+    if (error) fallo(error, "Error al leer los productos");
     filas.push(...(data || []));
   }
   return filas;
@@ -176,7 +176,7 @@ async function leerItemsAdmin(id) {
     .eq("recepcion_id", id)
     .order("orden")
     .order("id");
-  if (error) fallo(error, "Error al leer los renglones");
+  if (error) fallo(error, "Error al leer los productos");
   return data || [];
 }
 

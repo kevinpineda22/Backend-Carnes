@@ -147,7 +147,7 @@ async function leerItems(id) {
     .eq("recepcion_id", id)
     .order("orden")
     .order("id");
-  if (error) fallo(error, "Error al leer los renglones");
+  if (error) fallo(error, "Error al leer los productos");
   return data || [];
 }
 
@@ -204,7 +204,7 @@ export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
   );
   const items = [];
   for (const { data: filasItems, error: errorItems } of respuestas) {
-    if (errorItems) fallo(errorItems, "Error al leer los renglones");
+    if (errorItems) fallo(errorItems, "Error al leer los productos");
     items.push(...(filasItems || []));
   }
   const itemsPor = agruparPor(items, "recepcion_id");
@@ -258,7 +258,7 @@ async function leerItemsEnCurso(ids) {
       .in("recepcion_id", ids)
       .order("id")
       .range(desde, desde + FILAS_POR_PAGINA_ITEMS - 1);
-    if (error) fallo(error, "Error al leer los renglones");
+    if (error) fallo(error, "Error al leer los productos");
     items.push(...(data || []));
     if ((data || []).length < FILAS_POR_PAGINA_ITEMS) return items;
   }
@@ -291,7 +291,7 @@ export async function obtenerActa({ id, correo }) {
     .gt("cantidad_devuelta", 0)
     .order("orden")
     .order("id");
-  if (errorItems) fallo(errorItems, "Error al leer los renglones");
+  if (errorItems) fallo(errorItems, "Error al leer los productos");
   return { ...data, items: items || [] };
 }
 
@@ -394,7 +394,7 @@ async function completarIvaFaltante(items) {
       if (error) throw error;
     }
   } catch (e) {
-    console.error("⚠️ No se pudo completar el IVA de los renglones del borrador:", e?.message || e);
+    console.error("⚠️ No se pudo completar el IVA de los productos del borrador:", e?.message || e);
   }
 }
 
@@ -562,7 +562,7 @@ async function escribirRenglones(recepcionId, actualizaciones) {
     );
     respuestas.forEach(({ data, error }, n) => {
       if (esRecepcionNoBorrador(error)) throw errorNoBorrador();
-      if (error) fallo(error, "Error al guardar los renglones");
+      if (error) fallo(error, "Error al guardar los productos");
       if (!data?.length) conflictos.push(lote[n].id);
     });
   }
@@ -747,7 +747,7 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data, prove
   const items = await leerItems(id);
   const validacion = validarRecepcion(items);
   if (!validacion.ok) {
-    const e = createError(422, "Hay renglones por corregir antes de firmar.", "RECEPCION_INVALIDA");
+    const e = createError(422, "Hay productos por corregir antes de firmar.", "RECEPCION_INVALIDA");
     e.detalle = { errores: validacion.errores, generales: validacion.generales };
     throw e;
   }

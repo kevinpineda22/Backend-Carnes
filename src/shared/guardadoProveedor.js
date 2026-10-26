@@ -65,7 +65,7 @@ export const LARGO_MAX_OBSERVACIONES = 2000;
 
 /** Mensaje de un renglón que otro guardado modificó al mismo tiempo y no se pudo reconciliar. */
 export const MENSAJE_CONFLICTO =
-  "Otro guardado modificó este renglón al mismo tiempo; revisalo y volvé a escribirlo";
+  "Otro guardado modificó este producto al mismo tiempo; revisalo y volvé a escribirlo";
 
 /** Decimales de cada columna numérica de los renglones (sql/022), para comparar sin ruido de coma flotante. */
 const ESCALA = {

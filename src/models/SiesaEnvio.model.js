@@ -2690,7 +2690,7 @@ async function cargarRecepcionProveedor(recepcionId) {
     .eq("recepcion_id", recepcionId)
     .order("orden")
     .order("id");
-  if (errorItems) fallarSiFaltaMigracion(errorItems, "Error al leer los renglones", MIGRACIONES_PROVEEDOR);
+  if (errorItems) fallarSiFaltaMigracion(errorItems, "Error al leer los productos", MIGRACIONES_PROVEEDOR);
   return { ...data, items: items || [] };
 }
 
