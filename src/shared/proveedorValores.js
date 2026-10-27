@@ -56,7 +56,7 @@ export const LIMITE_CANTIDAD = 1e9;
 export const LIMITE_UNITARIO = 1e12;
 export const LIMITE_TOTAL = 1e14;
 
-export const MENSAJE_PESOS = "Usá punto para miles y coma para decimales";
+export const MENSAJE_PESOS = "Use punto para miles y coma para decimales";
 
 /** Redondeo a `n` decimales, evitando la basura de punto flotante. */
 function redondear(valor, n) {
@@ -442,7 +442,7 @@ export function validarRenglon(entrada) {
       // SIESA recibe la cantidad ajustada a la unidad (UND 2,667 → 2,66). Si lo
       // guardado tiene más decimales, el total se calculó sobre otra cantidad y
       // no cuadraría con lo que llega a SIESA.
-      errores.push("La cantidad tiene más decimales de los que admite la unidad; guardá el producto de nuevo");
+      errores.push("La cantidad tiene más decimales de los que admite la unidad; guarde el producto de nuevo");
     }
     if (!String(item.codigo_item ?? "").trim()) errores.push("Falta el código de item de SIESA");
 
@@ -462,7 +462,7 @@ export function validarRenglon(entrada) {
           r.valor_unitario !== null &&
           unitario !== null &&
           r.valor_unitario === redondear(unitario, 4);
-        if (!coincide) errores.push("Los valores no coinciden con la cantidad; guardá el producto de nuevo");
+        if (!coincide) errores.push("Los valores no coinciden con la cantidad; guarde el producto de nuevo");
       } else {
         // Sin fuente no hay contra qué recalcular: un total suelto de $1 con un
         // unitario de $20.000 pasaría derecho a SIESA.

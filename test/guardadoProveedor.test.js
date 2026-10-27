@@ -169,10 +169,10 @@ test("[J4] plata ambigua ('20.00'): ese valor se rechaza, el resto del guardado 
     valor_fuente: "unitario",
   });
   assert.deepEqual(p.rechazos, [
-    { item_id: 1, tipo: "valor_invalido", mensaje: "Usá punto para miles y coma para decimales" },
+    { item_id: 1, tipo: "valor_invalido", mensaje: "Use punto para miles y coma para decimales" },
   ]);
   assert.deepEqual(p.pendientes, [
-    { item_id: 1, mensajes: ["Usá punto para miles y coma para decimales"], tipos: ["valor_invalido"] },
+    { item_id: 1, mensajes: ["Use punto para miles y coma para decimales"], tipos: ["valor_invalido"] },
   ]);
 });
 

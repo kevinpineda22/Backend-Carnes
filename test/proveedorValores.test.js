@@ -380,7 +380,7 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "UND con 3 decimales no cuadra con lo que llega a SIESA",
     entrada: [{ ...BASE, unidad: "UND", cantidad: 2.667, valor_unitario: 20000, valor_total: 53340 }],
-    esperado: ["La cantidad tiene más decimales de los que admite la unidad; guardá el producto de nuevo"],
+    esperado: ["La cantidad tiene más decimales de los que admite la unidad; guarde el producto de nuevo"],
   },
   {
     fn: "validarRenglon",
@@ -417,7 +417,7 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "total que no sale de cantidad × unitario",
     entrada: [{ ...BASE, valor_total: 199999 }],
-    esperado: ["Los valores no coinciden con la cantidad; guardá el producto de nuevo"],
+    esperado: ["Los valores no coinciden con la cantidad; guarde el producto de nuevo"],
   },
   {
     fn: "validarRenglon",
@@ -429,7 +429,7 @@ const CASOS = [
     fn: "validarRenglon",
     nombre: "fuente total con unitario viejo",
     entrada: [{ ...BASE, cantidad: 3, valor_fuente: "total", valor_unitario: 33333, valor_total: 100000 }],
-    esperado: ["Los valores no coinciden con la cantidad; guardá el producto de nuevo"],
+    esperado: ["Los valores no coinciden con la cantidad; guarde el producto de nuevo"],
   },
   { fn: "validarRenglon", nombre: "cantidad negativa", entrada: [{ ...BASE, cantidad: -1 }], esperado: ["La cantidad no es válida"] },
   {
