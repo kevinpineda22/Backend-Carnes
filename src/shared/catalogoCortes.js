@@ -55,7 +55,7 @@ function aCorte(codigo, descripcion, unidad) {
   const u = normalizarUnidad(unidad);
   if (!codigo_item || !unidadValida(u)) return null;
   // `descripcion_item` es VARCHAR(160): más largo rompería el INSERT.
-  const texto = String(descripcion ?? "").trim().slice(0, LARGO_MAX_DESCRIPCION);
+  const texto = String(descripcion ?? "").trim().slice(0, LARGO_MAX_DESCRIPCION).trimEnd();
   return { codigo_item, descripcion_item: texto || null, unidad: u };
 }
 
@@ -106,4 +106,28 @@ export function unirCatalogo(
 export function buscarCorteExacto(fuentes, { codigo_item, unidad } = {}) {
   const clave = claveCorte({ codigo_item, unidad });
   return unirCatalogo(fuentes, { limite: Number.MAX_SAFE_INTEGER }).find((c) => claveCorte(c) === clave) ?? null;
+}
+
+/**
+ * El corte que el usuario ELIGIÓ en la búsqueda. La búsqueda filtra cada fuente por
+ * el texto escrito, así que la descripción que se ve puede ser la de una fila que el
+ * dedupe de la lista completa descartaría (mismo código y unidad, otra descripción:
+ * p. ej. dos filas de la plantilla con el código 15167). Si el cliente manda la
+ * descripción que vio y es de ALGUNA fila del catálogo con esa llave, se respeta; si
+ * no calza con ninguna (cliente viejo, texto inventado) gana la de mayor prioridad,
+ * como en `buscarCorteExacto`. El código y la unidad siempre salen del catálogo.
+ */
+export function elegirCorte(fuentes, { codigo_item, unidad, descripcion_item } = {}) {
+  const exacto = buscarCorteExacto(fuentes, { codigo_item, unidad });
+  if (!exacto) return null;
+  const pedida = String(descripcion_item ?? "").trim().slice(0, LARGO_MAX_DESCRIPCION).trimEnd();
+  if (!pedida || pedida === exacto.descripcion_item) return exacto;
+  const { plantilla = [], viceras = [], equivalencias = [] } = fuentes ?? {};
+  const clave = claveCorte({ codigo_item, unidad });
+  const coincide = [
+    ...plantilla.map((f) => aCorte(f?.codigo_item, f?.descripcion, "KL")),
+    ...viceras.map((f) => aCorte(f?.codigo_item, f?.nombre, f?.unidad || "KL")),
+    ...equivalencias.map((f) => aCorte(f?.codigo_item, f?.descripcion_item, f?.unidad)),
+  ].find((c) => c && claveCorte(c) === clave && c.descripcion_item === pedida);
+  return coincide ?? exacto;
 }

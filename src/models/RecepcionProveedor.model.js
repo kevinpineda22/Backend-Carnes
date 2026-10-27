@@ -824,11 +824,11 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data, prove
  *
  * @returns {Promise<object>} el renglón creado
  */
-export async function agregarCorteAdicional(id, { codigo_item, unidad, por }) {
+export async function agregarCorteAdicional(id, { codigo_item, unidad, descripcion_item, por }) {
   const cabecera = await leerCabecera(id);
   if (cabecera.estado !== ESTADOS.BORRADOR) throw errorNoBorrador();
 
-  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad });
+  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad, descripcion_item });
   if (!corte) throw createError(404, "Ese corte no está en el catálogo.", "CORTE_NO_ENCONTRADO");
 
   const plan = planearCorteAdicional({ recepcionId: id, items: await leerItems(id), corte });

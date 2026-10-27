@@ -19,6 +19,7 @@ import {
   busquedaValida,
   buscarCorteExacto,
   claveCorte,
+  elegirCorte,
   normalizarBusqueda,
   unirCatalogo,
 } from "../src/shared/catalogoCortes.js";
@@ -451,6 +452,35 @@ test("buscarCorteExacto: encuentra por código + unidad y devuelve null si no ex
   assert.equal(buscarCorteExacto(FUENTES, { codigo_item: "00000", unidad: "KL" }), null);
 });
 
+test("elegirCorte: lo que se guarda es el código y la descripción que se vieron en la búsqueda", () => {
+  // Buscar «cogote» muestra la fila COGOTE (15167·KL); el catálogo completo dedupe a «CARNE PARA MOLER».
+  const visto = unirCatalogo({ plantilla: [FUENTES.plantilla[1]] }, { q: "cogote" })[0];
+  assert.equal(visto.descripcion_item, "COGOTE");
+  const guardado = elegirCorte(FUENTES, visto);
+  assert.equal(guardado.codigo_item, visto.codigo_item);
+  assert.equal(guardado.descripcion_item, visto.descripcion_item);
+  assert.equal(guardado.unidad, visto.unidad);
+});
+
+test("elegirCorte: sin descripción, o con una que no existe en el catálogo, gana la de mayor prioridad", () => {
+  assert.equal(elegirCorte(FUENTES, { codigo_item: "15167", unidad: "KL" }).descripcion_item, "CARNE PARA MOLER");
+  assert.equal(
+    elegirCorte(FUENTES, { codigo_item: "15167", unidad: "KL", descripcion_item: "INVENTADA" }).descripcion_item,
+    "CARNE PARA MOLER",
+  );
+  // Una descripción de OTRA unidad no sirve: la llave es código + unidad.
+  assert.equal(
+    elegirCorte(FUENTES, { codigo_item: "15167", unidad: "KL", descripcion_item: "MOLIDA UND" }).descripcion_item,
+    "CARNE PARA MOLER",
+  );
+});
+
+test("elegirCorte: respeta código recortado, unidad normalizada y devuelve null si el corte no existe", () => {
+  const c = elegirCorte(FUENTES, { codigo_item: " 15167 ", unidad: "kg", descripcion_item: " MOLIDA " });
+  assert.deepEqual(c, { codigo_item: "15167", descripcion_item: "MOLIDA", unidad: "KL" });
+  assert.equal(elegirCorte(FUENTES, { codigo_item: "00000", unidad: "KL", descripcion_item: "X" }), null);
+});
+
 // ─── Cortes adicionales ────────────────────────────────────────────────────
 
 const CORTE = { codigo_item: "20999", descripcion_item: "CORTE NUEVO", unidad: "KL" };
@@ -600,6 +630,25 @@ test("validador agregarCorteProveedor: código (texto o número) y unidad KL/UND
     { por: "no-es-correo", codigo_item: "1", unidad: "KL" },
   ];
   for (const body of malos) assert.equal(correr(validators.agregarCorteProveedor, body).error?.statusCode, 400, JSON.stringify(body));
+});
+
+test("validadores de agregar corte: la descripción es opcional y se recorta", () => {
+  const body = { editado_por: CORREO, codigo_item: "20999", unidad: "KL", descripcion_item: "  COGOTE " };
+  assert.equal(correr(validators.agregarCorteAdicional, body).body.descripcion_item, "COGOTE");
+  assert.equal(correr(validators.agregarCorteAdicional, { ...body, descripcion_item: 5 }).error?.statusCode, 400);
+  assert.equal(correr(validators.agregarCorteProveedor, { por: CORREO, codigo_item: "1", unidad: "KL" }).error, undefined);
+  // La búsqueda devuelve null en filas sin descripción y el cliente lo reenvía tal cual.
+  assert.equal(correr(validators.agregarCorteAdicional, { ...body, descripcion_item: null }).error, undefined);
+  assert.equal(correr(validators.agregarCorteProveedor, { por: CORREO, codigo_item: "1", unidad: "KL", descripcion_item: null }).error, undefined);
+  assert.equal(correr(validators.agregarCorteAdicional, { ...body, descripcion_item: "x".repeat(1001) }).error?.statusCode, 400);
+});
+
+test("elegirCorte: una descripción cortada en 160 que termina en espacio sigue coincidiendo", () => {
+  const larga = `${"A".repeat(159)} RESTO`;
+  const fuentes = { plantilla: [{ codigo_item: "777", descripcion: larga }] };
+  const visto = unirCatalogo(fuentes, {})[0];
+  assert.equal(visto.descripcion_item, "A".repeat(159));
+  assert.equal(elegirCorte(fuentes, visto).descripcion_item, visto.descripcion_item);
 });
 
 test("validador agregarCorteAdicional: pide quién edita, código y unidad", () => {

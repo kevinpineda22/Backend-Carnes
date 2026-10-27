@@ -2,7 +2,7 @@ import { supabase } from "../config/supabase.js";
 import { fallarSiFaltaMigracion } from "../shared/migraciones.js";
 import {
   FILAS_POR_FUENTE,
-  buscarCorteExacto,
+  elegirCorte,
   normalizarBusqueda,
   unirCatalogo,
 } from "../shared/catalogoCortes.js";
@@ -64,12 +64,13 @@ export async function buscarCortes(texto, { limite } = {}) {
 
 /**
  * El corte exacto del catálogo (código + unidad), o `null` si el sistema no lo
- * conoce. Es lo que el servidor usa para NO confiar en la descripción que mande el
- * cliente: el renglón se crea con los datos del catálogo.
+ * conoce. El servidor NO confía en lo que mande el cliente: el código y la unidad
+ * salen del catálogo, y la descripción que vio el usuario en la búsqueda solo se
+ * respeta si es la de una fila real del catálogo con ese código y unidad.
  */
-export async function obtenerCorte({ codigo_item, unidad }) {
+export async function obtenerCorte({ codigo_item, unidad, descripcion_item }) {
   const codigo = String(codigo_item ?? "").trim();
   const por = (consulta) => consulta.eq("codigo_item", codigo);
   const fuentes = await leerFuentes({ filtros: { plantilla: por, viceras: por, equivalencias: por } });
-  return buscarCorteExacto(fuentes, { codigo_item: codigo, unidad });
+  return elegirCorte(fuentes, { codigo_item: codigo, unidad, descripcion_item });
 }

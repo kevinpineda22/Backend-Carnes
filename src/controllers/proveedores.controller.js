@@ -102,17 +102,18 @@ export async function buscarCortes(req, res, next) {
 
 /**
  * POST /api/proveedores/:id/plantilla/cortes
- * Body: { por(correo), codigo_item, unidad }
+ * Body: { por(correo), codigo_item, unidad, descripcion_item? }
  *
  * Agrega UN corte del catálogo a la plantilla del proveedor. 201 con la fila;
  * 404 si el corte no está en el catálogo; 409 si ya está en la plantilla.
  */
 export async function agregarCorte(req, res, next) {
   try {
-    const { codigo_item, unidad, por } = conQuienHace(req, req.body, "por");
+    const { codigo_item, unidad, descripcion_item, por } = conQuienHace(req, req.body, "por");
     const { fila, reactivada } = await ProveedorModel.agregarCorte(req.datosValidados.id, {
       codigo_item,
       unidad,
+      descripcion_item,
       por,
     });
     res.status(201).json({ ok: true, data: fila, reactivada });

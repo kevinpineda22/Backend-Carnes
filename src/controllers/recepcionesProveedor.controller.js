@@ -137,7 +137,7 @@ export async function guardar(req, res, next) {
 
 /**
  * POST /api/recepciones-proveedor/:id/cortes-adicionales
- * Body: { editado_por, codigo_item, unidad }
+ * Body: { editado_por, codigo_item, unidad, descripcion_item? }
  *
  * Agrega a un borrador un corte del catálogo que no está en la plantilla. 201 con
  * el renglón creado (`item`); 404 si el corte no está en el catálogo; 409 si ya
@@ -145,10 +145,11 @@ export async function guardar(req, res, next) {
  */
 export async function agregarCorteAdicional(req, res, next) {
   try {
-    const { editado_por, codigo_item, unidad } = conQuienHace(req, req.body, "editado_por");
+    const { editado_por, codigo_item, unidad, descripcion_item } = conQuienHace(req, req.body, "editado_por");
     const item = await RecepcionProveedorModel.agregarCorteAdicional(req.datosValidados.id, {
       codigo_item,
       unidad,
+      descripcion_item,
       por: editado_por,
     });
     res.status(201).json({ ok: true, item });

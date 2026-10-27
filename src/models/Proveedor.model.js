@@ -223,10 +223,10 @@ export async function cargarPlantilla(id, { filas, aplicar = false, por }) {
 /**
  * @returns {Promise<{ fila: object, reactivada: boolean }>}
  */
-export async function agregarCorte(id, { codigo_item, unidad, por }) {
+export async function agregarCorte(id, { codigo_item, unidad, descripcion_item, por }) {
   await leerProveedorActivo(id);
 
-  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad });
+  const corte = await CatalogoModel.obtenerCorte({ codigo_item, unidad, descripcion_item });
   if (!corte) {
     throw createError(404, "Ese corte no está en el catálogo.", "CORTE_NO_ENCONTRADO");
   }

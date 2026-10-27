@@ -367,6 +367,15 @@ const corteDelCatalogo = {
     "El código del corte no puede pasar de 20 caracteres.",
   ),
   unidad: unidadDeCorte,
+  // La descripción que el usuario vio en la búsqueda. Opcional: el servidor la valida
+  // contra el catálogo (`elegirCorte`); sin ella gana la de mayor prioridad.
+  // `null` se acepta: la búsqueda devuelve null para filas sin descripción. Tope
+  // holgado (el catálogo corta en 160) solo para no aceptar cuerpos enormes.
+  descripcion_item: z
+    .string({ invalid_type_error: "La descripción del corte no es válida." })
+    .max(1000, "La descripción del corte es demasiado larga.")
+    .transform((v) => v.trim())
+    .nullish(),
 };
 
 const agregarCorteProveedorSchema = z.object({
