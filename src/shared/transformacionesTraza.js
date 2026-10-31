@@ -119,12 +119,21 @@ export function armarPaginacion(pagina, por_pagina, total) {
   return { pagina, por_pagina, total: Number.isFinite(total) ? total : 0 };
 }
 
+/** Solo se exponen enlaces https hacia github.com. */
+function esUrlGithub(valor) {
+  if (typeof valor !== "string") return false;
+  try {
+    const u = new URL(valor);
+    return u.protocol === "https:" && u.hostname === "github.com";
+  } catch {
+    return false;
+  }
+}
+
 /** Bloque de GitHub de una corrida; `url` es null en corridas previas a la migración 009. */
 export function githubDeCorrida(corrida) {
   const c = corrida || {};
-  const url = typeof c.github_run_url === "string" && /^https?:\/\//i.test(c.github_run_url)
-    ? c.github_run_url
-    : null;
+  const url = esUrlGithub(c.github_run_url) ? c.github_run_url : null;
   return {
     run_id: c.github_run_id ?? null,
     attempt: c.github_run_attempt ?? null,

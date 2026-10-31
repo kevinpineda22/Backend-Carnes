@@ -102,6 +102,18 @@ test("githubDeCorrida: arma el bloque o devuelve url null", () => {
   assert.equal(githubDeCorrida({ github_run_url: "javascript:alert(1)" }).url, null);
 });
 
+test("githubDeCorrida: solo expone enlaces https a github.com", () => {
+  const url = (u) => githubDeCorrida({ github_run_url: u }).url;
+  assert.equal(url("https://github.com/o/r/actions/runs/1"), "https://github.com/o/r/actions/runs/1");
+  assert.equal(url("http://github.com/o/r/actions/runs/1"), null);
+  assert.equal(url("https://evil.example.com/o/r"), null);
+  assert.equal(url("https://github.com.evil.com/o/r"), null);
+  assert.equal(url("javascript:alert(1)"), null);
+  assert.equal(url("data:text/html,<script>alert(1)</script>"), null);
+  assert.equal(url("https://"), null);
+  assert.equal(url("not a url"), null);
+});
+
 test("conteosDeAlertas: solo conteos, tolera null/legacy", () => {
   assert.deepEqual(conteosDeAlertas({ v: 1, conteos: { omitidos: 3 }, listas: { omitidos: {} } }), { omitidos: 3 });
   assert.equal(conteosDeAlertas(null), null);
