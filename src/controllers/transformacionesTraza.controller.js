@@ -53,6 +53,7 @@ export async function obtenerEjecucion(req, res, next) {
     // PLAN_INCOMPLETO se deriva de respuesta->plan; la respuesta en sí no sale en el detalle.
     const destinos = agruparNegativosPorDestino(
       items.map(({ plan, ...f }) => ({ ...f, respuesta: plan ? { plan } : null })),
+      { truncado },
     ).map((d) => ({
       ...d,
       cei: d.cei && sinRespuesta(d.cei),

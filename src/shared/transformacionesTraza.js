@@ -13,6 +13,7 @@ export const ESTADOS_NEGATIVOS = ["PLANNED", "SENDING", "OK", "ERROR", "AMBIGUO"
 export const POR_PAGINA_EJECUCIONES = { defecto: 50, maximo: 200 };
 export const POR_PAGINA_NEGATIVOS = { defecto: 100, maximo: 500 };
 export const LIMITE_DOCUMENTOS_DETALLE = 1000;
+export const PAGINA_MAXIMA = 1000000;
 
 const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -50,7 +51,8 @@ function enteroOpcional(valor, nombre) {
   if (t === undefined) return undefined;
   const n = Number(t);
   if (!Number.isFinite(n)) throw createError(400, `${nombre} debe ser un número.`);
-  return Math.trunc(n);
+  if (!Number.isInteger(n)) throw createError(400, `${nombre} debe ser un número entero.`);
+  return n;
 }
 
 function ventanaYEntorno(q) {
@@ -67,7 +69,8 @@ function ventanaYEntorno(q) {
 
 function paginacionDeQuery(q, { defecto, maximo }) {
   const pagina = enteroOpcional(q.pagina, "pagina") ?? 1;
-  if (pagina < 1) throw createError(400, "pagina debe ser un entero mayor o igual a 1.");
+  if (pagina < 1 || pagina > PAGINA_MAXIMA)
+    throw createError(400, `pagina debe ser un entero entre 1 y ${PAGINA_MAXIMA}.`);
   const bruto = enteroOpcional(q.por_pagina, "por_pagina");
   const por_pagina = bruto === undefined ? defecto : Math.min(Math.max(bruto, 1), maximo);
   return { pagina, por_pagina };
@@ -107,6 +110,11 @@ export function rangoDePagina(pagina, por_pagina) {
   return { desde, hasta: desde + por_pagina - 1 };
 }
 
+/** PostgREST responde 416 / PGRST103 cuando el rango pedido está más allá del total. */
+export function esPaginaFueraDeRango(error) {
+  return !!error && (error.code === "PGRST103" || error.status === 416);
+}
+
 export function armarPaginacion(pagina, por_pagina, total) {
   return { pagina, por_pagina, total: Number.isFinite(total) ? total : 0 };
 }
@@ -141,10 +149,16 @@ function estadoDeDestino(filas) {
 
 /**
  * Agrupa filas de `sps_transformaciones_negativos` por destino (co, bodega, item_destino).
- * Cada grupo trae su CEI, sus CSA y un estado derivado. `PLAN_INCOMPLETO` cuando el CEI
- * declara más CSA planificadas (`respuesta.plan.csas_planificadas`) que las guardadas.
+ * Cada grupo trae su CEI, sus CSA, un estado derivado y `plan_incompleto` (boolean aparte):
+ * el CEI declara más CSA planificadas (`respuesta.plan.csas_planificadas`) que las guardadas.
+ *
+ * `estado`: AMBIGUO > ERROR > PLAN_INCOMPLETO > SENDING > PLANNED > CANCELADO > OK. Así un
+ * plan incompleto nunca oculta un AMBIGUO ni un ERROR.
+ *
+ * Con `truncado` (la lista se recortó al tope) el último grupo puede estar partido: se marca
+ * `truncado: true` y nunca se declara plan_incompleto.
  */
-export function agruparNegativosPorDestino(filas) {
+export function agruparNegativosPorDestino(filas, { truncado = false } = {}) {
   const grupos = new Map();
   for (const f of Array.isArray(filas) ? filas : []) {
     const clave = `${f.co}|${f.bodega}|${f.item_destino}`;
@@ -157,10 +171,14 @@ export function agruparNegativosPorDestino(filas) {
     if (f.tipo_dto === "CEI") g.cei = f;
     else g.csas.push(f);
   }
-  return [...grupos.values()].map(({ _filas, ...g }) => {
+  const lista = [...grupos.values()];
+  return lista.map(({ _filas, ...g }, i) => {
+    const parcial = truncado && i === lista.length - 1;
     const esperado = g.cei?.respuesta?.plan?.csas_planificadas;
-    const plan_incompleto = Number.isInteger(esperado) && esperado !== g.csas.length;
-    return { ...g, plan_incompleto, estado: plan_incompleto ? "PLAN_INCOMPLETO" : estadoDeDestino(_filas) };
+    const plan_incompleto = !parcial && Number.isInteger(esperado) && esperado !== g.csas.length;
+    const base = estadoDeDestino(_filas);
+    const estado = plan_incompleto && base !== "AMBIGUO" && base !== "ERROR" ? "PLAN_INCOMPLETO" : base;
+    return { ...g, plan_incompleto, truncado: parcial, estado };
   });
 }
 

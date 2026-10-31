@@ -12,6 +12,8 @@ import {
   conteosDeAlertas,
   agruparNegativosPorDestino,
   limitarDocumentos,
+  esPaginaFueraDeRango,
+  PAGINA_MAXIMA,
 } from "../src/shared/transformacionesTraza.js";
 
 const es400 = (e) => e.statusCode === 400;
@@ -156,4 +158,51 @@ test("limitarDocumentos: tope de 1000 con bandera truncado", () => {
   assert.equal(grande.items.length, 1000);
   assert.equal(grande.truncado, true);
   assert.deepEqual(limitarDocumentos(undefined), { items: [], truncado: false });
+});
+
+test("estado: PLAN_INCOMPLETO no oculta AMBIGUO ni ERROR", () => {
+  const cei = fila({ id: 1, tipo_dto: "CEI", respuesta: { plan: { csas_planificadas: 3 } } });
+  const [a] = agruparNegativosPorDestino([
+    cei,
+    fila({ id: 2, tipo_dto: "CSA", item_origen: 5 }),
+    fila({ id: 3, tipo_dto: "CSA", item_origen: 6, status: "AMBIGUO" }),
+  ]);
+  assert.equal(a.estado, "AMBIGUO");
+  assert.equal(a.plan_incompleto, true);
+  const [e] = agruparNegativosPorDestino([cei, fila({ id: 2, tipo_dto: "CSA", item_origen: 5, status: "ERROR" })]);
+  assert.equal(e.estado, "ERROR");
+  assert.equal(e.plan_incompleto, true);
+});
+
+test("truncado: el ultimo destino queda marcado y nunca es plan_incompleto", () => {
+  const filas = [
+    fila({ id: 1, tipo_dto: "CEI", respuesta: { plan: { csas_planificadas: 1 } } }),
+    fila({ id: 2, tipo_dto: "CSA", item_origen: 5 }),
+    fila({ id: 3, co: "002", tipo_dto: "CEI", respuesta: { plan: { csas_planificadas: 4 } } }),
+    fila({ id: 4, co: "002", tipo_dto: "CSA", item_origen: 5 }),
+  ];
+  const [d1, d2] = agruparNegativosPorDestino(filas, { truncado: true });
+  assert.equal(d1.truncado, false);
+  assert.equal(d2.truncado, true);
+  assert.equal(d2.plan_incompleto, false);
+  assert.equal(d2.estado, "OK");
+  const [, sinTrunc] = agruparNegativosPorDestino(filas);
+  assert.equal(sinTrunc.truncado, false);
+  assert.equal(sinTrunc.plan_incompleto, true);
+});
+
+test("pagina fuera de rango: reconoce PGRST103 y 416", () => {
+  assert.equal(esPaginaFueraDeRango({ code: "PGRST103", message: "Requested range not satisfiable" }), true);
+  assert.equal(esPaginaFueraDeRango({ status: 416 }), true);
+  assert.equal(esPaginaFueraDeRango({ code: "42P01" }), false);
+  assert.equal(esPaginaFueraDeRango(null), false);
+});
+
+test("paginación: acota pagina y rechaza no enteros", () => {
+  assert.equal(PAGINA_MAXIMA, 1000000);
+  assert.equal(normalizarFiltrosNegativos({ pagina: "1000000" }).pagina, 1000000);
+  for (const pagina of ["1000001", "1e30", "1.5", "-2", "Infinity"])
+    assert.throws(() => normalizarFiltrosNegativos({ pagina }), es400, pagina);
+  assert.throws(() => normalizarFiltrosNegativos({ por_pagina: "2.5" }), es400);
+  assert.throws(() => normalizarFiltrosEjecuciones({ job: "tocino", pagina: "9".repeat(20) }), es400);
 });

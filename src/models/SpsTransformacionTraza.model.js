@@ -7,7 +7,20 @@
  */
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
-import { LIMITE_DOCUMENTOS_DETALLE, rangoDePagina } from "../shared/transformacionesTraza.js";
+import { LIMITE_DOCUMENTOS_DETALLE, esPaginaFueraDeRango, rangoDePagina } from "../shared/transformacionesTraza.js";
+
+/** Registra la causa real en el servidor y lanza el 500 genérico (sin filtrar detalles al cliente). */
+function fallaDb(error, contexto, mensaje) {
+  console.error(`🔴 Trazabilidad de transformaciones, ${contexto}: [${error?.code ?? "sin código"}] ${error?.message}`);
+  return createError(500, mensaje);
+}
+
+/** Total con los mismos filtros, sin traer filas (para páginas fuera de rango). */
+async function contarFilas(tabla, filtrar) {
+  const { count, error } = await filtrar(supabase.from(tabla).select("id", { count: "exact", head: true }));
+  if (error) throw fallaDb(error, `contar ${tabla}`, "Error al listar los datos.");
+  return count ?? 0;
+}
 
 const TABLAS_CORRIDAS = {
   tocino: "sps_transformaciones_corridas",
@@ -48,18 +61,21 @@ const COLUMNAS_DOC_TOCINO =
 export async function listarEjecuciones(filtros) {
   const { job, entorno, fecha_desde, fecha_hasta, pagina, por_pagina } = filtros;
   const { desde, hasta } = rangoDePagina(pagina, por_pagina);
-  let q = supabase
-    .from(TABLAS_CORRIDAS[job])
-    .select(COLUMNAS_CORRIDA_LISTA[job], { count: "exact" })
-    .eq("entorno", entorno)
+  const filtrar = (q) => {
+    q = q.eq("entorno", entorno);
+    if (fecha_desde) q = q.gte("fecha", fecha_desde);
+    if (fecha_hasta) q = q.lte("fecha", fecha_hasta);
+    return q;
+  };
+  const tabla = TABLAS_CORRIDAS[job];
+  const { data, error, count } = await filtrar(
+    supabase.from(tabla).select(COLUMNAS_CORRIDA_LISTA[job], { count: "exact" }),
+  )
     .order("created_at", { ascending: false })
     .order("id", { ascending: false })
     .range(desde, hasta);
-  if (fecha_desde) q = q.gte("fecha", fecha_desde);
-  if (fecha_hasta) q = q.lte("fecha", fecha_hasta);
-
-  const { data, error, count } = await q;
-  if (error) throw createError(500, "Error al listar las ejecuciones.");
+  if (esPaginaFueraDeRango(error)) return { data: [], total: await contarFilas(tabla, filtrar) };
+  if (error) throw fallaDb(error, "listar ejecuciones", "Error al listar las ejecuciones.");
   return { data: data || [], total: count ?? 0 };
 }
 
@@ -70,7 +86,7 @@ export async function obtenerEjecucion(job, id) {
     .select(`${COLUMNAS_CORRIDA[job]}, alertas`)
     .eq("id", id)
     .maybeSingle();
-  if (error) throw createError(500, "Error al leer la ejecución.");
+  if (error) throw fallaDb(error, "leer ejecución", "Error al leer la ejecución.");
   if (!data) throw createError(404, "Ejecución no encontrada.");
   return data;
 }
@@ -93,7 +109,7 @@ export async function documentosDeEjecucion(job, corrida) {
       .order("tipo_dto", { ascending: true })
       .order("id", { ascending: true })
       .limit(limite);
-    if (error) throw createError(500, "Error al leer los documentos de la ejecución.");
+    if (error) throw fallaDb(error, "documentos de ejecución", "Error al leer los documentos de la ejecución.");
     return data || [];
   }
   // `plan` = respuesta->plan del CEI: permite detectar PLAN_INCOMPLETO sin traer la respuesta.
@@ -109,7 +125,7 @@ export async function documentosDeEjecucion(job, corrida) {
     .order("item_origen", { ascending: true })
     .order("id", { ascending: true })
     .limit(limite);
-  if (error) throw createError(500, "Error al leer los documentos de la ejecución.");
+  if (error) throw fallaDb(error, "documentos de ejecución", "Error al leer los documentos de la ejecución.");
   return data || [];
 }
 
@@ -117,10 +133,18 @@ export async function documentosDeEjecucion(job, corrida) {
 export async function listarNegativos(filtros) {
   const { entorno, fecha_desde, fecha_hasta, status, tipo_dto, co, pagina, por_pagina } = filtros;
   const { desde, hasta } = rangoDePagina(pagina, por_pagina);
-  let q = supabase
-    .from(TABLA_NEGATIVOS)
-    .select(COLUMNAS_DOC_NEGATIVOS, { count: "exact" })
-    .eq("entorno", entorno)
+  const filtrar = (q) => {
+    q = q.eq("entorno", entorno);
+    if (fecha_desde) q = q.gte("fecha", fecha_desde);
+    if (fecha_hasta) q = q.lte("fecha", fecha_hasta);
+    if (status) q = q.eq("status", status);
+    if (tipo_dto) q = q.eq("tipo_dto", tipo_dto);
+    if (co) q = q.eq("co", co);
+    return q;
+  };
+  const { data, error, count } = await filtrar(
+    supabase.from(TABLA_NEGATIVOS).select(COLUMNAS_DOC_NEGATIVOS, { count: "exact" }),
+  )
     .order("fecha", { ascending: false })
     .order("co", { ascending: true })
     .order("bodega", { ascending: true })
@@ -128,21 +152,15 @@ export async function listarNegativos(filtros) {
     .order("tipo_dto", { ascending: true })
     .order("id", { ascending: true })
     .range(desde, hasta);
-  if (fecha_desde) q = q.gte("fecha", fecha_desde);
-  if (fecha_hasta) q = q.lte("fecha", fecha_hasta);
-  if (status) q = q.eq("status", status);
-  if (tipo_dto) q = q.eq("tipo_dto", tipo_dto);
-  if (co) q = q.eq("co", co);
-
-  const { data, error, count } = await q;
-  if (error) throw createError(500, "Error al listar los documentos de negativos.");
+  if (esPaginaFueraDeRango(error)) return { data: [], total: await contarFilas(TABLA_NEGATIVOS, filtrar) };
+  if (error) throw fallaDb(error, "listar negativos", "Error al listar los documentos de negativos.");
   return { data: data || [], total: count ?? 0 };
 }
 
 /** GET — un documento de negativos con payload y respuesta completos. */
 export async function obtenerNegativo(id) {
   const { data, error } = await supabase.from(TABLA_NEGATIVOS).select("*").eq("id", id).maybeSingle();
-  if (error) throw createError(500, "Error al leer el documento de negativos.");
+  if (error) throw fallaDb(error, "leer negativo", "Error al leer el documento de negativos.");
   if (!data) throw createError(404, "Documento de negativos no encontrado.");
   return data;
 }
