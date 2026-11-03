@@ -11,6 +11,7 @@
  */
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
+import { esMigracionFaltante } from "../shared/migraciones.js";
 import { LIMITE_DOCUMENTOS_DETALLE, esPaginaFueraDeRango, rangoDePagina } from "../shared/transformacionesTraza.js";
 
 /** Registra la causa real en el servidor y lanza el 500 genérico (sin filtrar detalles al cliente). */
@@ -34,8 +35,8 @@ const TABLA_TOCINO = "sps_transformaciones";
 const TABLA_NEGATIVOS = "sps_transformaciones_negativos";
 const TABLA_NEGATIVOS_DOCS = "sps_transformaciones_negativos_docs";
 
-/** Postgres 42P01: la tabla no existe (migración 010 sin aplicar). */
-const esTablaInexistente = (error) => error?.code === "42P01";
+/** La tabla por tienda no existe todavía (migración 010 sin aplicar): 42P01, PGRST205 o error opaco. */
+const esTablaInexistente = esMigracionFaltante;
 
 const GITHUB = "github_run_id, github_run_attempt, github_job, github_run_url";
 
