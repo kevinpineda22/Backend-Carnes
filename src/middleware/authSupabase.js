@@ -1,5 +1,7 @@
 import {
   puedeAbrirAdminCarnes,
+  puedeAprobarContabilidadCarnes,
+  puedeVerContabilidadCarnes,
   ROL_CON_RESPALDO,
   ROL_RESPALDO,
 } from "../shared/permisoAdminCarnes.js";
@@ -45,8 +47,12 @@ export function crearExistePerfil(cliente) {
   };
 }
 
-/** Mismas tablas y columnas que `Login.jsx` y `RutaProtegida.jsx`. */
-export function crearPuedeAdministrar(cliente) {
+/**
+ * Lee el perfil y la config del rol, con las mismas tablas y columnas que
+ * `Login.jsx` y `RutaProtegida.jsx`. Devuelve `null` si no hay perfil; lanza si
+ * no puede consultar.
+ */
+function crearLeerContexto(cliente) {
   async function configDelRol(role) {
     const { data, error } = await cliente
       .from("role_permissions")
@@ -57,20 +63,43 @@ export function crearPuedeAdministrar(cliente) {
     return data;
   }
 
-  return async function puedeAdministrarConSupabase(usuarioId) {
+  return async function leerContexto(usuarioId) {
     const { data: profile, error } = await cliente
       .from("profiles")
       .select("role, personal_routes")
       .eq("user_id", usuarioId)
       .maybeSingle();
     if (error) throw error;
-    if (!profile) return false;
+    if (!profile) return null;
 
     let roleConfig = profile.role ? await configDelRol(profile.role) : null;
     if ((!roleConfig || !roleConfig.permissions) && profile.role === ROL_CON_RESPALDO) {
       roleConfig = (await configDelRol(ROL_RESPALDO)) || roleConfig;
     }
-
-    return puedeAbrirAdminCarnes({ profile, roleConfig });
+    return { profile, roleConfig };
   };
+}
+
+/** Arma "¿este usuario puede X?" a partir de la regla pura `regla({ profile, roleConfig })`. */
+function crearPregunta(cliente, regla) {
+  const leerContexto = crearLeerContexto(cliente);
+  return async function pregunta(usuarioId) {
+    const contexto = await leerContexto(usuarioId);
+    return contexto ? regla(contexto) : false;
+  };
+}
+
+/** ¿Puede abrir `/carnes/admin`? */
+export function crearPuedeAdministrar(cliente) {
+  return crearPregunta(cliente, puedeAbrirAdminCarnes);
+}
+
+/** ¿Puede ver la página de contabilidad (lectura)? Contabilidad o admin. */
+export function crearPuedeVerContabilidad(cliente) {
+  return crearPregunta(cliente, puedeVerContabilidadCarnes);
+}
+
+/** ¿Puede marcar una recepción como aprobada por contabilidad? Solo contabilidad. */
+export function crearPuedeAprobarContabilidad(cliente) {
+  return crearPregunta(cliente, puedeAprobarContabilidadCarnes);
 }

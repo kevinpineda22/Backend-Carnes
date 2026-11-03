@@ -21,6 +21,12 @@
  */
 
 export const RUTA_ADMIN_CARNES = "/carnes/admin";
+/**
+ * Página de solo lectura de contabilidad (recepciones de proveedor + "Aprobar").
+ * Es una ruta APARTE de `/carnes/admin` a propósito: `/carnes/admin/x` no cubre
+ * `/carnes/admin`, así que colgarla de ahí obligaba a rehacer el guard de admin.
+ */
+export const RUTA_CONTABILIDAD_CARNES = "/carnes/contabilidad";
 
 export const ROL_CON_RESPALDO = "admin_clientes";
 export const ROL_RESPALDO = "admin_proveedores";
@@ -38,10 +44,11 @@ export const cubre = (permiso, actual) =>
   actual === permiso || actual.startsWith(permiso + "/");
 
 /**
+ * @param {string} ruta la ruta del front que se quiere abrir
  * @param {{ role?: string|null, personal_routes?: Array<{path: string}>|null } | null} profile
  * @param {{ permissions?: Array<{path: string}>|null, redirect?: string|null } | null} roleConfig
  */
-export function puedeAbrirAdminCarnes({ profile, roleConfig } = {}) {
+function puedeAbrirRuta(ruta, { profile, roleConfig } = {}) {
   if (!profile) return false; // sin perfil, el Login ya no deja entrar
 
   const personales = Array.isArray(profile.personal_routes) ? profile.personal_routes : [];
@@ -52,6 +59,34 @@ export function puedeAbrirAdminCarnes({ profile, roleConfig } = {}) {
     ? "/acceso"
     : roleConfig?.redirect;
 
-  if (redirect === RUTA_ADMIN_CARNES) return true;
-  return rutas.some((r) => typeof r?.path === "string" && cubre(r.path, RUTA_ADMIN_CARNES));
+  if (redirect === ruta) return true;
+  return rutas.some((r) => typeof r?.path === "string" && cubre(r.path, ruta));
+}
+
+/** ¿Puede abrir `/carnes/admin`? Ver el comentario del archivo. */
+export function puedeAbrirAdminCarnes(contexto = {}) {
+  return puedeAbrirRuta(RUTA_ADMIN_CARNES, contexto);
+}
+
+/** ¿Puede abrir `/carnes/contabilidad`? Misma regla, otra ruta. */
+export function puedeAbrirContabilidadCarnes(contexto = {}) {
+  return puedeAbrirRuta(RUTA_CONTABILIDAD_CARNES, contexto);
+}
+
+/**
+ * Ver la página de contabilidad (listado y detalle, solo lectura): contabilidad
+ * o un admin. El admin ya tiene sus propios endpoints; se le deja entrar para
+ * que quien tenga los dos permisos no se tope con un 403 en una pantalla suya.
+ */
+export function puedeVerContabilidadCarnes(contexto = {}) {
+  return puedeAbrirContabilidadCarnes(contexto) || puedeAbrirAdminCarnes(contexto);
+}
+
+/**
+ * Marcar una recepción como aprobada por contabilidad: SOLO contabilidad. Quien
+ * además abre `/carnes/admin` (un admin, o alguien con `/carnes` completo, que
+ * cubre las dos rutas) NO aprueba: el botón es de contabilidad y no del admin.
+ */
+export function puedeAprobarContabilidadCarnes(contexto = {}) {
+  return puedeAbrirContabilidadCarnes(contexto) && !puedeAbrirAdminCarnes(contexto);
 }

@@ -54,6 +54,7 @@ export const COLUMNAS_LISTA_ADMIN = `
   estado, recibido_por, abierto_at, recibidor_nombre, recibidor_otro,
   finalizado_at, siesa_at, anulado_por, anulado_at, motivo_anulacion,
   created_at, updated_at, descuento_pct,
+  aprobado_contabilidad_at, aprobado_contabilidad_por,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -354,6 +355,70 @@ export function decidirAnulacion({ estado }) {
   const transicion = validarTransicion(estado, ESTADOS.ANULADA);
   if (!transicion.ok) return rechazo("ESTADO_NO_ANULABLE", transicion.motivo);
   return { accion: "anular" };
+}
+
+// ─── Aprobación de contabilidad ────────────────────────────────────────────
+
+/** Filtro de la lista de contabilidad: por aprobar, ya aprobadas o todas. */
+export const FILTROS_APROBACION = ["pendiente", "aprobada", "todas"];
+
+/**
+ * ¿Se puede marcar la recepción como aprobada por contabilidad? Solo si ya está en
+ * SIESA (`Enviada_SIESA`: contabilidad la "causa" allá) y todavía no tiene la
+ * marca. NO manda nada a SIESA: es una marca interna de quién y cuándo.
+ *
+ * Aprobar dos veces es un 409 `YA_APROBADA` que dice quién y cuándo la aprobó, no
+ * un éxito silencioso ni una re-escritura: la marca original no se pisa.
+ *
+ * @returns {{accion: "aprobar"} | {accion: "rechazar", status: 409, codigo: string, mensaje: string}}
+ */
+export function decidirAprobacionContabilidad({ estado, aprobado_contabilidad_at, aprobado_contabilidad_por }) {
+  const rechazo = (codigo, mensaje) => ({ accion: "rechazar", status: 409, codigo, mensaje });
+  if (aprobado_contabilidad_at) {
+    return rechazo(
+      "YA_APROBADA",
+      `La factura ya fue aprobada por contabilidad${aprobado_contabilidad_por ? ` (${aprobado_contabilidad_por})` : ""}.`,
+    );
+  }
+  if (estado !== ESTADOS.ENVIADA_SIESA) {
+    return rechazo(
+      "ESTADO_NO_APROBABLE",
+      "Solo se aprueba una factura que ya está en SIESA (contabilidad la causa allá).",
+    );
+  }
+  return { accion: "aprobar" };
+}
+
+/**
+ * Lo que el detalle de contabilidad le dice al front sobre el botón: se puede
+ * aprobar o no, y por qué no. Es la misma regla que aplica el POST.
+ */
+export function aprobacionParaContabilidad(cabecera) {
+  const d = decidirAprobacionContabilidad(cabecera);
+  return d.accion === "aprobar"
+    ? { puede_aprobar: true, codigo: null, motivo: null }
+    : { puede_aprobar: false, codigo: d.codigo, motivo: d.mensaje };
+}
+
+/**
+ * El detalle del admin SIN lo que contabilidad no necesita ni debe ver: firma y
+ * cédula del recibidor, firma y documento de quien firmó por el proveedor, y el
+ * bloque `acciones` (los botones de admin no existen para contabilidad).
+ */
+export function detalleParaContabilidad({ recepcion, envios, siesa, notaCredito }) {
+  const {
+    firma_data: _firma,
+    recibidor_cedula: _cedula,
+    proveedor_firma: _firmaProveedor,
+    proveedor_firma_documento: _documentoProveedor,
+    ...visible
+  } = recepcion;
+  return {
+    recepcion: { ...visible, aprobacion: aprobacionParaContabilidad(recepcion) },
+    envios,
+    siesa,
+    notaCredito,
+  };
 }
 
 // ─── Eliminar ──────────────────────────────────────────────────────────────

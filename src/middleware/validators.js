@@ -3,7 +3,7 @@ import { createError } from "./errorHandler.js";
 import { ESTADOS as ESTADOS_PROVEEDOR } from "../shared/estadosProveedor.js";
 import { normalizarFactura, normalizarUnidad, unidadValida } from "../shared/proveedorValores.js";
 import { LARGO_MIN_BUSQUEDA, LIMITE_BUSQUEDA, normalizarBusqueda } from "../shared/catalogoCortes.js";
-import { LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
+import { FILTROS_APROBACION, LIMITE_LISTA_DEFECTO, LIMITE_LISTA_MAX } from "../shared/adminProveedor.js";
 import {
   LIMITE_HISTORIAL_DEFECTO,
   LIMITE_HISTORIAL_MAX,
@@ -599,6 +599,27 @@ const listarRecepcionesProveedorQuerySchema = z
   });
 
 /**
+ * Lista de CONTABILIDAD: los mismos filtros que la del admin, sin `estado` (el
+ * servidor lo fija en Enviada_SIESA) y con `aprobacion`.
+ */
+const listarContabilidadQuerySchema = listarRecepcionesProveedorQuerySchema
+  .innerType()
+  .omit({ estado: true })
+  .extend({
+    aprobacion: z.preprocess(
+      vacioASinFiltro,
+      z
+        .enum(FILTROS_APROBACION, {
+          errorMap: () => ({ message: `debe ser uno de: ${FILTROS_APROBACION.join(", ")}.` }),
+        })
+        .default("todas"),
+    ),
+  })
+  .refine((v) => !v.desde || !v.hasta || v.desde <= v.hasta, {
+    message: "desde no puede ser posterior a hasta.",
+  });
+
+/**
  * "Mi historial" del recibidor (Talleres y Proveedores). El correo es obligatorio:
  * con `CARNES_AUTH` activo el controlador lo reemplaza por el de la sesión, pero
  * sin él la petición no tiene sentido. Las fechas son opcionales (el modelo puro
@@ -693,6 +714,13 @@ const anularRecepcionProveedorSchema = z.object({
   anulado_en_siesa: z.boolean({ invalid_type_error: "anulado_en_siesa debe ser true o false." }).optional(),
 });
 
+/** Aprobar por contabilidad: quién aprueba (con `CARNES_AUTH=exigir` se reemplaza por el de la sesión). */
+// `por` es opcional: con CARNES_AUTH=exigir el autor sale del token; sin auth, el
+// controlador responde 400 si falta.
+const aprobarContabilidadSchema = z.object({
+  por: correo("El correo de quien aprueba no es válido.").optional(),
+});
+
 // ─── Recibidores (gestión del admin) ───────────────────────────────────────
 
 const cedulaRecibidor = z.union([z.string().max(50), z.number()], {
@@ -778,6 +806,8 @@ export const validators = {
   actaRecepcionProveedor: validarActaRecepcionProveedor,
   corregirFacturaSiesaProveedor: validar(corregirFacturaSiesaProveedorSchema),
   anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
+  listarContabilidad: validar(listarContabilidadQuerySchema, "query"),
+  aprobarContabilidad: validar(aprobarContabilidadSchema),
 
   crearRecibidor: validar(crearRecibidorSchema),
   actualizarRecibidor: validar(actualizarRecibidorSchema),

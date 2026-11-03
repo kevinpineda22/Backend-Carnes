@@ -3,7 +3,11 @@ import * as RecepcionesProveedorController from "../controllers/recepcionesProve
 import * as AdminController from "../controllers/recepcionesProveedorAdmin.controller.js";
 import * as ProveedoresController from "../controllers/proveedores.controller.js";
 import { validators } from "../middleware/validators.js";
-import { requireAdminCarnes } from "../middleware/authCarnes.js";
+import {
+  requireAdminCarnes,
+  requireAprobarContabilidadCarnes,
+  requireContabilidadCarnes,
+} from "../middleware/authCarnes.js";
 
 const router = Router();
 
@@ -33,6 +37,17 @@ router.get("/en-curso", validators.listarEnCurso, RecepcionesProveedorController
 // Búsqueda de cortes del catálogo para los "Cortes adicionales". ANTES de "/:id": si
 // no, "catalogo-cortes" se leería como un id. Sin `requireAdminCarnes`: es del recibidor.
 router.get("/catalogo-cortes", validators.buscarCortes, ProveedoresController.buscarCortes);
+
+// CONTABILIDAD (página `/carnes/contabilidad`). Lista y detalle son de SOLO LECTURA y
+// las puede llamar contabilidad o un admin (`requireContabilidadCarnes`); aprobar es
+// solo de contabilidad (`requireAprobarContabilidadCarnes`). Ninguna manda nada a
+// SIESA. "/contabilidad" va ANTES de "/:id" (si no, se leería como un id).
+router.get(
+  "/contabilidad",
+  requireContabilidadCarnes,
+  validators.listarContabilidad,
+  AdminController.listarContabilidad,
+);
 
 // Acta de devolución de "Mi historial": firma y cédula SOLO para quien firmó la
 // recepción (filtra por su correo). "/:id/acta" no choca con "/:id" (una sola
@@ -92,6 +107,16 @@ router.post(
 // corregir la referencia de factura para SIESA y anular. "/:id" de arriba sigue
 // siendo el del recibidor, sin firma ni cédula.
 router.get("/:id/admin", requireAdminCarnes, validators.idParam, AdminController.detalle);
+// Contabilidad: detalle sin firma ni cédula ni acciones, y la marca de aprobación.
+// "/:id/contabilidad" y "/:id/aprobar-contabilidad" tienen dos segmentos: no chocan con "/:id".
+router.get("/:id/contabilidad", requireContabilidadCarnes, validators.idParam, AdminController.detalleContabilidad);
+router.post(
+  "/:id/aprobar-contabilidad",
+  requireAprobarContabilidadCarnes,
+  validators.idParam,
+  validators.aprobarContabilidad,
+  AdminController.aprobarContabilidad,
+);
 router.patch(
   "/:id/factura-siesa",
   requireAdminCarnes,

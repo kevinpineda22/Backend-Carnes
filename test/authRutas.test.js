@@ -20,7 +20,19 @@ process.env.SUPABASE_SERVICE_KEY = "clave-falsa-de-test";
 process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 
 const { default: indice } = await import("../src/routes/index.js");
-const { autenticar, requireAdminCarnes } = await import("../src/middleware/authCarnes.js");
+const { autenticar, requireAdminCarnes, requireContabilidadCarnes, requireAprobarContabilidadCarnes } =
+  await import("../src/middleware/authCarnes.js");
+
+/**
+ * Los guards que cuentan como "protegido". El de admin es el normal; los dos de
+ * contabilidad protegen SOLO las rutas de la página de contabilidad y se afirman
+ * por separado más abajo (cuáles son, y que nada más los use).
+ */
+const GUARDS = new Map([
+  [requireAdminCarnes, "admin"],
+  [requireContabilidadCarnes, "contabilidad"],
+  [requireAprobarContabilidadCarnes, "aprobar"],
+]);
 
 const ARCHIVOS_DE_RUTAS = {
   "sedes.routes.js": ["/sedes", (await import("../src/routes/sedes.routes.js")).default],
@@ -87,11 +99,12 @@ function recorrer(router, prefijo, salida, montajes) {
   for (const capa of router.stack) {
     if (capa.route) {
       const base = capa.route.path === "/" ? "" : capa.route.path;
-      const propio = capa.route.stack.some((c) => c.handle === requireAdminCarnes);
+      const propio = capa.route.stack.map((c) => GUARDS.get(c.handle)).find(Boolean) ?? null;
       for (const metodo of Object.keys(capa.route.methods)) {
         salida.push({
           clave: `${metodo.toUpperCase()} ${prefijo}${base}` || "/",
-          protegido: protegido || propio,
+          protegido: Boolean(protegido || propio),
+          guard: propio ?? (protegido ? "admin" : null),
         });
       }
     } else if (capa.handle === requireAdminCarnes) {
@@ -149,4 +162,30 @@ test("rutas: los routers de panel completo (plantilla, liquidaciones, siesa, des
     assert.ok(deRouter.length > 0, prefijo);
     assert.ok(deRouter.every((r) => r.protegido), `${prefijo} tiene una ruta sin guard`);
   }
+});
+
+test("rutas: contabilidad tiene EXACTAMENTE estas rutas, cada una con su guard, y ninguna es de admin a la vez", () => {
+  const todas = recorrer(indice, "", [], montajes);
+  const de = (guard) => todas.filter((r) => r.guard === guard).map((r) => r.clave).filter((c) => /contabilidad/.test(c)).sort();
+
+  // Lectura: contabilidad o admin.
+  assert.deepEqual(de("contabilidad"), [
+    "GET /recepciones-proveedor/:id/contabilidad",
+    "GET /recepciones-proveedor/contabilidad",
+  ].sort());
+  // Aprobar: SOLO contabilidad (un admin no).
+  assert.deepEqual(de("aprobar"), ["POST /recepciones-proveedor/:id/aprobar-contabilidad"]);
+
+  // Y nada más usa esos dos guards: contabilidad no puede quedar con acceso a rutas de admin.
+  for (const guard of ["contabilidad", "aprobar"]) {
+    const fuera = todas.filter((r) => r.guard === guard && !/contabilidad/.test(r.clave));
+    assert.deepEqual(fuera, [], `el guard "${guard}" protege rutas que no son de contabilidad`);
+  }
+});
+
+test("rutas: \"/contabilidad\" se declara ANTES de \"/:id\" (si no, se leería como un id)", () => {
+  const rutas = recorrer(indice, "", [], montajes).map((r) => r.clave);
+  const lista = rutas.indexOf("GET /recepciones-proveedor/contabilidad");
+  const porId = rutas.indexOf("GET /recepciones-proveedor/:id");
+  assert.ok(lista >= 0 && porId >= 0 && lista < porId);
 });

@@ -19,7 +19,9 @@ import {
   armarFilaListado,
   datosBorrador,
   decidirAnulacion,
+  decidirAprobacionContabilidad,
   decidirCorreccionFactura,
+  detalleParaContabilidad,
   decidirEliminacion,
   enLotes,
   facturaSiesaEfectiva,
@@ -53,6 +55,7 @@ const MIGRACIONES = [
   "sql/026_firma_proveedor_devolucion.sql",
   "sql/028_proveedor_descuento_secciones.sql",
   "sql/030_grupos_impositivos.sql",
+  "sql/032_aprobacion_contabilidad.sql",
 ];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */
@@ -109,11 +112,16 @@ async function leerEnviosDeLista(ids) {
  * Filtros (todos opcionales, ya validados): `estado`, `proveedor_id`, `sede_id`,
  * `desde` / `hasta` (sobre `fecha_recepcion`, ambos inclusivos) y `factura`
  * (fragmento, se compara contra la clave normalizada de la factura original).
+ * `aprobacion` ("pendiente" | "aprobada") separa lo que contabilidad ya marcó de lo
+ * que no; sin él (o con "todas") no filtra. Solo lo usa la lista de contabilidad.
  * Se pide una fila de más para saber si hay más resultados que el `limite`.
  *
  * @returns {{recepciones: object[], limite: number, truncado: boolean}}
  */
-export async function listar({ estado, proveedor_id, sede_id, desde, hasta, factura, limite = LIMITE_LISTA_DEFECTO } = {}, ahora = new Date()) {
+export async function listar(
+  { estado, proveedor_id, sede_id, desde, hasta, factura, aprobacion, limite = LIMITE_LISTA_DEFECTO } = {},
+  ahora = new Date(),
+) {
   let consulta = supabase
     .from(TABLE)
     .select(COLUMNAS_LISTA_ADMIN)
@@ -126,6 +134,8 @@ export async function listar({ estado, proveedor_id, sede_id, desde, hasta, fact
   if (sede_id) consulta = consulta.eq("sede_id", sede_id);
   if (desde) consulta = consulta.gte("fecha_recepcion", desde);
   if (hasta) consulta = consulta.lte("fecha_recepcion", hasta);
+  if (aprobacion === "pendiente") consulta = consulta.is("aprobado_contabilidad_at", null);
+  if (aprobacion === "aprobada") consulta = consulta.not("aprobado_contabilidad_at", "is", null);
   if (factura) {
     // `clave` es solo A-Z y 0-9 (`normalizarFactura`): no trae comodines ni comas.
     const { clave } = normalizarFactura(factura);
@@ -221,6 +231,72 @@ export async function detalle(id, ahora = new Date()) {
     notaCredito: notaCreditoAdmin(notaCredito, cabecera.estado),
     acciones: armarAcciones({ estado: cabecera.estado, envios, activo, decisionNotaCredito }),
   };
+}
+
+/**
+ * El detalle para CONTABILIDAD: el del admin sin firma, cédula ni `acciones`, más
+ * `recepcion.aprobacion` (si se puede aprobar y por qué no). Solo recepciones que
+ * ya están en SIESA: es lo que contabilidad causa, y un borrador o una anulada no
+ * es asunto suyo (404, igual que si no existiera).
+ *
+ * SOLO LECTURA: no escribe ni manda nada a SIESA.
+ */
+export async function detalleContabilidad(id, ahora = new Date()) {
+  const completo = await detalle(id, ahora);
+  if (completo.recepcion.estado !== ESTADOS.ENVIADA_SIESA) {
+    throw createError(404, "Recepción no encontrada.");
+  }
+  return detalleParaContabilidad(completo);
+}
+
+// ─── Aprobación de contabilidad ────────────────────────────────────────────
+
+const COLUMNAS_APROBACION = "id, factura, estado, aprobado_contabilidad_at, aprobado_contabilidad_por";
+
+async function leerCabeceraAprobacion(id) {
+  const { data, error } = await supabase.from(TABLE).select(COLUMNAS_APROBACION).eq("id", id).maybeSingle();
+  if (error) fallo(error, "Error al leer la recepción");
+  if (!data) throw createError(404, "Recepción no encontrada.");
+  return data;
+}
+
+/**
+ * Marca la recepción como aprobada por contabilidad: guarda quién y cuándo. NO manda
+ * nada a SIESA ni toca el estado. Sin deshacer (por ahora).
+ *
+ *   1. `decidirAprobacionContabilidad`: 409 si no está en SIESA o ya está aprobada.
+ *   2. UPDATE condicional a "Enviada_SIESA y sin aprobar": si dos personas aprueban a
+ *      la vez, gana una y la otra recibe el 409 con la verdad (quién la aprobó), sin
+ *      pisar la marca de la primera.
+ *
+ * @param {number|string} id
+ * @param {{por: string}} p quien aprueba (el correo de la sesión con `CARNES_AUTH=exigir`)
+ * @returns {{id: number, factura: string, estado: string, aprobado_contabilidad_at: string, aprobado_contabilidad_por: string}}
+ */
+export async function aprobarContabilidad(id, { por }) {
+  const cabecera = await leerCabeceraAprobacion(id);
+  const decision = decidirAprobacionContabilidad(cabecera);
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update({ aprobado_contabilidad_at: new Date().toISOString(), aprobado_contabilidad_por: por })
+    .eq("id", id)
+    .eq("estado", ESTADOS.ENVIADA_SIESA)
+    .is("aprobado_contabilidad_at", null)
+    .select("id, factura, estado, aprobado_contabilidad_at, aprobado_contabilidad_por");
+  if (error) fallo(error, "Error al aprobar la recepción");
+
+  if (!data?.length) {
+    // 0 filas: otra persona la aprobó a la vez, o cambió de estado. Se lee para decir la verdad.
+    const actual = await leerCabeceraAprobacion(id);
+    const otra = decidirAprobacionContabilidad(actual);
+    if (otra.accion === "rechazar") throw createError(otra.status, otra.mensaje, otra.codigo);
+    throw createError(409, "La recepción cambió mientras se aprobaba. Actualizá e intentá de nuevo.", "RECEPCION_CAMBIO");
+  }
+
+  console.log(`✅ Recepción de proveedor #${id} (factura ${data[0].factura}) aprobada por contabilidad: ${por}.`);
+  return data[0];
 }
 
 // ─── Corregir la referencia de factura para SIESA ──────────────────────────
