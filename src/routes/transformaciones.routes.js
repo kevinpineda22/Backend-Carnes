@@ -24,6 +24,8 @@ function validarId(req, _res, next) {
 router.get("/ejecuciones", TrazaController.listarEjecuciones);
 router.get("/ejecuciones/:job/:id", validarId, TrazaController.obtenerEjecucion);
 router.get("/negativos", TrazaController.listarNegativos);
+// Documentos por tienda (tabla nueva); ANTES de "/negativos/:id" y separada porque los ids de ambas tablas se solapan.
+router.get("/negativos/tienda/:id", validarId, TrazaController.obtenerNegativoTienda);
 router.get("/negativos/:id", validarId, TrazaController.obtenerNegativo);
 
 router.get("/:id", validarId, TransformacionesController.obtener);

@@ -1,7 +1,7 @@
 import * as Traza from "../models/SpsTransformacionTraza.model.js";
 import {
   JOBS,
-  agruparNegativosPorDestino,
+  armarDetalleNegativos,
   armarPaginacion,
   githubDeCorrida,
   limitarDocumentos,
@@ -17,10 +17,6 @@ function conBloqueGithub(corrida) {
   const resto = { ...corrida };
   for (const c of COLUMNAS_GITHUB) delete resto[c];
   return { ...resto, github: githubDeCorrida(corrida) };
-}
-
-function sinRespuesta({ respuesta: _respuesta, ...fila }) {
-  return fila;
 }
 
 /** GET /api/transformaciones/ejecuciones — historial paginado de un job (solo conteos de alertas). */
@@ -44,22 +40,19 @@ export async function obtenerEjecucion(req, res, next) {
     const job = String(req.params.job || "").toLowerCase();
     if (!JOBS.includes(job)) throw createError(400, `job debe ser uno de: ${JOBS.join(", ")}.`);
     const corrida = await Traza.obtenerEjecucion(job, req.params.id);
-    const filas = await Traza.documentosDeEjecucion(job, corrida);
-    const { items, truncado } = limitarDocumentos(filas);
+    const docs = await Traza.documentosDeEjecucion(job, corrida);
 
-    const base = { ok: true, job, corrida: conBloqueGithub(corrida), truncado };
-    if (job === "tocino") return res.json({ ...base, documentos: items });
+    if (job === "tocino") {
+      const { items, truncado } = limitarDocumentos(docs);
+      return res.json({ ok: true, job, corrida: conBloqueGithub(corrida), truncado, documentos: items });
+    }
 
-    // PLAN_INCOMPLETO se deriva de respuesta->plan; la respuesta en sí no sale en el detalle.
-    const destinos = agruparNegativosPorDestino(
-      items.map(({ plan, ...f }) => ({ ...f, respuesta: plan ? { plan } : null })),
-      { truncado },
-    ).map((d) => ({
-      ...d,
-      cei: d.cei && sinRespuesta(d.cei),
-      csas: d.csas.map(sinRespuesta),
-    }));
-    return res.json({ ...base, destinos });
+    // Negativos: documentos por tienda (tabla nueva) + historial por destino (tabla anterior).
+    const legado = limitarDocumentos(docs.legado);
+    const tiendas = limitarDocumentos(docs.tiendas);
+    const truncado = legado.truncado || tiendas.truncado;
+    const detalle = armarDetalleNegativos({ tiendas: tiendas.items, legado: legado.items, truncado: legado.truncado });
+    return res.json({ ok: true, job, corrida: conBloqueGithub(corrida), truncado, ...detalle });
   } catch (error) {
     next(error);
   }
@@ -84,6 +77,16 @@ export async function listarNegativos(req, res, next) {
 export async function obtenerNegativo(req, res, next) {
   try {
     const data = await Traza.obtenerNegativo(req.params.id);
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** GET /api/transformaciones/negativos/tienda/:id — documento por tienda con payload y respuesta. */
+export async function obtenerNegativoTienda(req, res, next) {
+  try {
+    const data = await Traza.obtenerNegativoTienda(req.params.id);
     res.json({ ok: true, data });
   } catch (error) {
     next(error);

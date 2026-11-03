@@ -4,6 +4,10 @@
  * SOLO LECTURA: otro proyecto escribe estas tablas. Requiere la migración 009 del
  * proyecto de sync (columnas github_* y alertas): se seleccionan de forma explícita, así
  * que sin la migración las consultas fallan. Aplicar 009 antes de desplegar.
+ *
+ * Los documentos de negativos por tienda viven en `sps_transformaciones_negativos_docs`
+ * (migración 010); la tabla por destino queda como historial. Si la 010 aún no está
+ * aplicada (42P01) la lectura por tienda devuelve una lista vacía en vez de fallar.
  */
 import { supabase } from "../config/supabase.js";
 import { createError } from "../middleware/errorHandler.js";
@@ -28,6 +32,10 @@ const TABLAS_CORRIDAS = {
 };
 const TABLA_TOCINO = "sps_transformaciones";
 const TABLA_NEGATIVOS = "sps_transformaciones_negativos";
+const TABLA_NEGATIVOS_DOCS = "sps_transformaciones_negativos_docs";
+
+/** Postgres 42P01: la tabla no existe (migración 010 sin aplicar). */
+const esTablaInexistente = (error) => error?.code === "42P01";
 
 const GITHUB = "github_run_id, github_run_attempt, github_job, github_run_url";
 
@@ -53,6 +61,10 @@ const COLUMNAS_CORRIDA_LISTA = {
 const COLUMNAS_DOC_NEGATIVOS =
   "id, entorno, fecha, co, bodega, item_destino, tipo_dto, item_origen, status, cantidad, " +
   "costo_unitario, um, disponible_snapshot, error, intentos, created_at, updated_at";
+// Documento por tienda sin `payload` ni `respuesta` (se piden por documento); trae lineas/novedades.
+const COLUMNAS_DOC_TIENDA =
+  "id, entorno, fecha, co, bodega, tipo_dto, status, lineas, novedades, cantidad_total, " +
+  "lineas_activas, error, intentos, rondas, created_at, updated_at";
 const COLUMNAS_DOC_TOCINO =
   "id, fecha, co, bodega, item_venta, tipo_dto, status, unidades_netas, cantidad, " +
   "error, intentos, entorno, created_at, updated_at";
@@ -93,7 +105,8 @@ export async function obtenerEjecucion(job, id) {
 
 /**
  * GET — documentos de la fecha/entorno de una corrida (sin payload/respuesta). Pide uno más
- * que el tope para poder avisar el recorte.
+ * que el tope para poder avisar el recorte. Tocino devuelve una lista; negativos devuelve
+ * `{ legado, tiendas }`: filas por destino (historial) y documentos por tienda.
  */
 export async function documentosDeEjecucion(job, corrida) {
   const limite = LIMITE_DOCUMENTOS_DETALLE + 1;
@@ -112,6 +125,15 @@ export async function documentosDeEjecucion(job, corrida) {
     if (error) throw fallaDb(error, "documentos de ejecución", "Error al leer los documentos de la ejecución.");
     return data || [];
   }
+  const [legado, tiendas] = await Promise.all([
+    legadoDeEjecucion(corrida, limite),
+    tiendasDeEjecucion(corrida, limite),
+  ]);
+  return { legado, tiendas };
+}
+
+/** Filas por destino de la tabla anterior (solo historial). */
+async function legadoDeEjecucion(corrida, limite) {
   // `plan` = respuesta->plan del CEI: permite detectar PLAN_INCOMPLETO sin traer la respuesta.
   const { data, error } = await supabase
     .from(TABLA_NEGATIVOS)
@@ -126,6 +148,23 @@ export async function documentosDeEjecucion(job, corrida) {
     .order("id", { ascending: true })
     .limit(limite);
   if (error) throw fallaDb(error, "documentos de ejecución", "Error al leer los documentos de la ejecución.");
+  return data || [];
+}
+
+/** Documentos por tienda (CEI/CSA) de la tabla nueva; sin la migración 010 devuelve []. */
+async function tiendasDeEjecucion(corrida, limite) {
+  const { data, error } = await supabase
+    .from(TABLA_NEGATIVOS_DOCS)
+    .select(COLUMNAS_DOC_TIENDA)
+    .eq("entorno", corrida.entorno)
+    .eq("fecha", corrida.fecha)
+    .order("co", { ascending: true })
+    .order("bodega", { ascending: true })
+    .order("tipo_dto", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limite);
+  if (esTablaInexistente(error)) return [];
+  if (error) throw fallaDb(error, "documentos por tienda", "Error al leer los documentos de la ejecución.");
   return data || [];
 }
 
@@ -161,6 +200,15 @@ export async function listarNegativos(filtros) {
 export async function obtenerNegativo(id) {
   const { data, error } = await supabase.from(TABLA_NEGATIVOS).select("*").eq("id", id).maybeSingle();
   if (error) throw fallaDb(error, "leer negativo", "Error al leer el documento de negativos.");
+  if (!data) throw createError(404, "Documento de negativos no encontrado.");
+  return data;
+}
+
+/** GET — un documento por tienda con payload y respuesta completos (los ids de las dos tablas se solapan). */
+export async function obtenerNegativoTienda(id) {
+  const { data, error } = await supabase.from(TABLA_NEGATIVOS_DOCS).select("*").eq("id", id).maybeSingle();
+  if (esTablaInexistente(error)) throw createError(404, "Documento de negativos no encontrado.");
+  if (error) throw fallaDb(error, "leer negativo por tienda", "Error al leer el documento de negativos.");
   if (!data) throw createError(404, "Documento de negativos no encontrado.");
   return data;
 }
