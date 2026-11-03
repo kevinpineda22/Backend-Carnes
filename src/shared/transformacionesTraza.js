@@ -198,3 +198,73 @@ export function limitarDocumentos(filas, limite = LIMITE_DOCUMENTOS_DETALLE) {
     ? { items: lista.slice(0, limite), truncado: true }
     : { items: lista, truncado: false };
 }
+
+const ESTADOS_ORDEN_TIENDA = ["AMBIGUO", "ERROR", "SENDING", "PLANNED", "CANCELADO"];
+const SEVERIDAD_ORDEN = { ALTA: 0, MEDIA: 1, INFO: 2 };
+
+function estadoDeTienda(docs) {
+  for (const e of ESTADOS_ORDEN_TIENDA) if (docs.some((d) => d.status === e)) return e;
+  return "OK";
+}
+
+function novedadesDeDocs(docs) {
+  const todas = docs.flatMap((d) => (Array.isArray(d.novedades) ? d.novedades : []));
+  const rango = (n) => SEVERIDAD_ORDEN[n?.severidad] ?? 3;
+  // Orden estable: dentro de una misma severidad se conserva el orden original.
+  return todas
+    .map((n, i) => ({ n, i }))
+    .sort((a, b) => rango(a.n) - rango(b.n) || a.i - b.i)
+    .map(({ n }) => n);
+}
+
+/**
+ * Agrupa documentos de `sps_transformaciones_negativos_docs` por tienda (co, bodega).
+ * Cada grupo trae su CEI y su CSA (o null), el estado derivado y las novedades de ambos
+ * documentos con ALTA primero.
+ *
+ * `estado`: AMBIGUO > ERROR > SENDING > PLANNED > CANCELADO > OK.
+ */
+export function agruparNegativosPorTienda(docs) {
+  const grupos = new Map();
+  for (const d of Array.isArray(docs) ? docs : []) {
+    const clave = `${d.co}|${d.bodega}`;
+    let g = grupos.get(clave);
+    if (!g) {
+      g = { co: d.co, bodega: d.bodega, cei: null, csa: null, _docs: [] };
+      grupos.set(clave, g);
+    }
+    g._docs.push(d);
+    if (d.tipo_dto === "CEI") g.cei = d;
+    else if (d.tipo_dto === "CSA") g.csa = d;
+  }
+  return [...grupos.values()].map(({ _docs, ...g }) => {
+    const novedades = novedadesDeDocs(_docs);
+    return { ...g, estado: estadoDeTienda(_docs), novedades, con_novedades: novedades.length > 0 };
+  });
+}
+
+function sinRespuesta({ respuesta: _respuesta, ...fila }) {
+  return fila;
+}
+
+/**
+ * Forma del detalle de una ejecución de negativos. `tiendas` = documentos de la tabla nueva
+ * (por tienda); `legado` = filas por destino de la tabla anterior (solo historial, con
+ * `plan` = respuesta->plan para derivar PLAN_INCOMPLETO). Ambas claves salen siempre.
+ *
+ * `formato`: 'tienda' | 'destino' | 'mixto' | 'vacio'.
+ */
+export function armarDetalleNegativos({ tiendas = [], legado = [], truncado = false } = {}) {
+  const destinos = agruparNegativosPorDestino(
+    legado.map(({ plan, ...f }) => ({ ...f, respuesta: plan ? { plan } : null })),
+    { truncado },
+  ).map((d) => ({
+    ...d,
+    cei: d.cei && sinRespuesta(d.cei),
+    csas: d.csas.map(sinRespuesta),
+  }));
+  const porTienda = agruparNegativosPorTienda(tiendas);
+  const formato =
+    porTienda.length && destinos.length ? "mixto" : porTienda.length ? "tienda" : destinos.length ? "destino" : "vacio";
+  return { formato, tiendas: porTienda, destinos };
+}

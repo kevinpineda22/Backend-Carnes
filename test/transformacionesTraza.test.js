@@ -11,6 +11,8 @@ import {
   githubDeCorrida,
   conteosDeAlertas,
   agruparNegativosPorDestino,
+  agruparNegativosPorTienda,
+  armarDetalleNegativos,
   limitarDocumentos,
   esPaginaFueraDeRango,
   PAGINA_MAXIMA,
@@ -217,4 +219,91 @@ test("paginación: acota pagina y rechaza no enteros", () => {
     assert.throws(() => normalizarFiltrosNegativos({ pagina }), es400, pagina);
   assert.throws(() => normalizarFiltrosNegativos({ por_pagina: "2.5" }), es400);
   assert.throws(() => normalizarFiltrosEjecuciones({ job: "tocino", pagina: "9".repeat(20) }), es400);
+});
+
+const docTienda = (o) => ({
+  id: 1,
+  co: "001",
+  bodega: "B1",
+  tipo_dto: "CEI",
+  status: "OK",
+  lineas: [],
+  novedades: [],
+  ...o,
+});
+const nov = (codigo, severidad, o) => ({ codigo, severidad, co: "001", bodega: "B1", mensaje: codigo, ...o });
+
+test("tiendas: agrupa CEI y CSA por (co, bodega)", () => {
+  const tiendas = agruparNegativosPorTienda([
+    docTienda({ id: 1, tipo_dto: "CEI" }),
+    docTienda({ id: 2, tipo_dto: "CSA" }),
+    docTienda({ id: 3, co: "002", bodega: "B2", tipo_dto: "CEI" }),
+  ]);
+  assert.equal(tiendas.length, 2);
+  const t1 = tiendas.find((t) => t.co === "001");
+  assert.equal(t1.cei.id, 1);
+  assert.equal(t1.csa.id, 2);
+  assert.equal(t1.estado, "OK");
+  const t2 = tiendas.find((t) => t.co === "002");
+  assert.equal(t2.csa, null);
+});
+
+test("tiendas: precedencia de estado AMBIGUO > ERROR > SENDING > PLANNED > CANCELADO > OK", () => {
+  const orden = ["AMBIGUO", "ERROR", "SENDING", "PLANNED", "CANCELADO", "OK"];
+  for (let i = 0; i < orden.length - 1; i++) {
+    const [t] = agruparNegativosPorTienda([
+      docTienda({ id: 1, tipo_dto: "CEI", status: orden[i + 1] }),
+      docTienda({ id: 2, tipo_dto: "CSA", status: orden[i] }),
+    ]);
+    assert.equal(t.estado, orden[i]);
+    const [inv] = agruparNegativosPorTienda([
+      docTienda({ id: 1, tipo_dto: "CEI", status: orden[i] }),
+      docTienda({ id: 2, tipo_dto: "CSA", status: orden[i + 1] }),
+    ]);
+    assert.equal(inv.estado, orden[i]);
+  }
+});
+
+test("tiendas: novedades de ambos documentos, ALTA primero, con_novedades", () => {
+  const [t] = agruparNegativosPorTienda([
+    docTienda({ id: 1, tipo_dto: "CEI", novedades: [nov("LINEA_AJUSTADA", "INFO"), nov("SIN_STOCK", "MEDIA")] }),
+    docTienda({ id: 2, tipo_dto: "CSA", novedades: [nov("CSA_RECHAZADO", "ALTA")] }),
+  ]);
+  assert.deepEqual(t.novedades.map((n) => n.severidad), ["ALTA", "MEDIA", "INFO"]);
+  assert.equal(t.con_novedades, true);
+  const [sin] = agruparNegativosPorTienda([docTienda({ id: 1 })]);
+  assert.deepEqual(sin.novedades, []);
+  assert.equal(sin.con_novedades, false);
+});
+
+test("tiendas: tolera novedades ausentes o no arreglo y entrada inválida", () => {
+  const [t] = agruparNegativosPorTienda([docTienda({ novedades: null })]);
+  assert.deepEqual(t.novedades, []);
+  assert.deepEqual(agruparNegativosPorTienda(undefined), []);
+});
+
+test("armarDetalleNegativos: formato tienda | destino | mixto | vacio, ambas claves siempre", () => {
+  const tienda = [docTienda({})];
+  const legado = [fila({ id: 9, tipo_dto: "CEI" })];
+  const t = armarDetalleNegativos({ tiendas: tienda, legado: [] });
+  assert.equal(t.formato, "tienda");
+  assert.equal(t.tiendas.length, 1);
+  assert.deepEqual(t.destinos, []);
+  const d = armarDetalleNegativos({ tiendas: [], legado });
+  assert.equal(d.formato, "destino");
+  assert.deepEqual(d.tiendas, []);
+  assert.equal(d.destinos.length, 1);
+  assert.equal(armarDetalleNegativos({ tiendas: tienda, legado }).formato, "mixto");
+  const v = armarDetalleNegativos({ tiendas: [], legado: [] });
+  assert.equal(v.formato, "vacio");
+  assert.deepEqual([v.tiendas, v.destinos], [[], []]);
+});
+
+test("armarDetalleNegativos: destinos legados sin respuesta y con plan_incompleto derivado", () => {
+  const { destinos } = armarDetalleNegativos({
+    tiendas: [],
+    legado: [fila({ id: 1, tipo_dto: "CEI", plan: { csas_planificadas: 2 }, respuesta: "no" })],
+  });
+  assert.equal("respuesta" in destinos[0].cei, false);
+  assert.equal(destinos[0].plan_incompleto, true);
 });
