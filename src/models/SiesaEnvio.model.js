@@ -7,11 +7,15 @@
  *   inicial  automática al cerrar la recepción. Best-effort: si falla, se
  *            registra el error y la recepción se cierra igual. El recibidor
  *            no puede quedar trabado en la cava porque SIESA no responde.
- *   oficial  la dispara el admin desde la liquidación costeada. Es UNA CEA
- *            con los renglones de todas las sedes (sql/012). Si entra, las
- *            recepciones pasan a Enviado_SIESA, la liquidación a Cerrada, y
- *            sale un correo con todas las iniciales a anular. Si falla, no se
- *            cierra nada.
+ *   oficial  la dispara el admin desde la liquidación costeada. Es UNA CEA POR
+ *            FECHA DE INGRESO, cada una con los renglones de todas las sedes que
+ *            recibieron ese día (sql/012 las juntó en una; sql/033 las parte por
+ *            fecha para no postear carne en días en que no existía). Se validan
+ *            todas antes de mandar la primera. Si TODAS entran, las recepciones
+ *            pasan a Enviado_SIESA, la liquidación a Cerrada, y sale un correo
+ *            con todas las iniciales a anular. Si alguna falla, no se cierra
+ *            nada: las que entraron quedan y un nuevo envío manda solo las que
+ *            faltan.
  *
  *            Antes era una CEA por sede. Esas filas quedan como historial, y
  *            si alguna sigue vigente bloquea la consolidada: mandar la
@@ -20,7 +24,8 @@
  *  ajuste_visceras
  *            las vísceras entran al inventario por un documento aparte (CEI,
  *            conector AJUSTE_INV_VISCERAS), UNO por liquidación con todas las
- *            sedes (sql/020), y SIESA lo CONTABILIZA al importarlo. Lo dispara
+ *            sedes (sql/020; desde sql/033, uno por fecha de ingreso como la
+ *            oficial), y SIESA lo CONTABILIZA al importarlo. Lo dispara
  *            el admin con la entrada oficial ya en SIESA. No cierra nada: la
  *            liquidación ya está cerrada. (Hasta sql/019 era uno por sede.)
  *
@@ -50,10 +55,18 @@ import { puedeEliminarEnvio } from "../shared/eliminacionAdmin.js";
 import {
   armarEntradaDirecta,
   armarEntradaLiquidacion,
+  fechaDocto,
+  fechaSiesa,
   TIPO_ENVIO,
 } from "../shared/siesaEntrada.js";
 import {
-  armarAjusteViscerasLiquidacion,
+  planearDocumentosPorFecha,
+  referenciasEnConflicto,
+  oficialCompleta,
+  decidirCierreOficial,
+} from "../shared/siesaPorFecha.js";
+import {
+  armarAjustesViscerasLiquidacion,
   guardaAjustesPorSede,
   consecutivoAjusteLiquidacion,
   coberturaOficial,
@@ -153,6 +166,7 @@ const MIGRACIONES = [
   "sql/019_ajuste_visceras.sql",
   "sql/020_ajuste_visceras_liquidacion.sql",
   "sql/021_ajuste_faltante.sql",
+  "sql/033_oficial_por_fecha.sql",
 ];
 
 /**
@@ -179,7 +193,12 @@ const MIGRACIONES_PROVEEDOR = [
 const consecutivoDe = (recepcionId, tipo) =>
   Number(recepcionId) * 10 + (tipo === TIPO_ENVIO.OFICIAL ? 2 : 1);
 
-/** Lo mismo para la oficial consolidada: `id × 10 + 3`, no choca con las de sede. */
+/**
+ * Lo mismo para la oficial de la liquidación: `id × 10 + 3`, no choca con las de
+ * sede. Los documentos por fecha (sql/033) comparten el MISMO consecutivo: son
+ * payloads separados, SIESA lo recalcula y solo enlaza cabecera y movimientos
+ * dentro de cada uno. La tabla no lo tiene único (sql/007: INTEGER a secas).
+ */
 const consecutivoLiquidacion = (liquidacionId) => Number(liquidacionId) * 10 + 3;
 
 // ─── Lectura ───────────────────────────────────────────────────────────────
@@ -232,16 +251,36 @@ async function envioVigente(recepcionId, tipo) {
 }
 
 /**
- * La oficial CONSOLIDADA que ocupa el lugar de esta liquidación —enviando, ok o
- * sin_confirmar—, o null. Es la que cuida el índice de sql/012.
+ * Las oficiales de esta liquidación que ocupan el lugar —enviando, ok o
+ * sin_confirmar—: una por fecha de ingreso (sql/033) o, en las anteriores a
+ * sql/033, la consolidada con `fecha_docto` NULL. De la más nueva a la más vieja.
  */
-async function oficialDeLiquidacion(liquidacionId) {
+async function oficialesDeLiquidacion(liquidacionId) {
   const { data, error } = await supabase
     .from(TABLA)
     .select("*")
     .eq("liquidacion_id", liquidacionId)
     .is("recepcion_id", null)
     .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .in("estado", VIGENTES)
+    .order("enviado_at", { ascending: false });
+  if (error) fallarSiFaltaMigracion(error, "Error al leer el envío", MIGRACIONES);
+  return data || [];
+}
+
+/**
+ * La oficial vigente de UNA fecha de la liquidación (AAAAMMDD), o null. Es la que
+ * cuida el índice `uq_carnes_siesa_envios_oficial_fecha_vigente` (sql/033): sirve
+ * para encontrar al ganador cuando el candado rechaza una reserva repetida.
+ */
+async function oficialDeLiquidacionFecha(liquidacionId, fecha) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("*")
+    .eq("liquidacion_id", liquidacionId)
+    .is("recepcion_id", null)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .eq("fecha_docto", fechaDocto(fecha))
     .in("estado", VIGENTES)
     .order("enviado_at", { ascending: false })
     .limit(1)
@@ -364,8 +403,10 @@ export async function listar(f = {}) {
     "id, recepcion_id, liquidacion_id, tipo, estado, referencia, consecutivo, tipo_docto, " +
     "http_status, error, renglones, total_kilos, total_valor, enviado_por, enviado_at, aviso_anulacion, " +
     "recepcion_ids, " +
-    // `bodega` y `envio_origen_id` son de sql/021 (el ajuste por faltante).
-    (conBodega ? "bodega, envio_origen_id, " : "") +
+    // `bodega` y `envio_origen_id` son de sql/021 (el ajuste por faltante) y
+    // `fecha_docto` de sql/033 (un documento por fecha de ingreso): sin alguna de
+    // las migraciones, el listado cae a las columnas de siempre.
+    (conBodega ? "bodega, envio_origen_id, fecha_docto, " : "") +
     "recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) ), " +
     // La oficial consolidada no tiene recepción: la especie y la fecha
     // salen de la liquidación.
@@ -654,7 +695,23 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
     .single();
   if (errorReserva) {
     if (errorReserva.code === "23505") {
-      const ocupado = await vigente();
+      let ocupado = await vigente();
+      // El choque pudo venir del candado "un envío en curso por liquidación"
+      // (sql/021), que cubre otras fechas y las compensaciones: se informa ESE
+      // envío, no uno inventado con la referencia de este documento.
+      if (!ocupado && base.liquidacion_id && base.recepcion_id == null) {
+        const { data: enVuelo } = await supabase
+          .from(TABLA)
+          .select("*")
+          .eq("liquidacion_id", base.liquidacion_id)
+          .is("recepcion_id", null)
+          .in("tipo", [TIPO_AJUSTE_VISCERAS, TIPO_AJUSTE_FALTANTE])
+          .in("estado", ["enviando", "sin_confirmar"])
+          .order("enviado_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        ocupado = enVuelo || null;
+      }
       return {
         ...(ocupado || { ...base, estado: "enviando", referencia: fila.referencia }),
         repetido: true,
@@ -845,10 +902,14 @@ async function oficialesDeOtrasLiquidaciones(liquidacionId, ids) {
 }
 
 /**
- * Qué pasaría al enviar la oficial, sin mandar nada. Para que el botón del
- * panel pueda decir "no se puede, por esto" antes de apretarlo.
+ * Todo lo que hace falta para decidir la oficial de una liquidación: lo que se
+ * armaría HOY (un documento por fecha de ingreso, sql/033), lo que ya está
+ * guardado y el cruce de las dos cosas (`planearDocumentosPorFecha`).
+ *
+ * Se llama al previsualizar y justo antes de mandar; la segunda no reusa la
+ * primera.
  */
-export async function previsualizarOficial(liquidacionId, terceroId) {
+async function evaluarOficial(liquidacionId, terceroId) {
   const { data: liq, error } = await supabase
     .from("carnes_liquidaciones")
     .select("id, estado, especie, siesa_nit, siesa_sucursal")
@@ -858,29 +919,49 @@ export async function previsualizarOficial(liquidacionId, terceroId) {
   if (!liq) throw createError(404, "Liquidación no encontrada.");
 
   const { ids, recepciones, armado } = await armarOficial(liquidacionId, terceroId);
-  const [oficial, porSede, deOtras] = await Promise.all([
-    oficialDeLiquidacion(liquidacionId),
+  const [filas, porSede, deOtras] = await Promise.all([
+    oficialesDeLiquidacion(liquidacionId),
     oficialesPorSedeVigentes(ids),
     oficialesDeOtrasLiquidaciones(liquidacionId, ids),
   ]);
+  const plan = planearDocumentosPorFecha({ documentos: armado.documentos, filas });
+  return { liq, ids, recepciones, armado, filas, porSede, deOtras, plan };
+}
 
-  const sedes = [];
-  for (const s of armado.porSede) {
-    const inicial = await ultimoEnvio(s.recepcion_id, TIPO_ENVIO.INICIAL);
-    const vieja = porSede.find((e) => e.recepcion_id === s.recepcion_id) || null;
-    sedes.push({
-      recepcion_id: s.recepcion_id,
-      sede: s.sede,
-      estado: recepciones.find((r) => r.id === s.recepcion_id)?.estado,
-      inicial: inicial
-        ? { referencia: inicial.referencia, enviado_at: inicial.enviado_at }
-        : null,
-      // Oficial por sede del esquema anterior, si sigue vigente.
-      oficialPorSede: vieja ? { id: vieja.id, estado: vieja.estado, referencia: vieja.referencia } : null,
-      resumen: s.resumen,
-      bloqueos: s.bloqueos,
-    });
+/** El id de `TERCEROS_CARNES` con el que salió el primer envío que tenga payload, o null. */
+function terceroDeEnvios(envios) {
+  for (const e of envios) {
+    const doc = e?.payload?.Documentos?.[0];
+    if (!doc) continue;
+    const t = TERCEROS_CARNES.find(
+      (x) =>
+        x.nit === String(doc.NIT ?? "").trim() && x.sucursal === String(doc.SUCURSAL ?? "").trim(),
+    );
+    return t ? t.id : null;
   }
+  return null;
+}
+
+/** Lo que el front necesita de un envío vigente de la oficial. */
+const resumenOficial = (e) =>
+  e ? { id: e.id, estado: e.estado, referencia: e.referencia, enviado_at: e.enviado_at } : null;
+
+/**
+ * La previsualización a partir de la evaluación. Los campos de siempre
+ * (`documento`, `oficial`, `sedes`, `puedeEnviar`) siguen significando lo mismo
+ * para el front de una sola CEA; `oficiales` trae el detalle por fecha.
+ *
+ *   documento    el resumen de lo que se manda (los totales y las referencias de
+ *                TODOS los documentos pendientes; con una sola fecha, el de siempre)
+ *   oficial      el envío que "representa" a la liquidación: el primero que está
+ *                en curso o sin confirmar; si no, el primero que ya está ok; si
+ *                no, null. Con una fecha es el único envío, como antes.
+ *   puedeEnviar  hay documentos por mandar y nada lo frena ni está en curso
+ *   oficiales    uno por fecha: referencia, totales, bloqueos y su envío
+ */
+function construirPreviaOficial(ev, terceroId) {
+  const { liq, porSede, deOtras, plan } = ev;
+  const sedes = ev.sedes;
 
   const configurado = siesaConfigurado();
   const bloqueosGlobales = [];
@@ -906,6 +987,83 @@ export async function previsualizarOficial(liquidacionId, terceroId) {
         "Anulalas en SIESA y registralo antes de mandar la consolidada, o la carne entraría dos veces.",
     );
   }
+  // Un documento en SIESA cuya fecha ya no es la de ninguna recepción de hoy: se
+  // cambió la fecha de ingreso (o se desvinculó la recepción) después de enviar.
+  // Mandar la fecha nueva duplicaría esa carne.
+  if (plan.huerfanos.length) {
+    bloqueosGlobales.push(
+      `Hay entradas oficiales en SIESA con una fecha que ya no corresponde a ninguna recepción de esta ` +
+        `liquidación (${plan.huerfanos.map((e) => `${e.referencia}, ${e.fecha_docto}`).join("; ")}). ` +
+        "Cambió la fecha de ingreso de una recepción o se la desvinculó después de enviar. Anulalas en " +
+        "SIESA y registralo antes de seguir, o la carne entraría dos veces.",
+    );
+  }
+  // Una recepción se vinculó (o se desvinculó) DESPUÉS de enviar la oficial de su
+  // fecha: ese documento no la trae (o la trae de más).
+  if (plan.desfasados.length) {
+    bloqueosGlobales.push(
+      `La entrada oficial de ${plan.desfasados
+        .map((i) => `${i.envio.referencia} (${fechaDocto(i.fecha)})`)
+        .join(", ")} salió con otras recepciones que las de hoy. Anulala en SIESA y registralo antes de seguir.`,
+    );
+  }
+  // La referencia es lo que una persona busca en SIESA: dos documentos distintos
+  // de la liquidación no pueden compartirla.
+  const repetidas = referenciasEnConflicto(plan.items);
+  if (repetidas.length) {
+    bloqueosGlobales.push(
+      `Dos documentos de la oficial tendrían la misma referencia (${repetidas.join(", ")}). ` +
+        "No se manda para no confundirlos en SIESA: avisá a sistemas.",
+    );
+  }
+  // Los documentos que faltan tienen que entrar al mismo tercero que los que ya
+  // entraron: el cierre de la liquidación escribe UN NIT.
+  if (plan.pendientes.length) {
+    const cfg = documentoSiesa(terceroId);
+    const distinto = plan.items.find((i) => {
+      const doc = i.envio?.payload?.Documentos?.[0];
+      return (
+        i.envio &&
+        !i.deLegado &&
+        doc &&
+        (String(doc.NIT ?? "").trim() !== String(cfg.nit ?? "").trim() ||
+          String(doc.SUCURSAL ?? "").trim() !== String(cfg.sucursal ?? "").trim())
+      );
+    });
+    if (distinto) {
+      const doc = distinto.envio.payload.Documentos[0];
+      bloqueosGlobales.push(
+        `Las fechas que ya entraron a SIESA (${distinto.envio.referencia}) fueron a nombre de NIT ` +
+          `${doc.NIT} sucursal ${doc.SUCURSAL}. Elegí el mismo tercero para mandar las que faltan.`,
+      );
+    }
+  }
+
+  // Los bloqueos del DOCUMENTO: solo de los que se van a mandar (los que ya
+  // entraron no se vuelven a armar con lo de hoy).
+  const bloqueosDocumento = [...new Set(plan.pendientes.flatMap((i) => i.documento.bloqueos))];
+
+  // El resumen que ve el front: el de siempre con una fecha; con varias, los
+  // totales y las referencias de todo lo que falta por mandar.
+  const aMandar = (plan.pendientes.length ? plan.pendientes : plan.items).map((i) => i.documento);
+  const suma = (campo) => aMandar.reduce((a, d) => a + (d.resumen[campo] || 0), 0);
+  const documento =
+    aMandar.length === 1
+      ? { ...aMandar[0].resumen, bloqueos: bloqueosDocumento }
+      : {
+          tipo: TIPO_ENVIO.OFICIAL,
+          referencia: aMandar.map((d) => d.resumen.referencia).join(", "),
+          referenciaInicial: null,
+          renglones: suma("renglones"),
+          sedes: suma("sedes"),
+          totalKilos: Math.round(suma("totalKilos") * 1000) / 1000,
+          totalValor: Math.round(suma("totalValor") * 100) / 100,
+          fecha: aMandar[0]?.resumen.fecha ?? null,
+          documentos: aMandar.length,
+          bloqueos: bloqueosDocumento,
+        };
+
+  const representante = plan.enCurso[0]?.envio ?? plan.listos[0]?.envio ?? null;
 
   return {
     liquidacion: liq,
@@ -913,24 +1071,73 @@ export async function previsualizarOficial(liquidacionId, terceroId) {
     tercero: terceroCarnes(terceroId),
     configurado,
     bloqueos: bloqueosGlobales,
-    // La CEA que se mandaría: una sola, con todas las sedes.
-    documento: { ...armado.resumen, bloqueos: armado.bloqueos },
+    // Lo que se mandaría: uno por fecha de ingreso, con todas las sedes de ese día.
+    documento,
     // `enviado_at` para que la pantalla distinga un envío vivo de uno abandonado.
-    oficial: oficial
-      ? {
-          id: oficial.id,
-          estado: oficial.estado,
-          referencia: oficial.referencia,
-          enviado_at: oficial.enviado_at,
-        }
-      : null,
+    oficial: resumenOficial(representante),
+    // El detalle por fecha de ingreso. `estado`: pendiente | enviando | ok |
+    // sin_confirmar. `deLegado`: lo cubre el consolidado de antes de sql/033.
+    oficiales: plan.items.map((i) => ({
+      fecha: fechaDocto(i.fecha),
+      referencia: i.envio && !i.deLegado ? i.envio.referencia : i.documento.resumen.referencia,
+      estado: i.estado,
+      deLegado: i.deLegado,
+      sedes: i.documento.resumen.sedes,
+      renglones: i.documento.resumen.renglones,
+      totalKilos: i.documento.resumen.totalKilos,
+      totalValor: i.documento.resumen.totalValor,
+      recepcion_ids: i.documento.recepcion_ids,
+      bloqueos: i.envio ? [] : i.documento.bloqueos,
+      envio: resumenOficial(i.envio),
+    })),
+    // Algunas fechas ya entraron y otras faltan.
+    parcial: plan.parcial,
+    // El tercero con el que entraron las fechas que ya están en SIESA (id de
+    // `terceros`), o null. El front lo preselecciona: las que faltan tienen que
+    // entrar al mismo NIT.
+    terceroEnviado: terceroDeEnvios(plan.items.map((i) => i.envio)),
     sedes,
     puedeEnviar:
       bloqueosGlobales.length === 0 &&
-      armado.bloqueos.length === 0 &&
-      !oficial &&
+      bloqueosDocumento.length === 0 &&
+      plan.enCurso.length === 0 &&
+      plan.pendientes.length > 0 &&
       sedes.length > 0,
   };
+}
+
+/**
+ * Qué pasaría al enviar la oficial, sin mandar nada. Para que el botón del
+ * panel pueda decir "no se puede, por esto" antes de apretarlo.
+ */
+export async function previsualizarOficial(liquidacionId, terceroId) {
+  const ev = await evaluarOficial(liquidacionId, terceroId);
+  return construirPreviaOficial(await conSedes(ev), terceroId);
+}
+
+/** Las sedes de la previsualización: cada recepción con su inicial y sus bloqueos. */
+async function conSedes(ev) {
+  const { recepciones, armado, porSede } = ev;
+  const sedes = [];
+  for (const s of armado.porSede) {
+    const inicial = await ultimoEnvio(s.recepcion_id, TIPO_ENVIO.INICIAL);
+    const vieja = porSede.find((e) => e.recepcion_id === s.recepcion_id) || null;
+    sedes.push({
+      recepcion_id: s.recepcion_id,
+      sede: s.sede,
+      // La fecha de ingreso: es la que decide en qué documento va la sede.
+      fecha: s.fecha,
+      estado: recepciones.find((r) => r.id === s.recepcion_id)?.estado,
+      inicial: inicial
+        ? { referencia: inicial.referencia, enviado_at: inicial.enviado_at }
+        : null,
+      // Oficial por sede del esquema anterior, si sigue vigente.
+      oficialPorSede: vieja ? { id: vieja.id, estado: vieja.estado, referencia: vieja.referencia } : null,
+      resumen: s.resumen,
+      bloqueos: s.bloqueos,
+    });
+  }
+  return { ...ev, sedes };
 }
 
 /**
@@ -965,35 +1172,72 @@ async function cerrarLiquidacion(liquidacionId, ids, envio) {
 }
 
 /**
- * Entrada OFICIAL de una liquidación costeada: UNA CEA con todas las sedes.
+ * Entrada OFICIAL de una liquidación costeada: UNA CEA POR FECHA DE INGRESO, cada
+ * una con las sedes que recibieron ese día (sql/033).
  *
- * Si entra → cierre (recepciones a Enviado_SIESA, liquidación a Cerrada) y un
- * correo con las iniciales a anular. Si ya estaba ok (un segundo clic, o un
- * "sin confirmar" que se resolvió como ok) solo cierra: no manda nada.
+ * El orden:
+ *   1. Se valida TODO antes de mandar nada: bloqueos globales, los de cada
+ *      documento por mandar y que no haya un envío en curso o sin confirmar.
+ *      Un bloqueo en cualquier fecha frena todas (todo o nada ANTES de enviar).
+ *   2. Se mandan, de la fecha más antigua a la más nueva, solo los documentos
+ *      que no tienen envío vigente. Un reintento (porque uno falló, o quedó sin
+ *      tiempo) manda únicamente los que faltan: los que ya están ok se saltan.
+ *   3. La liquidación se cierra SOLO si todos los documentos están ok. Si alguno
+ *      falla, queda en el estado en que estaba y la respuesta lista cada
+ *      documento (`envios`) y cuál es el problema (`envio.error`).
+ *   4. Con todos ok sale un correo con las iniciales a anular y todas las
+ *      referencias de oficial que se dejan.
  *
- * @returns {{ cerrada: boolean, envio: object }}
+ * Si ya estaban todos ok (un segundo clic, o un "sin confirmar" que se resolvió
+ * como ok) solo cierra: no manda nada.
+ *
+ * Los POST son secuenciales y la espera a SIESA de los siguientes al primero se
+ * recorta para terminar antes del límite de la función (`esperaParaEnvio`); el
+ * que no alcance queda pendiente para otro envío. El primero conserva la espera
+ * de siempre (TIMEOUT_OFICIAL_MS).
+ *
+ * @returns {{ cerrada: boolean, repetido?: boolean, envio: object, envios: object[] }}
+ *   `envio`: el documento que importa (el primero que no quedó ok; si todos, el
+ *   primero). `envios`: uno por fecha, con su estado.
  */
 export async function enviarOficial(liquidacionId, por, terceroId) {
-  const previa = await previsualizarOficial(liquidacionId, terceroId);
+  const inicio = Date.now();
+  const ev = await conSedes(await evaluarOficial(liquidacionId, terceroId));
+  const previa = construirPreviaOficial(ev, terceroId);
   if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
   if (!previa.sedes.length) {
     throw createError(409, "La liquidación no tiene recepciones para enviar.");
   }
 
-  if (previa.oficial) {
-    if (previa.oficial.estado !== "ok") {
-      throw createError(409, motivoVigente(previa.oficial));
-    }
-    // Ya está en SIESA: se cierra lo que haya quedado abierto, sin mandar.
-    const envio = await oficialDeLiquidacion(liquidacionId);
+  const { plan } = ev;
+  if (plan.enCurso.length) {
+    throw createError(409, motivoVigente(plan.enCurso[0].envio));
+  }
+
+  if (!plan.pendientes.length) {
+    // Ya está todo en SIESA: se cierra lo que haya quedado abierto, sin mandar.
+    const vigentes = await oficialesDeLiquidacion(liquidacionId);
     // Entre la previsualización y acá alguien pudo registrar la anulación.
-    if (!envio || envio.estado !== "ok") {
+    if (!vigentes.length || vigentes.some((e) => e.estado !== "ok")) {
       throw createError(409, "La entrada oficial cambió de estado. Actualizá y volvé a intentar.");
     }
     if (previa.liquidacion.estado !== "Cerrada") {
-      await cerrarLiquidacion(liquidacionId, await idsDeLiquidacion(liquidacionId), envio);
+      const todas = await idsDeLiquidacion(liquidacionId);
+      await cerrarLiquidacion(liquidacionId, todas, vigentes[0]);
+      // Si otro clic mandó el último documento y perdió la carrera por cerrar, el
+      // correo de anulación quedó sin salir: lo manda quien cierra.
+      if (vigentes.some((e) => !e.aviso_anulacion)) {
+        const recepcionesTodas = [];
+        for (const rid of todas) recepcionesTodas.push(await cargarRecepcion(rid));
+        await avisarAnulacionLiquidacion(previa.liquidacion, recepcionesTodas, vigentes);
+      }
     }
-    return { cerrada: true, repetido: true, envio: resumenEnvio(envio) };
+    return {
+      cerrada: true,
+      repetido: true,
+      envio: resumenEnvio(vigentes[0]),
+      envios: vigentes.map(resumenEnvioPorFecha),
+    };
   }
 
   if (previa.documento.bloqueos.length) {
@@ -1001,38 +1245,135 @@ export async function enviarOficial(liquidacionId, por, terceroId) {
   }
 
   // Se arma de nuevo con los datos de este instante: la previsualización pudo
-  // quedar vieja si alguien volvió a costear entre medio.
+  // quedar vieja si alguien volvió a costear (o movió recepciones) entre medio.
   const { ids, recepciones, armado } = await armarOficial(liquidacionId, terceroId);
-  const fila = await registrarYEnviar({
-    armado,
-    base: {
-      recepcion_id: null,
-      liquidacion_id: Number(liquidacionId),
-      recepcion_ids: ids,
-      tipo: TIPO_ENVIO.OFICIAL,
-      consecutivo: consecutivoLiquidacion(liquidacionId),
-    },
-    por,
-    vigente: () => oficialDeLiquidacion(liquidacionId),
-    etiqueta: `oficial liquidación #${liquidacionId}`,
-  });
+  const fechasAntes = plan.items.map((i) => i.fecha).join(",");
+  if (armado.documentos.map((d) => d.fecha).join(",") !== fechasAntes) {
+    throw createError(
+      409,
+      "Las recepciones de la liquidación cambiaron mientras se preparaba el envío. Actualizá y volvé a intentar.",
+    );
+  }
+  const porMandar = armado.documentos.filter((d) =>
+    plan.pendientes.some((p) => p.fecha === d.fecha),
+  );
+  const bloqueosAhora = [...new Set(porMandar.flatMap((d) => d.bloqueos))];
+  if (bloqueosAhora.length) throw createError(409, bloqueosAhora.join(" "));
 
-  if (fila.estado !== "ok") {
+  // ─── Se manda, de a un documento ───
+  const resultados = [];
+  let mandados = 0;
+  // Tras un rechazo definitivo de SIESA no se postean las fechas que siguen (igual
+  // que las vísceras): quedan pendientes para el reintento.
+  let detenido = false;
+  for (const item of plan.items) {
+    // Ya entró (o lo cubre el consolidado de antes): no se vuelve a mandar.
+    if (item.envio) {
+      resultados.push({
+        fecha: item.fecha,
+        referencia: item.envio.referencia,
+        estado: item.envio.estado,
+        fila: item.envio,
+      });
+      continue;
+    }
+
+    const doc = armado.documentos.find((d) => d.fecha === item.fecha);
+    if (detenido) {
+      resultados.push({
+        fecha: item.fecha,
+        referencia: doc.resumen.referencia,
+        estado: "pendiente",
+        fila: null,
+      });
+      continue;
+    }
+    // El primero conserva la espera de siempre; los demás, la que alcance.
+    let timeoutMs;
+    if (mandados > 0) {
+      timeoutMs = esperaParaEnvio(Date.now() - inicio, {
+        maxEsperaMs: TIMEOUT_OFICIAL_MS,
+        minimoMs: ESPERA_MINIMA_AJUSTE_MS,
+      });
+      if (timeoutMs === null) {
+        resultados.push({
+          fecha: item.fecha,
+          referencia: doc.resumen.referencia,
+          estado: "pendiente",
+          fila: null,
+        });
+        continue;
+      }
+    }
+
+    const fila = await registrarYEnviar({
+      armado: { payload: doc.payload, resumen: doc.resumen, bloqueos: doc.bloqueos },
+      base: {
+        recepcion_id: null,
+        liquidacion_id: Number(liquidacionId),
+        recepcion_ids: doc.recepcion_ids,
+        tipo: TIPO_ENVIO.OFICIAL,
+        consecutivo: consecutivoLiquidacion(liquidacionId),
+        fecha_docto: fechaDocto(doc.fecha),
+      },
+      por,
+      vigente: () => oficialDeLiquidacionFecha(liquidacionId, doc.fecha),
+      etiqueta: `oficial liquidación #${liquidacionId} ${doc.fecha ?? "sin fecha"}`,
+      ...(timeoutMs ? { timeoutMs } : {}),
+    });
+    mandados++;
+    if (fila.estado === "error" && !fila.repetido) detenido = true;
+    resultados.push({
+      fecha: item.fecha,
+      referencia: fila.referencia,
+      estado: fila.estado,
+      error: fila.repetido ? motivoVigente(fila) : fila.error,
+      repetido: Boolean(fila.repetido),
+      nueva: true,
+      fila,
+    });
+  }
+
+  const decision = decidirCierreOficial(resultados);
+  const envios = resultados.map((r) =>
+    r.fila
+      ? { ...resumenEnvioPorFecha(r.fila), ...(r.error ? { error: r.error } : {}) }
+      : { id: null, fecha: fechaDocto(r.fecha), estado: "pendiente", referencia: r.referencia, error: null },
+  );
+  const nuevas = resultados.filter((r) => r.nueva);
+
+  if (!decision.cerrar) {
+    const rep = decision.representante;
     return {
       cerrada: false,
       envio: {
-        ...resumenEnvio(fila),
-        error: fila.repetido ? motivoVigente(fila) : fila.error,
+        ...(rep.fila
+          ? resumenEnvio(rep.fila)
+          : { id: null, referencia: rep.referencia, renglones: null, total_kilos: null, total_valor: null }),
+        // Un documento que no se alcanzó a mandar no es un envío de SIESA: se le
+        // dice error al front, que no conoce el estado `pendiente`.
+        estado: rep.estado === "pendiente" ? "error" : rep.estado,
+        error: decision.error,
       },
+      envios,
+      pendientes: resultados.filter((r) => r.estado === "pendiente").length,
     };
   }
 
-  await cerrarLiquidacion(liquidacionId, ids, fila);
-  // Si otro pedido la reservó primero (`repetido`), el correo es de él.
-  if (!fila.repetido) {
-    await avisarAnulacionLiquidacion(previa.liquidacion, recepciones, fila);
+  // Todos ok. El NIT del cierre sale del payload de cualquiera de ellos.
+  const filasOk = resultados.map((r) => r.fila);
+  await cerrarLiquidacion(liquidacionId, ids, filasOk[0]);
+  // Si otro pedido reservó los que mandé yo (`repetido`), el correo es de él.
+  const propias = nuevas.filter((r) => !r.repetido);
+  if (propias.length) {
+    await avisarAnulacionLiquidacion(previa.liquidacion, recepciones, filasOk);
   }
-  return { cerrada: true, repetido: Boolean(fila.repetido), envio: resumenEnvio(fila) };
+  return {
+    cerrada: true,
+    repetido: nuevas.length > 0 && propias.length === 0,
+    envio: resumenEnvio(filasOk[0]),
+    envios,
+  };
 }
 
 /** Lo que el front necesita de un envío, sin el payload entero. */
@@ -1049,13 +1390,45 @@ function resumenEnvio(e) {
   };
 }
 
+/** `resumenEnvio` más la fecha del documento (sql/033; null en los de antes). */
+function resumenEnvioPorFecha(e) {
+  return { ...resumenEnvio(e), fecha: e?.fecha_docto ?? null };
+}
+
 /**
  * Un solo correo con todas las iniciales a anular de la liquidación.
+ *
+ * `oficial` es el documento de oficial que se deja o, desde sql/033, la lista de
+ * documentos (uno por fecha de ingreso): el correo nombra todas las referencias
+ * y el aviso se marca en cada una.
  *
  * Las iniciales que ya están anuladas —o que nunca entraron— no se piden. Si no
  * queda ninguna, no se manda nada y el aviso se da por cumplido.
  */
 async function avisarAnulacionLiquidacion(liquidacion, recepciones, oficial) {
+  const lista = Array.isArray(oficial) ? oficial : [oficial];
+  const suma = (campo) => lista.reduce((a, o) => a + (Number(o[campo]) || 0), 0);
+  // Con un solo documento es el mismo objeto de siempre; con varios, uno que los
+  // resume (la tabla del correo lee referencia, renglones, kilos y valor).
+  const resumen =
+    lista.length === 1
+      ? lista[0]
+      : {
+          referencia: lista.map((o) => o.referencia).join(", "),
+          renglones: suma("renglones"),
+          total_kilos: suma("total_kilos"),
+          total_valor: suma("total_valor"),
+          documentos: lista.length,
+        };
+  const marcar = () =>
+    supabase
+      .from(TABLA)
+      .update({ aviso_anulacion: true })
+      .in(
+        "id",
+        lista.map((o) => o.id),
+      );
+
   const iniciales = [];
   for (const r of recepciones) {
     const inicial = await ultimoEnvio(r.id, TIPO_ENVIO.INICIAL);
@@ -1069,12 +1442,12 @@ async function avisarAnulacionLiquidacion(liquidacion, recepciones, oficial) {
     }
   }
   if (!iniciales.length) {
-    await supabase.from(TABLA).update({ aviso_anulacion: true }).eq("id", oficial.id);
+    await marcar();
     return;
   }
-  const correo = await notificarAnularIniciales(liquidacion, iniciales, oficial);
+  const correo = await notificarAnularIniciales(liquidacion, iniciales, resumen);
   if (correo?.success) {
-    await supabase.from(TABLA).update({ aviso_anulacion: true }).eq("id", oficial.id);
+    await marcar();
   }
 }
 
@@ -1172,17 +1545,33 @@ export async function resolver(id, { resultado, por } = {}) {
       const inicial = await ultimoEnvio(data.recepcion_id, TIPO_ENVIO.INICIAL);
       await avisarAnulacion(recepcion, inicial, data);
     } else {
-      // Consolidada. La liquidación NO se cierra acá: el admin vuelve a
-      // "Enviar entrada oficial", que ve la oficial en ok y solo cierra.
+      // Oficial de la liquidación. La liquidación NO se cierra acá: el admin vuelve
+      // a "Enviar entrada oficial", que ve la oficial en ok y solo cierra.
       const { data: liq } = await supabase
         .from("carnes_liquidaciones")
         .select("id, especie")
         .eq("id", data.liquidacion_id)
         .maybeSingle();
-      const ids = data.recepcion_ids?.length ? data.recepcion_ids : await idsDeLiquidacion(data.liquidacion_id);
-      const recepciones = [];
-      for (const rid of ids) recepciones.push(await cargarRecepcion(rid));
-      await avisarAnulacionLiquidacion(liq, recepciones, data);
+      if (!data.fecha_docto) {
+        // El consolidado de antes de sql/033: un solo documento con todas las
+        // recepciones con las que salió. Igual que siempre.
+        const ids = data.recepcion_ids?.length ? data.recepcion_ids : await idsDeLiquidacion(data.liquidacion_id);
+        const recepciones = [];
+        for (const rid of ids) recepciones.push(await cargarRecepcion(rid));
+        await avisarAnulacionLiquidacion(liq, recepciones, data);
+      } else {
+        // Un documento por fecha (sql/033). El correo pide anular las iniciales de
+        // TODA la liquidación, así que solo sale cuando el último documento
+        // entra: con la mitad de las fechas en SIESA, anular las iniciales dejaría
+        // carne sin su entrada.
+        const todas = await idsDeLiquidacion(data.liquidacion_id);
+        const filas = await oficialesDeLiquidacion(data.liquidacion_id);
+        if (oficialCompleta(filas, todas) && filas.some((o) => !o.aviso_anulacion)) {
+          const recepciones = [];
+          for (const rid of todas) recepciones.push(await cargarRecepcion(rid));
+          await avisarAnulacionLiquidacion(liq, recepciones, filas);
+        }
+      }
     }
   }
 
@@ -1408,19 +1797,26 @@ export async function eliminarEnvioAdmin(id) {
 // de la función en Vercel (300 s).
 
 const COLUMNAS_AJUSTE =
-  "id, recepcion_id, estado, referencia, enviado_at, error, renglones, total_kilos, total_valor";
+  // `fecha_docto` y `recepcion_ids` los lee `planearDocumentosPorFecha`: sin ellos
+  // toda fila parece del consolidado de antes de sql/033 y cubriría todas las fechas.
+  "id, recepcion_id, estado, referencia, enviado_at, error, renglones, total_kilos, total_valor, " +
+  "fecha_docto, recepcion_ids";
 
 /**
- * El ajuste CONSOLIDADO de una liquidación que ocupa el lugar —enviando, ok o
- * sin_confirmar—, o null. Es el que cuida el índice de sql/020.
+ * El ajuste de una FECHA de la liquidación (AAAAMMDD) que ocupa el lugar
+ * —enviando, ok o sin_confirmar—, o null. Es el que cuida el índice
+ * `uq_carnes_siesa_envios_ajuste_fecha_vigente` de sql/033 (antes, el de sql/020
+ * por liquidación): sirve para encontrar al ganador cuando el candado rechaza una
+ * reserva repetida.
  */
-async function ajusteDeLiquidacion(liquidacionId) {
+async function ajusteDeLiquidacionFecha(liquidacionId, fecha) {
   const { data, error } = await supabase
     .from(TABLA)
     .select("*")
     .eq("liquidacion_id", liquidacionId)
     .is("recepcion_id", null)
     .eq("tipo", TIPO_AJUSTE_VISCERAS)
+    .eq("fecha_docto", fechaDocto(fecha))
     .in("estado", VIGENTES)
     .order("enviado_at", { ascending: false })
     .limit(1)
@@ -1449,13 +1845,23 @@ async function evaluarAjuste(liquidacionId) {
   const ids = await idsDeLiquidacion(liquidacionId);
   const recepciones = [];
   for (const id of ids) recepciones.push(await cargarRecepcion(id));
-  const armado = armarAjusteViscerasLiquidacion({
+  // Un documento por fecha de ingreso (sql/033). Con las vísceras de un solo día
+  // es el documento de siempre; `armado` conserva la forma de antes (todas las
+  // sedes, todos los bloqueos) para quien lee la liquidación entera.
+  const armadoFechas = armarAjustesViscerasLiquidacion({
     liquidacionId,
     recepciones,
     config: DOCUMENTO_AJUSTE_VISCERAS,
   });
+  const armado = {
+    ...armadoFechas.armado,
+    porSede: armadoFechas.porSede,
+    vacio: armadoFechas.vacio,
+    bloqueos: armadoFechas.bloqueos,
+    recepcion_ids: armadoFechas.recepcion_ids,
+  };
 
-  const [consolidados, anteriores, consolidada, porSede] = await Promise.all([
+  const [consolidados, anteriores, oficiales, porSede] = await Promise.all([
     supabase
       .from(TABLA)
       .select(COLUMNAS_AJUSTE)
@@ -1471,7 +1877,7 @@ async function evaluarAjuste(liquidacionId) {
           .eq("tipo", TIPO_AJUSTE_VISCERAS)
           .order("enviado_at", { ascending: false })
       : { data: [], error: null },
-    oficialDeLiquidacion(liquidacionId),
+    oficialesDeLiquidacion(liquidacionId),
     ids.length
       ? supabase
           .from(TABLA)
@@ -1485,11 +1891,19 @@ async function evaluarAjuste(liquidacionId) {
     if (r.error) fallarSiFaltaMigracion(r.error, "Error al leer los envíos", MIGRACIONES);
   }
 
-  // Del consolidado: el vigente si lo hay (es el que ocupa el lugar) y, si no, el
-  // último intento, para mostrar qué pasó.
+  // De los documentos de la liquidación: los vigentes (son los que ocupan el
+  // lugar, uno por fecha) y el último intento, para mostrar qué pasó.
   const filas = consolidados.data || [];
-  const vigente = filas.find((f) => VIGENTES.includes(f.estado)) || null;
+  const vigentes = filas.filter((f) => VIGENTES.includes(f.estado));
+  const vigente = vigentes[0] || null;
   const ultimo = filas[0] || null;
+  // Cada fecha armada hoy contra lo que ya está guardado. Las filas de antes de
+  // sql/033 (sin `fecha_docto`) cubren todas las fechas.
+  const plan = planearDocumentosPorFecha({
+    documentos: armadoFechas.documentos,
+    filas,
+    comparaRecepciones: false,
+  });
 
   // De los de antes (por sede): por recepción, igual.
   const previos = new Map();
@@ -1500,13 +1914,16 @@ async function evaluarAjuste(liquidacionId) {
     previos.set(a.recepcion_id, p);
   }
 
-  const cobertura = coberturaOficial({ ids, consolidada, porSede: porSede.data || [] });
+  const cobertura = coberturaOficial({ ids, consolidadas: oficiales, porSede: porSede.data || [] });
   const compensaciones = await compensacionesDeLiquidacion(liquidacionId);
   return {
     liq,
     ids,
     recepciones,
     armado,
+    documentos: armadoFechas.documentos,
+    plan,
+    vigentes,
     vigente,
     ultimo,
     previos,
@@ -1542,10 +1959,33 @@ const resumenAjuste = (a) =>
  * trae los suyos para poder señalarla en la lista.
  */
 function construirPrevia(ev) {
-  const { liq, recepciones, armado, vigente, ultimo, previos, cobertura } = ev;
-  const enviado = vigente?.estado === "ok";
-  const enCurso = Boolean(vigente) && !enviado;
-  const pendiente = !armado.vacio && !vigente;
+  const { liq, recepciones, armado, ultimo, previos, cobertura, plan, vigentes } = ev;
+  // Con un documento por fecha (sql/033): enviado = todos están en SIESA; enCurso =
+  // alguno está enviándose o sin confirmar; pendiente = falta mandar alguno y
+  // ninguno está en curso. Con una sola fecha es lo de siempre.
+  const enviado =
+    vigentes.length > 0 &&
+    vigentes.every((f) => f.estado === "ok") &&
+    plan.pendientes.length === 0 &&
+    plan.desfasados.length === 0;
+  const enCurso = vigentes.some((f) => f.estado !== "ok");
+  const pendiente = !armado.vacio && plan.pendientes.length > 0 && !enCurso;
+  // Lo que ya entró no vuelve a bloquear lo que falta: solo cuentan los
+  // documentos por mandar.
+  const fechasPendientes = new Set(plan.pendientes.map((i) => i.fecha));
+  const bloqueosDocumento = armado.vacio
+    ? armado.bloqueos
+    : [...new Set(plan.pendientes.flatMap((i) => i.documento.armado.bloqueos))];
+  // Documentos que se mandan (todos, si ya no falta ninguno): para el resumen.
+  const aMandar = (plan.pendientes.length ? plan.pendientes : plan.items).map((i) => i.documento.armado);
+  const sumar = (campo) => aMandar.reduce((a, d) => a + (d.resumen[campo] || 0), 0);
+  // El envío que "representa" a la liquidación: el que está en curso; si no hay,
+  // el último intento mientras falte algo (para mostrar el error); si no, el vigente.
+  const representante = enCurso
+    ? vigentes.find((f) => f.estado !== "ok")
+    : pendiente
+      ? ultimo
+      : vigentes[0] || ultimo;
 
   const nombres = new Map(recepciones.map((r) => [r.id, r.sede?.nombre ?? `Recepción #${r.id}`]));
   const guarda = guardaAjustesPorSede(ev.anteriores, nombres);
@@ -1598,13 +2038,30 @@ function construirPrevia(ev) {
       fecha: s.fecha,
       resumen: s.resumen,
       renglones: s.renglones,
-      bloqueos: pendiente ? [...s.bloqueos, ...extra] : [],
+      bloqueos:
+        pendiente && fechasPendientes.has(fechaSiesa(s.fecha) ?? null) ? [...s.bloqueos, ...extra] : [],
       vacio: s.vacio,
       // El ajuste POR SEDE de antes, si esta recepción lo tuvo.
       anterior: p ? resumenAjuste(p.vigente || p.ultimo) : null,
     };
   });
 
+  // Un ajuste en SIESA que no trae todas las recepciones con vísceras de su fecha
+  // (se vinculó una después de enviarlo): no se da por enviado ni se cierra en falso.
+  if (plan.desfasados.length) {
+    bloqueos.push(
+      `El ajuste de vísceras ${plan.desfasados.map((i) => i.envio.referencia).join(", ")} salió sin alguna ` +
+        "recepción de su fecha que hoy tiene vísceras. Anulalo en SIESA y registrá la anulación antes de seguir.",
+    );
+  }
+  if (!enviado) {
+    const repetidas = referenciasEnConflicto(plan.items);
+    if (repetidas.length) {
+      bloqueos.push(
+        `Dos ajustes de vísceras tendrían la misma referencia (${repetidas.join(", ")}). No se manda para no confundirlos en SIESA: avisá a sistemas.`,
+      );
+    }
+  }
   if (pendiente) {
     if (cobertura.size === 0) {
       // Ninguna sede tiene su entrada oficial en SIESA. Si solo faltan algunas, el
@@ -1613,7 +2070,17 @@ function construirPrevia(ev) {
         "La entrada oficial todavía no está en SIESA. El ajuste de vísceras se manda después de ella.",
       );
     }
-    bloqueos.push(...armado.bloqueos);
+    bloqueos.push(...bloqueosDocumento);
+    // Un documento en SIESA con una fecha que ya no es la de ninguna recepción con
+    // vísceras: cambió la fecha de ingreso o se quitaron las vísceras después de
+    // enviar. Mandar la fecha nueva las entraría dos veces.
+    if (plan.huerfanos.length) {
+      bloqueos.push(
+        `Hay ajustes de vísceras en SIESA con una fecha que ya no corresponde a ninguna recepción ` +
+          `(${plan.huerfanos.map((e) => `${e.referencia}, ${e.fecha_docto}`).join("; ")}). ` +
+          "Anulalos en SIESA y registrá la anulación antes de seguir.",
+      );
+    }
     for (const s of sedes) {
       for (const b of s.bloqueos) bloqueos.push(`${s.sede ?? `Recepción #${s.recepcion_id}`}: ${b}`);
     }
@@ -1644,22 +2111,38 @@ function construirPrevia(ev) {
     documento: {
       nombre: DOCUMENTO_AJUSTE_VISCERAS.nombreDocumento,
       tipoDocto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
-      referencia: armado.resumen.referencia,
+      // Con una sola fecha, la referencia del documento; con varias, las de los
+      // que faltan por mandar (o todas, si ya entraron).
+      referencia:
+        aMandar.length > 1 ? aMandar.map((d) => d.resumen.referencia).join(", ") : armado.resumen.referencia,
       consecutivo: armado.resumen.consecutivo,
       fecha: armado.resumen.fecha,
-      sedes: armado.resumen.sedes,
-      renglones: armado.resumen.renglones,
-      totalKilos: armado.resumen.totalKilos,
-      totalValor: armado.resumen.totalValor,
+      sedes: aMandar.length > 1 ? sumar("sedes") : armado.resumen.sedes,
+      renglones: aMandar.length > 1 ? sumar("renglones") : armado.resumen.renglones,
+      totalKilos: aMandar.length > 1 ? Math.round(sumar("totalKilos") * 1000) / 1000 : armado.resumen.totalKilos,
+      totalValor: aMandar.length > 1 ? Math.round(sumar("totalValor") * 100) / 100 : armado.resumen.totalValor,
     },
+    // El detalle por fecha de ingreso (sql/033): una entrada por documento.
+    // `estado`: pendiente | enviando | ok | sin_confirmar.
+    documentos: plan.items.map((i) => ({
+      fecha: fechaDocto(i.fecha),
+      referencia: i.envio && !i.deLegado ? i.envio.referencia : i.documento.armado.resumen.referencia,
+      estado: i.estado,
+      deLegado: i.deLegado,
+      sedes: i.documento.armado.resumen.sedes,
+      renglones: i.documento.armado.resumen.renglones,
+      totalKilos: i.documento.armado.resumen.totalKilos,
+      totalValor: i.documento.armado.resumen.totalValor,
+      envio: resumenAjuste(i.envio),
+    })),
     configurado,
     activo: siesaActivo(),
     bloqueos,
     sedes,
     // Los ajustes por sede de antes. Mientras alguno esté vigente, bloquean.
     anteriores,
-    // El consolidado: el vigente si lo hay; si no, el último intento.
-    envio: resumenAjuste(vigente || ultimo),
+    // El envío que representa a la liquidación (ver `representante`).
+    envio: resumenAjuste(representante),
     // Los ajustes por faltante (compensaciones) de esta liquidación, y si el
     // conector para mandarlos está configurado. No bloquea el envío: el ajuste
     // de vísceras puede entrar sin compensar; solo importa si SIESA rechaza por
@@ -1671,10 +2154,12 @@ function construirPrevia(ev) {
     pendiente,
     vacio: armado.vacio,
     totales: {
-      sedes: armado.resumen.sedes,
-      renglones: armado.resumen.renglones,
-      totalValor: armado.resumen.totalValor,
+      sedes: aMandar.length > 1 ? sumar("sedes") : armado.resumen.sedes,
+      renglones: aMandar.length > 1 ? sumar("renglones") : armado.resumen.renglones,
+      totalValor: aMandar.length > 1 ? Math.round(sumar("totalValor") * 100) / 100 : armado.resumen.totalValor,
     },
+    // Algunas fechas ya entraron y otras faltan.
+    parcial: plan.parcial,
     puedeEnviar: pendiente && bloqueos.length === 0,
   };
 }
@@ -1906,18 +2391,24 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
  * ajuste de una LIQUIDACIÓN y el CEI de una RECEPCIÓN. Todo lo demás —el
  * candado, la compensación por faltante, los reintentos— es `ejecutarAjuste`.
  */
-const alcanceLiquidacion = (ev, liquidacionId) => ({
-  armado: ev.armado,
+const alcanceLiquidacion = (ev, item, liquidacionId, { esperaPrimerEnvioMs } = {}) => ({
+  // El documento de UNA fecha de ingreso (sql/033): su payload, sus recepciones y
+  // su `fecha_docto`, que es lo que distingue su fila y su candado de las demás.
+  armado: item.documento.armado,
+  ...(esperaPrimerEnvioMs != null ? { esperaPrimerEnvioMs } : {}),
   base: {
     recepcion_id: null,
     liquidacion_id: Number(liquidacionId),
-    recepcion_ids: ev.armado.recepcion_ids,
+    recepcion_ids: item.documento.armado.recepcion_ids,
     tipo: TIPO_AJUSTE_VISCERAS,
     consecutivo: consecutivoAjusteLiquidacion(liquidacionId),
     tipo_docto: DOCUMENTO_AJUSTE_VISCERAS.tipoDocto,
+    fecha_docto: fechaDocto(item.fecha),
   },
-  vigente: () => ajusteDeLiquidacion(liquidacionId),
-  etiqueta: `ajuste vísceras liquidación #${liquidacionId}`,
+  vigente: () => ajusteDeLiquidacionFecha(liquidacionId, item.fecha),
+  etiqueta:
+    `ajuste vísceras liquidación #${liquidacionId}` +
+    (ev.documentos.length > 1 ? ` ${item.fecha ?? "sin fecha"}` : ""),
   liquidacionId,
   recepcionId: undefined,
   baseCompensacion: { recepcion_id: null, liquidacion_id: Number(liquidacionId) },
@@ -1992,7 +2483,12 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
   for (let ronda = 1; ronda <= MAX_RONDAS_AJUSTE; ronda++) {
     rondas = ronda;
     let espera;
-    if (ronda === 1) {
+    if (ronda === 1 && alcance.esperaPrimerEnvioMs != null) {
+      // Un documento que no es el primero del pedido (varias fechas): quien llama ya
+      // midió cuánto tiempo queda, así que no se vuelve a aplicar la regla de
+      // "leer tardó demasiado", que miraría el pedido entero.
+      espera = alcance.esperaPrimerEnvioMs;
+    } else if (ronda === 1) {
       // El primer envío conserva la regla de siempre: si leer tardó demasiado, no se arranca.
       espera = esperaParaSede(Date.now() - inicio, alcance.maxEsperaMs ?? TIMEOUT_OFICIAL_MS);
       if (espera !== null && alcance.presupuestoMs != null) {
@@ -2090,8 +2586,11 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
 }
 
 /**
- * Manda el ajuste de vísceras de la liquidación: UN documento con todas las
- * sedes.
+ * Manda el ajuste de vísceras de la liquidación: UN documento por fecha de
+ * ingreso (sql/033), cada uno con todas las sedes de ese día. Con las vísceras de
+ * un solo día es UN documento, como antes. Se validan todos antes de mandar el
+ * primero; se mandan de a uno, de la fecha más antigua a la más nueva, y se frena
+ * en el primero que no queda ok. Un reintento manda solo los que faltan.
  *
  * Si ya está ok no manda nada (un segundo clic). Con un envío en curso o sin
  * confirmar, o con cualquier bloqueo, responde 409: el documento se contabiliza
@@ -2120,15 +2619,71 @@ export async function enviarAjusteVisceras(liquidacionId, por) {
   const previa = construirPrevia(ev);
 
   if (previa.enviado) {
-    return { completo: true, repetido: true, envio: resumenEnvio(ev.vigente) };
+    return { completo: true, repetido: true, envio: resumenEnvio(ev.vigentes[0]) };
   }
-  if (previa.enCurso) throw createError(409, motivoVigente(ev.vigente));
+  if (previa.enCurso) {
+    throw createError(409, motivoVigente(ev.vigentes.find((f) => f.estado !== "ok")));
+  }
   if (previa.vacio) {
     throw createError(409, "Ninguna sede tiene vísceras con código y cantidad para ajustar.");
   }
   if (previa.bloqueos.length) throw createError(409, previa.bloqueos.join(" "));
 
-  return ejecutarAjuste({ alcance: alcanceLiquidacion(ev, liquidacionId), por, inicio });
+  // Un documento por fecha de ingreso (sql/033), de la más antigua a la más nueva y
+  // de a uno. Solo los que no tienen envío vigente: un reintento no repite los que
+  // ya entraron. Se frena en el primero que no queda ok (error, sin confirmar,
+  // faltante sin compensar, falta de tiempo): el candado de "un envío en curso por
+  // liquidación" de sql/021 no deja seguir de todos modos.
+  const resultados = [];
+  const mandados = [];
+  for (const item of ev.plan.pendientes) {
+    let esperaPrimerEnvioMs;
+    if (resultados.length > 0) {
+      esperaPrimerEnvioMs = esperaParaEnvio(Date.now() - inicio, {
+        maxEsperaMs: TIMEOUT_OFICIAL_MS,
+        minimoMs: ESPERA_MINIMA_AJUSTE_MS,
+      });
+      if (esperaPrimerEnvioMs === null) break;
+    }
+    const r = await ejecutarAjuste({
+      alcance: alcanceLiquidacion(ev, item, liquidacionId, { esperaPrimerEnvioMs }),
+      por,
+      inicio,
+    });
+    resultados.push(r);
+    mandados.push(item);
+    if (!r.completo) break;
+  }
+
+  // Con una sola fecha la respuesta es la de siempre, tal cual.
+  if (ev.documentos.length === 1) return resultados[0];
+
+  const sinMandar = ev.plan.pendientes.length - resultados.length;
+  const fallido = resultados.find((r) => !r.completo);
+  const base = fallido ?? resultados[0];
+  const completo = !fallido && sinMandar === 0;
+  return {
+    completo,
+    repetido: resultados.every((r) => r.repetido) || undefined,
+    envio: base.envio,
+    compensaciones: resultados.flatMap((r) => r.compensaciones || []),
+    rondas: Math.max(...resultados.map((r) => r.rondas || 0)),
+    ...(fallido?.enVuelo ? { enVuelo: true } : {}),
+    // Quedaron fechas sin mandar (por un fallo antes o por falta de tiempo): otro
+    // clic manda solo las que faltan.
+    ...(!completo && (fallido?.pendiente || (!fallido && sinMandar > 0)) ? { pendiente: true } : {}),
+    ...(fallido?.detalle
+      ? { detalle: fallido.detalle }
+      : sinMandar > 0 && !fallido
+        ? { detalle: "No quedó tiempo seguro para mandar las demás fechas. Volvé a enviar." }
+        : {}),
+    documentos: resultados.map((r, n) => ({
+      fecha: fechaDocto(mandados[n].fecha),
+      referencia: mandados[n].documento.armado.resumen.referencia,
+      completo: r.completo,
+      envio: r.envio,
+    })),
+  };
 }
 
 /**
@@ -2421,9 +2976,14 @@ async function evaluarPorRecepcion(ev) {
             "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
         );
       }
-      if (ev.vigente && (ev.vigente.recepcion_ids || []).map(Number).includes(Number(r.id))) {
+      // El consolidado de antes (o, desde sql/033, el documento de la fecha de esta
+      // recepción) que ya la lleva.
+      const consolidado = ev.vigentes.find((f) =>
+        (f.recepcion_ids || []).map(Number).includes(Number(r.id)),
+      );
+      if (consolidado) {
         bloqueos.push(
-          `Sus vísceras ya están en SIESA en el ajuste consolidado ${ev.vigente.referencia}: ` +
+          `Sus vísceras ya están en SIESA en el ajuste consolidado ${consolidado.referencia}: ` +
             "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
         );
       }

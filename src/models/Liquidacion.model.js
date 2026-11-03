@@ -763,6 +763,7 @@ export async function guardarPagos(id, filas = []) {
  * Los gastos se van solos por el `ON DELETE CASCADE` de su FK.
  */
 export async function eliminar(id) {
+  await exigirSinDocumentosEnSiesa(id, "borrarla");
   const { data, error } = await supabase
     .from(TABLE)
     .select("id, estado, especie")
@@ -869,6 +870,36 @@ export async function vincular(id, recepcionIds = []) {
   if (errorUpdate) throw new Error(`Error al vincular: ${errorUpdate.message}`);
 
   return obtener(id);
+}
+
+/**
+ * Frena (409) si la liquidación tiene algún documento de SIESA vigente —enviando,
+ * ok o sin_confirmar— de los que postean inventario: la oficial (una por fecha de
+ * ingreso desde sql/033, así que puede estar Costeada con unas fechas ya en SIESA),
+ * el ajuste de vísceras y su compensación por faltante.
+ *
+ * Reabrir limpiaría el costo de recepciones que ya entraron a SIESA, volver a
+ * costear lo cambiaría, y borrar liberaría recepciones para vincularlas a otra
+ * liquidación (la carne entraría dos veces). Primero se anula en SIESA y se
+ * registra la anulación; `anularOficiales` deja la liquidación lista.
+ */
+export async function exigirSinDocumentosEnSiesa(id, accion) {
+  const { data, error } = await supabase
+    .from("carnes_siesa_envios")
+    .select("referencia, estado, tipo")
+    .eq("liquidacion_id", id)
+    .is("recepcion_id", null)
+    .in("tipo", ["oficial", "ajuste_visceras", "ajuste_faltante"])
+    .in("estado", ["enviando", "ok", "sin_confirmar"]);
+  if (error) throw new Error(`Error al leer los envíos: ${error.message}`);
+  if (data?.length) {
+    throw createError(
+      409,
+      `Esta liquidación tiene documentos en SIESA (${data.map((e) => `${e.referencia}, ${e.estado}`).join("; ")}). ` +
+        `Anulalos en SIESA y registrá la anulación en Envíos a SIESA antes de ${accion}, o los costos ` +
+        "quedarían distintos a los de SIESA y la carne podría entrar dos veces.",
+    );
+  }
 }
 
 export async function desvincular(id, recepcionId) {
@@ -1001,6 +1032,7 @@ async function buscarSedesFaltantes(liquidacion) {
  * entonces el catálogo de precios haya cambiado tres veces.
  */
 export async function costear(id) {
+  await exigirSinDocumentosEnSiesa(id, "volver a costearla");
   const { liquidacion, consolidado, cierre } = await previsualizar(id);
 
   if (!cierre.ok) {
@@ -1067,6 +1099,7 @@ export async function costear(id) {
  * nadie distingue un costo viejo de uno vigente mirándolo.
  */
 export async function reabrir(id) {
+  await exigirSinDocumentosEnSiesa(id, "reabrirla");
   const liquidacion = await obtener(id);
 
   if (liquidacion.estado === ESTADOS_LIQUIDACION.CERRADA) {

@@ -96,13 +96,49 @@ export function referenciaEnvio(recepcionId, tipo) {
 }
 
 /**
- * Referencia de la oficial consolidada de una liquidación: `TC OFI L12`.
+ * Referencia de la oficial de una liquidación: `TC OFI L12`.
  *
  * `L` y no `R` para que en SIESA se distinga a simple vista de las oficiales
  * viejas por sede, que quedan en el historial. Antes del 28/09/2026: `L12O`.
+ *
+ * Desde sql/033 la oficial sale UNA POR FECHA DE INGRESO. Con una sola fecha la
+ * referencia es la de siempre (`TC OFI L12`); con varias, cada documento lleva
+ * dos letras derivadas de su fecha (`TC OFI L12KD`). Ver `sufijoDocumento`. La
+ * forma legible cabe en 12 caracteres hasta la liquidación #99 con sufijo; de ahí
+ * pasa a `TCOL123KD`.
+ *
+ * @param {number|string} liquidacionId
+ * @param {string} [sufijo]  `""` (una sola fecha) o la letra de `sufijoDocumento`
  */
-export function referenciaLiquidacion(liquidacionId) {
-  return ajustarReferencia(`TC OFI L${liquidacionId}`, `TCOL${liquidacionId}`);
+export function referenciaLiquidacion(liquidacionId, sufijo = "") {
+  return ajustarReferencia(`TC OFI L${liquidacionId}${sufijo}`, `TCOL${liquidacionId}${sufijo}`);
+}
+
+/**
+ * Sufijo de DOS letras que distingue los documentos de una misma liquidación
+ * cuando salen varios (uno por fecha). Sale de la FECHA, no de la posición: el
+ * mismo día da siempre las mismas letras, aunque después se vincule una
+ * recepción con una fecha más antigua. Con un solo documento no lleva nada, y
+ * así la referencia queda idéntica a la de antes de sql/033.
+ *
+ * Esquema: días transcurridos desde el 01/01/2026, módulo 676, escritos en base
+ * 26 con letras A-Z (A=0): 21/09/2026 (día 263) → `KD`, 24/09/2026 → `KG`.
+ * Dos letras porque `TC OFI L12` + 2 = 12 caracteres, el máximo de PENDIENTE. Las
+ * letras después de un id numérico no se confunden con el id. Dos fechas de la
+ * misma liquidación solo chocan si distan un múltiplo exacto de 676 días; aun así
+ * el modelo bloquea el envío si una referencia pendiente repite otra de la
+ * liquidación (`referenciasEnConflicto`).
+ *
+ * @param {string|null} fecha  AAAAMMDD
+ * @param {number} total       cuántos documentos salen
+ */
+export function sufijoDocumento(fecha, total) {
+  if (!(total > 1)) return "";
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(fecha ?? ""));
+  if (!m) return "XX";
+  const dias = Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(2026, 0, 1)) / 86400000);
+  const n = ((dias % 676) + 676) % 676;
+  return String.fromCharCode(65 + Math.floor(n / 26)) + String.fromCharCode(65 + (n % 26));
 }
 
 /** `f350_notas` es texto largo, pero no infinito: se acota por las dudas. */
@@ -128,15 +164,43 @@ export function fechaSiesa(iso) {
 }
 
 /**
- * La fecha de un documento consolidado cuando las recepciones son de días
- * distintos: la MÁS ANTIGUA (regla de contabilidad). Una entrega puede
- * recibirse en varios días y el documento lleva una sola fecha.
+ * La más antigua de una lista de fechas. Ya NO decide la fecha de la oficial
+ * (desde sql/033 sale un documento por fecha); queda como red de seguridad de
+ * los armadores de UN documento, que reciben recepciones de un solo día.
  *
  * @param {string[]} fechas AAAAMMDD (las inválidas ya filtradas)
  * @returns {string|null}
  */
 export function fechaMasAntigua(fechas = []) {
   return [...fechas].sort()[0] ?? null;
+}
+
+/** `20260916` → `2026-09-16`, para la columna `fecha_docto` (date). Inválida → null. */
+export function fechaDocto(aaaammdd) {
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(aaaammdd ?? ""));
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+
+/**
+ * Agrupa las recepciones por su fecha de ingreso (AAAAMMDD), de la más antigua a
+ * la más nueva. Las que no tienen una fecha válida van juntas al final con
+ * `fecha: null`: arman un documento que se bloquea con "no tiene fecha".
+ *
+ * Es la regla de sql/033: un documento de SIESA por fecha de ingreso, porque la
+ * entrada no puede postear carne en un día en que no existía.
+ *
+ * @param {Array} recepciones  con `fecha_ingreso`
+ * @returns {Array<{ fecha: string|null, recepciones: Array }>}
+ */
+export function agruparPorFecha(recepciones = []) {
+  const grupos = new Map();
+  for (const r of recepciones) {
+    const f = fechaSiesa(r?.fecha_ingreso);
+    grupos.set(f, [...(grupos.get(f) || []), r]);
+  }
+  return [...grupos.entries()]
+    .sort(([a], [b]) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1))
+    .map(([fecha, grupo]) => ({ fecha, recepciones: grupo }));
 }
 
 /**
@@ -371,36 +435,59 @@ export function armarEntradaDirecta({
   };
 }
 
+
 /**
- * La oficial CONSOLIDADA: una sola CEA con los renglones de todas las sedes de
- * la liquidación.
+ * La oficial de una liquidación: una CEA POR FECHA DE INGRESO, con los renglones
+ * de todas las sedes que recibieron ese día.
  *
  * La cabecera de la CEA no tiene nada de la sede —tipo, fecha, NIT, sucursal,
  * notas—; la bodega y el CO viajan en cada movimiento. Así que se arma cada
  * sede con `armarEntradaDirecta` (mismas reglas: códigos, costo ajustado, costo
- * base, bodega, CO) y se juntan los movimientos bajo una cabecera.
+ * base, bodega, CO) y se juntan los movimientos de las sedes de un mismo día
+ * bajo una cabecera.
  *
- * Todo o nada: si una sede tiene un bloqueo, no sale el documento. Es el precio
- * de que sea uno solo, y es lo que pidió contabilidad.
+ * ─── Una CEA por fecha (sql/033) ───────────────────────────────────────────
  *
- * La fecha es UNA. Si las recepciones son de días distintos, va la más antigua
- * (`fechaMasAntigua`, regla de contabilidad).
+ * Antes iba UNA CEA con la fecha de la recepción más antigua. En un taller de
+ * carne que recibe en varios días eso posteaba existencias en días en que no
+ * existían y obligaba a ajustes grandes de inventario. Ahora cada fecha de
+ * ingreso es su propio documento, con esa fecha y solo sus renglones. Los costos
+ * son por recepción (`costo_ajustado` congelado en cada renglón), así que partir
+ * por fecha no prorratea nada.
+ *
+ * Con UNA sola fecha el resultado es idéntico al de antes: mismo payload, misma
+ * referencia (`TC OFI L12`), mismas notas. Con varias, cada documento lleva en la
+ * referencia dos letras derivadas de su fecha (`TC OFI L12KD`; ver
+ * `sufijoDocumento`) y la fecha completa en las notas.
+ *
+ * Todo o nada: si una sede de CUALQUIER fecha tiene un bloqueo, no sale ningún
+ * documento (el modelo valida todos antes de mandar el primero). Cada
+ * documento trae además sus propios `bloqueos`.
  *
  * @param {object} p
  * @param {number} p.liquidacionId
  * @param {Array}  p.recepciones  filas de `carnes_recepciones` con `sede` e `items`
- * @param {number} p.consecutivo
+ * @param {number} p.consecutivo  el mismo para todos los documentos: SIESA lo
+ *                                recalcula y solo enlaza cabecera y movimientos
+ *                                dentro de cada payload
  * @param {object} p.config
- * @returns {{ payload: object, resumen: object, bloqueos: string[], porSede: object[] }}
+ * @returns {{
+ *   payload: object, resumen: object, bloqueos: string[], porSede: object[],
+ *   documentos: Array<{ fecha: string|null, indice: number, payload: object,
+ *     resumen: object, bloqueos: string[], recepcion_ids: number[], porSede: object[] }>,
+ * }}
+ *   `payload` y `resumen` de primer nivel son los del PRIMER documento (el único,
+ *   salvo que haya varias fechas). `bloqueos` junta los de todos.
  */
 export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], consecutivo, config = {} }) {
   const bloqueos = [];
-  const referencia = referenciaLiquidacion(liquidacionId);
   const tipoDocto = String(config.tipoDocto ?? "").trim();
   const consec = String(consecutivo ?? "");
 
+  // Los de la liquidación entera (no de un día): van en cada documento.
+  const globales = [];
   if (recepciones.length === 0) {
-    bloqueos.push("La liquidación no tiene recepciones.");
+    globales.push("La liquidación no tiene recepciones.");
   }
 
   // Lo que falta en la configuración es igual para todas las sedes: se dice una
@@ -409,8 +496,9 @@ export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], conse
     (k) => !String(config[k] ?? "").trim(),
   );
   if (faltantes.length) {
-    bloqueos.push(`Falta configurar en SIESA: ${faltantes.join(", ")}.`);
+    globales.push(`Falta configurar en SIESA: ${faltantes.join(", ")}.`);
   }
+  bloqueos.push(...globales);
 
   const porSede = recepciones.map((recepcion) => {
     const armado = armarEntradaDirecta({
@@ -431,49 +519,74 @@ export function armarEntradaLiquidacion({ liquidacionId, recepciones = [], conse
     };
   });
 
-  for (const s of porSede) {
-    for (const b of s.bloqueos) bloqueos.push(`${s.sede ?? `Recepción #${s.recepcion_id}`}: ${b}`);
-  }
+  const bloqueosDeSede = (s) => s.bloqueos.map((b) => `${s.sede ?? `Recepción #${s.recepcion_id}`}: ${b}`);
+  for (const s of porSede) bloqueos.push(...bloqueosDeSede(s));
 
-  const fechas = [...new Set(porSede.map((s) => fechaSiesa(s.fecha)).filter(Boolean))];
-  // Sin ninguna fecha, cada sede ya lo dijo en su bloqueo.
-  const fecha = fechaMasAntigua(fechas);
+  // Un grupo por fecha. Sin recepciones, un grupo vacío: el documento existe (con
+  // su bloqueo) para que `payload` y `resumen` de primer nivel no queden undefined.
+  const grupos = agruparPorFecha(porSede.map((s) => ({ ...s, fecha_ingreso: s.fecha })));
+  const gruposFinales = grupos.length ? grupos : [{ fecha: null, recepciones: [] }];
+  const total = gruposFinales.length;
 
-  // Movimientos de todas las sedes, numerados de corrido: `NRO_REGISTRO` es la
-  // posición dentro del documento, no dentro de la sede.
-  const movimientos = porSede
-    .flatMap((s) => s.movimientos)
-    .map((m, n) => ({ ...m, NRO_DOCTO: consec, NRO_REGISTRO: String(n + 1) }));
+  const documentos = gruposFinales.map((g, indice) => {
+    const sedes = g.recepciones;
+    const sufijo = sufijoDocumento(g.fecha, total);
+    const referencia = referenciaLiquidacion(liquidacionId, sufijo);
 
-  const documento = {
-    TIPO_DOCTO: tipoDocto,
-    CONSECUTIVO_DOCTO: consec,
-    FECHA: fecha ?? "",
-    NIT: String(config.nit ?? "").trim(),
-    SUCURSAL: String(config.sucursal ?? "").trim(),
-    // Una CEA de nueve sedes no puede apuntar a nueve iniciales en un campo de
-    // 12 caracteres: lleva su propia referencia, y el correo a quien anula las
-    // lista todas.
-    PENDIENTE: referencia,
-    NOTAS: notasDocumento(NOTA[TIPO_ENVIO.OFICIAL], `LIQUIDACION #${liquidacionId}`, referencia),
-  };
+    // Movimientos de las sedes de ESTE día, numerados de corrido: `NRO_REGISTRO`
+    // es la posición dentro del documento, no dentro de la sede.
+    const movimientos = sedes
+      .flatMap((s) => s.movimientos)
+      .map((m, n) => ({ ...m, NRO_DOCTO: consec, NRO_REGISTRO: String(n + 1) }));
 
-  const totalKilos = porSede.reduce((a, s) => a + s.resumen.totalKilos, 0);
-  const totalValor = porSede.reduce((a, s) => a + s.resumen.totalValor, 0);
+    // Con varias fechas, cuál es el documento queda escrito en las notas.
+    const detalle =
+      total > 1
+        ? `LIQUIDACION #${liquidacionId} - INGRESO ${g.fecha ?? "SIN FECHA"} (${indice + 1}/${total})`
+        : `LIQUIDACION #${liquidacionId}`;
+
+    const documento = {
+      TIPO_DOCTO: tipoDocto,
+      CONSECUTIVO_DOCTO: consec,
+      // Sin fecha, las sedes de ese grupo ya lo dijeron en su bloqueo.
+      FECHA: g.fecha ?? "",
+      NIT: String(config.nit ?? "").trim(),
+      SUCURSAL: String(config.sucursal ?? "").trim(),
+      // Una CEA de nueve sedes no puede apuntar a nueve iniciales en un campo de
+      // 12 caracteres: lleva su propia referencia, y el correo a quien anula las
+      // lista todas.
+      PENDIENTE: referencia,
+      NOTAS: notasDocumento(NOTA[TIPO_ENVIO.OFICIAL], detalle, referencia),
+    };
+
+    const totalKilos = sedes.reduce((a, s) => a + s.resumen.totalKilos, 0);
+    const totalValor = sedes.reduce((a, s) => a + s.resumen.totalValor, 0);
+
+    return {
+      fecha: g.fecha,
+      indice,
+      payload: { Documentos: [documento], Movimientos: movimientos },
+      resumen: {
+        tipo: TIPO_ENVIO.OFICIAL,
+        referencia,
+        referenciaInicial: null,
+        renglones: movimientos.length,
+        sedes: sedes.length,
+        totalKilos: Math.round(totalKilos * 1000) / 1000,
+        totalValor: Math.round(totalValor * 100) / 100,
+        fecha: g.fecha,
+      },
+      bloqueos: [...globales, ...sedes.flatMap(bloqueosDeSede)],
+      recepcion_ids: sedes.map((s) => s.recepcion_id),
+      porSede: sedes.map(({ movimientos: _m, ...s }) => s),
+    };
+  });
 
   return {
-    payload: { Documentos: [documento], Movimientos: movimientos },
-    resumen: {
-      tipo: TIPO_ENVIO.OFICIAL,
-      referencia,
-      referenciaInicial: null,
-      renglones: movimientos.length,
-      sedes: porSede.length,
-      totalKilos: Math.round(totalKilos * 1000) / 1000,
-      totalValor: Math.round(totalValor * 100) / 100,
-      fecha,
-    },
+    payload: documentos[0].payload,
+    resumen: documentos[0].resumen,
     bloqueos,
     porSede: porSede.map(({ movimientos: _m, ...s }) => s),
+    documentos,
   };
 }

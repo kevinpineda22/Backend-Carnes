@@ -18,6 +18,7 @@ import {
   esperaParaEnvio,
   PRESUPUESTO_CIERRE_RECEPCION_MS,
   armarAjusteViscerasLiquidacion,
+  armarAjustesViscerasLiquidacion,
   consecutivoAjusteLiquidacion,
   referenciaAjusteLiquidacion,
   guardaAjustesPorSede,
@@ -582,7 +583,8 @@ test("consolidado: la configuración que falta se dice UNA vez, no una por sede"
   assert.match(bloqueos[0], /coDocumento, unidadNegocio/);
 });
 
-test("consolidado: fechas distintas entre las sedes que aportan → la más antigua (misma regla de la CEA)", () => {
+// El armador de UN documento: la liquidación entera se parte por fecha antes (ver más abajo, sql/033).
+test("un documento: si le llegaran fechas distintas (no pasa, el agrupador las separa) toma la más antigua", () => {
   const otraFecha = sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, {
     fecha_ingreso: "2026-09-28",
   });
@@ -918,4 +920,107 @@ test("esperaParaEnvio: con presupuesto de cierre el tope es el presupuesto, no e
   assert.equal(esperaParaEnvio(65_000, p), null);
   // Sin presupuesto sigue valiendo el límite de la función.
   assert.equal(esperaParaEnvio(65_000, { maxEsperaMs: 45_000, minimoMs: 30_000 }), 45_000);
+});
+
+// ─── Un ajuste por fecha de ingreso (sql/033) ───────────────────────────────
+
+const armarFechas = (recepciones, config = CONFIG, extra = {}) =>
+  armarAjustesViscerasLiquidacion({ liquidacionId: 10, recepciones, config, ...extra });
+
+test("por fecha: con las vísceras de UN día es el documento de siempre, idéntico", () => {
+  const legado = armarLiq([LLANO, BARBOSA]);
+  const r = armarFechas([LLANO, BARBOSA]);
+  assert.equal(r.documentos.length, 1);
+  assert.deepEqual(r.documentos[0].armado.payload, legado.payload);
+  assert.equal(r.documentos[0].armado.resumen.referencia, "TC VIS L10");
+  assert.equal(r.documentos[0].fecha, "20260927");
+  assert.deepEqual(r.bloqueos, legado.bloqueos);
+  assert.equal(r.porSede.length, 2);
+  assert.equal(r.vacio, false);
+});
+
+test("por fecha: la fecha de una sede SIN vísceras no parte el documento", () => {
+  const sinVisceras = sedeRec(14, "Sin vísceras", "07", "00701", [carne("15139", 10, 16800)], {
+    fecha_ingreso: "2026-09-30",
+  });
+  const r = armarFechas([LLANO, sinVisceras]);
+  assert.equal(r.documentos.length, 1);
+  assert.equal(r.documentos[0].armado.payload.Documentos[0].FECHA_DOCTO, "20260927");
+  assert.equal(r.documentos[0].armado.resumen.referencia, "TC VIS L10");
+});
+
+test("por fecha: vísceras de dos días → dos documentos, cada uno con su FECHA_DOCTO y sus renglones", () => {
+  const otroDia = sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, {
+    fecha_ingreso: "2026-09-28",
+  });
+  // La más nueva va primera: el orden sale por fecha, no por recepción.
+  const r = armarFechas([otroDia, LLANO]);
+
+  assert.deepEqual(r.bloqueos, []);
+  assert.equal(r.documentos.length, 2);
+  assert.deepEqual(r.documentos.map((d) => d.fecha), ["20260927", "20260928"]);
+  assert.deepEqual(
+    r.documentos.map((d) => d.armado.payload.Documentos[0].FECHA_DOCTO),
+    ["20260927", "20260928"],
+  );
+  // Llano (27/09): Mondongo y Riñon (la víscera sin código no viaja). Barbosa (28/09): los dos.
+  assert.deepEqual(r.documentos.map((d) => d.armado.payload.Movimientos.length), [2, 2]);
+  assert.deepEqual(r.documentos[0].armado.recepcion_ids, [12]);
+  assert.deepEqual(r.documentos[1].armado.recepcion_ids, [13]);
+  assert.deepEqual(
+    r.documentos[1].armado.payload.Movimientos.map((m) => m.BODEGA),
+    ["00501", "00501"],
+  );
+  // Cada uno numera desde 1 con el mismo consecutivo.
+  assert.deepEqual(r.documentos[1].armado.payload.Movimientos.map((m) => m.NRO_REGISTRO), ["1", "2"]);
+  assert.equal(r.documentos[1].armado.payload.Documentos[0].CONSECUTIVO_DOCTO, "104");
+  // Referencias distintas y cortas.
+  assert.deepEqual(
+    r.documentos.map((d) => d.armado.resumen.referencia),
+    ["TC VIS L10KJ", "TC VIS L10KK"],
+  );
+  assert.ok(r.documentos.every((d) => d.armado.resumen.referencia.length <= 12));
+  // El desglose por sede sigue completo.
+  assert.equal(r.porSede.length, 2);
+  assert.deepEqual(r.recepcion_ids.sort(), [12, 13]);
+});
+
+test("por fecha: un bloqueo en cualquier día se ve en el top-level, sin repetir la configuración", () => {
+  const otroDia = sedeRec(13, "Carnes Barbosa", "05", null, BARBOSA.items, {
+    fecha_ingreso: "2026-09-28",
+  });
+  const r = armarFechas([LLANO, otroDia]);
+  assert.equal(r.bloqueos.length, 1);
+  assert.match(r.bloqueos[0], /Carnes Barbosa.*bodega/);
+
+  const sinConfig = armarFechas(
+    [LLANO, sedeRec(13, "Carnes Barbosa", "05", "00501", BARBOSA.items, { fecha_ingreso: "2026-09-28" })],
+    { decimalesValor: 0, coDocumento: "" },
+  );
+  assert.equal(sinConfig.bloqueos.filter((b) => /coDocumento/.test(b)).length, 1);
+});
+
+test("por fecha: sin vísceras en ninguna sede no hay documentos", () => {
+  const r = armarFechas([SIN_VISCERAS]);
+  assert.equal(r.vacio, true);
+  assert.deepEqual(r.documentos, []);
+  assert.deepEqual(armarFechas([]).bloqueos, ["La liquidación no tiene recepciones."]);
+});
+
+test("referenciaAjusteLiquidacion con sufijo de fecha: legible y compacta, sin cortar la letra", () => {
+  assert.equal(referenciaAjusteLiquidacion(10, "KJ"), "TC VIS L10KJ");
+  assert.equal(referenciaAjusteLiquidacion(10), "TC VIS L10");
+  assert.equal(referenciaAjusteLiquidacion(12345, "KK"), "TCVL12345KK");
+  assert.ok(referenciaAjusteLiquidacion(9999, "KJ").length <= 12);
+});
+
+test("coberturaOficial: varias oficiales por fecha cubren cada una SUS recepciones", () => {
+  const a = { estado: "ok", recepcion_ids: [12], payload: { Movimientos: [{ ITEM: "A" }] } };
+  const b = { estado: "ok", recepcion_ids: [13], payload: { Movimientos: [{ ITEM: "B" }] } };
+  const c = { estado: "enviando", recepcion_ids: [14], payload: {} };
+  const mapa = coberturaOficial({ ids: [12, 13, 14], consolidadas: [a, b, c] });
+  assert.equal(mapa.get(12).payload.Movimientos[0].ITEM, "A");
+  assert.equal(mapa.get(13).payload.Movimientos[0].ITEM, "B");
+  // La que no está ok no cubre.
+  assert.equal(mapa.has(14), false);
 });

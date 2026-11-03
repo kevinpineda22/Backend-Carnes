@@ -308,6 +308,14 @@ export async function notificarAnularInicial(recepcion, inicial, oficial) {
  */
 export async function notificarAnularIniciales(liquidacion, iniciales, oficial) {
   const especie = liquidacion?.especie === "cerdo" ? "Cerdo" : "Res";
+  // Desde sql/033 la oficial sale una por fecha de ingreso: `oficial` resume varias
+  // (la referencia lista todas, separadas por coma) y `documentos` dice cuántas.
+  const varias = oficial?.documentos > 1;
+  const textoOficial = varias
+    ? `Ya están en SIESA las <b>${oficial.documentos} entradas oficiales</b> de esta liquidación ` +
+      "(una por fecha de ingreso), con los costos liquidados de todas las sedes."
+    : "Ya está en SIESA la <b>entrada oficial consolidada</b> de esta liquidación, " +
+      "con los costos liquidados de todas las sedes en un solo documento.";
   const filas = iniciales
     .map(
       (i) => `
@@ -326,8 +334,7 @@ export async function notificarAnularIniciales(liquidacion, iniciales, oficial) 
       <p style="margin:0 0 16px;color:#6b7280;">${especie} · ${hora()}</p>
 
       <p style="margin:0 0 12px;">
-        Ya está en SIESA la <b>entrada oficial consolidada</b> de esta liquidación,
-        con los costos liquidados de todas las sedes en un solo documento. Las
+        ${textoOficial} Las
         <b>entradas iniciales</b> de abajo hay que <b>anularlas</b> para que el
         inventario no quede doble.
       </p>
@@ -339,9 +346,9 @@ export async function notificarAnularIniciales(liquidacion, iniciales, oficial) 
 
       <table style="border-collapse:collapse;width:100%;font-size:14px;margin:0 0 16px;">
         <tr>
-          <td style="padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;white-space:nowrap;"><b>Dejar</b> → oficial</td>
+          <td style="padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;white-space:nowrap;"><b>Dejar</b> → oficial${varias ? "es" : ""}</td>
           <td style="padding:8px;background:#f0fdf4;border:1px solid #bbf7d0;">
-            referencia <b>${esc(oficial.referencia)}</b> · notas "TALLER DE CARNES - ENTRADA OFICIAL"
+            referencia${varias ? "s" : ""} <b>${esc(oficial.referencia)}</b> · notas "TALLER DE CARNES - ENTRADA OFICIAL"
             · ${oficial.renglones} renglones · ${kilos(oficial.total_kilos)} kg · ${pesos(oficial.total_valor)}
           </td>
         </tr>

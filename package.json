@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test",
+    "test": "node --experimental-test-module-mocks --test",
     "qr": "node scripts/generar-qr-sedes.js",
     "mapear": "node scripts/mapear-desposte.js",
     "seed:proveedores": "node scripts/seed-proveedores.js"

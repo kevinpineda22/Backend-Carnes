@@ -63,7 +63,13 @@ import {
   ajustarCantidadAUnidad,
   decimalesDeUnidad,
 } from "./visceras.js";
-import { coMovimiento, fechaMasAntigua, fechaSiesa } from "./siesaEntrada.js";
+import {
+  coMovimiento,
+  fechaMasAntigua,
+  fechaSiesa,
+  agruparPorFecha,
+  sufijoDocumento,
+} from "./siesaEntrada.js";
 
 /** El `tipo` de envío en `carnes_siesa_envios`. */
 export const TIPO_AJUSTE_VISCERAS = "ajuste_visceras";
@@ -434,8 +440,8 @@ export function viscerasSinCambios(estados = []) {
  * Qué recepciones cubre una entrada oficial que ya está en SIESA, y con qué
  * documento.
  *
- * La consolidada cubre SOLO las recepciones con las que salió (`recepcion_ids`,
- * tal como estaban al mandarla): una recepción vinculada a la liquidación
+ * Cada oficial cubre SOLO las recepciones con las que salió (`recepcion_ids`,
+ * tal como estaban al mandarla; una fila por fecha desde sql/033): una recepción vinculada a la liquidación
  * DESPUÉS de la CEA no está en SIESA, y su ajuste entraría vísceras de una
  * carne que nunca entró. Las oficiales por sede del esquema anterior cubren la
  * recepción exacta a la que pertenecen.
@@ -443,15 +449,21 @@ export function viscerasSinCambios(estados = []) {
  * @param {object} p
  * @param {number[]} p.ids  recepciones de la liquidación
  * @param {object|null} p.consolidada  fila de la CEA consolidada vigente (o null)
+ * @param {Array} [p.consolidadas]  filas de las CEA por fecha vigentes (sql/033)
  * @param {Array} p.porSede  filas de oficiales por sede en `ok` ({recepcion_id, payload})
  * @returns {Map<number, {payload: object|null}>}  recepción → CEA que la cubre
  */
-export function coberturaOficial({ ids = [], consolidada = null, porSede = [] }) {
+export function coberturaOficial({ ids = [], consolidada = null, consolidadas = [], porSede = [] }) {
   const cubiertas = new Map();
-  if (consolidada?.estado === "ok") {
-    const cubre = new Set((consolidada.recepcion_ids || []).map(Number));
+  // Desde sql/033 la oficial son varias filas (una por fecha), cada una con SUS
+  // recepciones y SU payload; `consolidada` es el caso de una sola fila.
+  for (const fila of [consolidada, ...consolidadas]) {
+    if (fila?.estado !== "ok") continue;
+    const cubre = new Set((fila.recepcion_ids || []).map(Number));
     for (const id of ids) {
-      if (cubre.has(Number(id))) cubiertas.set(id, { payload: consolidada.payload ?? null });
+      if (cubre.has(Number(id)) && !cubiertas.has(id)) {
+        cubiertas.set(id, { payload: fila.payload ?? null });
+      }
     }
   }
   for (const e of porSede) {
@@ -547,25 +559,31 @@ export const consecutivoAjusteLiquidacion = (liquidacionId) => Number(liquidacio
  * `L` y no `R`, para distinguirla en la lista de envíos de las viejas por sede
  * (`TC VIS R12`, que quedan como historial). Igual que las demás: entra legible
  * hasta la liquidación #9999 y de ahí pasa a `TCVL12345`, sin cortar dígitos.
+ *
+ * Desde sql/033 el ajuste sale UN DOCUMENTO POR FECHA DE INGRESO. Con una sola
+ * fecha la referencia es esa de siempre; con varias, lleva dos letras derivadas
+ * de su fecha (`TC VIS L10KD`). Ver `sufijoDocumento`.
  */
-export function referenciaAjusteLiquidacion(liquidacionId) {
-  const legible = `TC VIS L${liquidacionId}`;
+export function referenciaAjusteLiquidacion(liquidacionId, sufijo = "") {
+  const legible = `TC VIS L${liquidacionId}${sufijo}`;
   return legible.length <= LARGO_REFERENCIA
     ? legible
-    : `TCVL${liquidacionId}`.slice(0, LARGO_REFERENCIA);
+    : `TCVL${liquidacionId}${sufijo}`.slice(0, LARGO_REFERENCIA);
 }
 
 /**
- * Arma UN ajuste de vísceras con todas las sedes de la liquidación.
+ * Arma UN ajuste de vísceras con las sedes que se le pasen. Es el armador de UN
+ * documento: la liquidación entera se arma con `armarAjustesViscerasLiquidacion`,
+ * que la parte por fecha de ingreso (sql/033) y llama a este una vez por fecha.
  *
  * Cabecera: `{ CONSECUTIVO_DOCTO, FECHA_DOCTO, BODEGA: "" }`. La bodega va vacía
  * porque el documento abarca varias; cada movimiento lleva la suya y el CO de su
  * sede. Los movimientos de todas las sedes se numeran de corrido: `NRO_REGISTRO`
  * es la posición dentro del documento, no dentro de la sede.
  *
- * La fecha es UNA, con la misma regla de la CEA consolidada: si las recepciones
- * son de días distintos, va la más antigua. Cuentan solo las sedes que aportan
- * renglones.
+ * La fecha es UNA. `armarAjustesViscerasLiquidacion` le pasa recepciones de un
+ * solo día; si aun así llegaran de días distintos (llamada directa), va la más
+ * antigua y cuentan solo las sedes que aportan renglones.
  *
  * Todo o nada: el bloqueo de UNA sede (sin bodega, sin CO, sin costo, sin fecha)
  * bloquea el documento entero. Una sede sin vísceras no aporta ni bloquea.
@@ -585,10 +603,11 @@ export function armarAjusteViscerasLiquidacion({
   recepciones = [],
   config = {},
   consecutivo,
+  referencia: referenciaPropia,
 }) {
   const bloqueos = [];
   const consec = String(consecutivo ?? consecutivoAjusteLiquidacion(liquidacionId));
-  const referencia = referenciaAjusteLiquidacion(liquidacionId);
+  const referencia = referenciaPropia ?? referenciaAjusteLiquidacion(liquidacionId);
 
   if (recepciones.length === 0) bloqueos.push("La liquidación no tiene recepciones.");
 
@@ -664,6 +683,86 @@ export function armarAjusteViscerasLiquidacion({
     vacio: movimientos.length === 0,
     recepcion_ids: aportan.map((s) => s.recepcion_id),
     porSede: porSede.map(({ movimientos: _m, faltaConfig: _f, ...s }) => s),
+  };
+}
+
+/**
+ * El ajuste de vísceras de la liquidación, PARTIDO POR FECHA DE INGRESO.
+ *
+ * Mismo criterio que la oficial (`armarEntradaLiquidacion`): un documento por
+ * cada fecha en que hubo recepciones con vísceras, con esa fecha y solo sus
+ * renglones, para no postear inventario en días en que no existía. El costo de
+ * cada víscera sale de la plantilla (`costo_base`), no se prorratea.
+ *
+ * Con las vísceras de UNA sola fecha (lo más común) devuelve exactamente el
+ * documento de antes: mismo payload y misma referencia. Una sede sin vísceras no
+ * cuenta para saber cuántas fechas hay, ni arma documento.
+ *
+ * @param {object} p  los de `armarAjusteViscerasLiquidacion`
+ * @returns {{
+ *   documentos: Array<{ fecha: string|null, indice: number, armado: object }>,
+ *   armado: object, vacio: boolean, bloqueos: string[], porSede: object[],
+ *   recepcion_ids: number[],
+ * }}
+ *   `documentos`: solo los que aportan renglones, de la fecha más antigua a la
+ *   más nueva. `armado`, `bloqueos` y `porSede` son los de primer nivel de siempre
+ *   (el primer documento / todos los bloqueos / todas las sedes) para el que lee
+ *   la liquidación entera.
+ */
+export function armarAjustesViscerasLiquidacion({
+  liquidacionId,
+  recepciones = [],
+  config = {},
+  consecutivo,
+}) {
+  const todo = armarAjusteViscerasLiquidacion({ liquidacionId, recepciones, config, consecutivo });
+  const fechas = new Set(
+    todo.porSede.filter((s) => !s.vacio).map((s) => fechaSiesa(s.fecha) ?? null),
+  );
+
+  // Una sola fecha (o ninguna víscera): es el documento de siempre, sin tocar.
+  if (fechas.size <= 1) {
+    return {
+      documentos: todo.vacio
+        ? []
+        : [{ fecha: [...fechas][0] ?? null, indice: 0, armado: todo }],
+      armado: todo,
+      vacio: todo.vacio,
+      bloqueos: todo.bloqueos,
+      porSede: todo.porSede,
+      recepcion_ids: todo.recepcion_ids,
+    };
+  }
+
+  // Varias fechas: un armado por día. Las sedes sin vísceras no deciden nada, pero
+  // se arman con su día para que sigan saliendo en el desglose.
+  const porDia = agruparPorFecha(recepciones).map((g) => ({
+    fecha: g.fecha,
+    armado: armarAjusteViscerasLiquidacion({
+      liquidacionId,
+      recepciones: g.recepciones,
+      config,
+      consecutivo,
+    }),
+  }));
+  const conRenglones = porDia.filter((d) => !d.armado.vacio);
+  const documentos = conRenglones.map((d, indice) => {
+    d.armado.resumen.referencia = referenciaAjusteLiquidacion(
+      liquidacionId,
+      sufijoDocumento(d.fecha, conRenglones.length),
+    );
+    return { fecha: d.fecha, indice, armado: d.armado };
+  });
+
+  // Los bloqueos: los de la liquidación una vez (configuración) y los de cada día.
+  const bloqueos = [...new Set(porDia.flatMap((d) => d.armado.bloqueos))];
+  return {
+    documentos,
+    armado: documentos[0]?.armado ?? todo,
+    vacio: documentos.length === 0,
+    bloqueos,
+    porSede: porDia.flatMap((d) => d.armado.porSede),
+    recepcion_ids: documentos.flatMap((d) => d.armado.recepcion_ids),
   };
 }
 
