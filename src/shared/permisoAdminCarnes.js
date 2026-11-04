@@ -105,3 +105,12 @@ export function puedeVerContabilidadCarnes(contexto = {}) {
 export function puedeAprobarContabilidadCarnes(contexto = {}) {
   return puedeAbrirContabilidadCarnes(contexto) && !puedeAbrirAdminCarnes(contexto);
 }
+
+/**
+ * Escribir la observación de logística: SOLO quien abre la consulta de recepciones
+ * (logística). Ni un admin ni contabilidad la escriben por sí solos (la ven en
+ * lectura); quien además tiene la consulta, sí.
+ */
+export function puedeObservarLogisticaCarnes(contexto = {}) {
+  return puedeAbrirConsultaRecepcionesCarnes(contexto);
+}

@@ -20,6 +20,7 @@ import {
   datosBorrador,
   decidirAnulacion,
   decidirAprobacionContabilidad,
+  decidirObservacionLogistica,
   decidirCorreccionFactura,
   detalleParaContabilidad,
   decidirEliminacion,
@@ -56,6 +57,7 @@ const MIGRACIONES = [
   "sql/028_proveedor_descuento_secciones.sql",
   "sql/030_grupos_impositivos.sql",
   "sql/032_aprobacion_contabilidad.sql",
+  "sql/034_observacion_logistica.sql",
 ];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */
@@ -297,6 +299,46 @@ export async function aprobarContabilidad(id, { por }) {
 
   console.log(`✅ Recepción de proveedor #${id} (factura ${data[0].factura}) aprobada por contabilidad: ${por}.`);
   return data[0];
+}
+
+// ─── Observación de logística ──────────────────────────────────────────────
+
+const COLUMNAS_OBSERVACION = "id, estado, observacion_logistica, observacion_logistica_por, observacion_logistica_at";
+
+/**
+ * Guarda (o borra, con texto vacío) la observación de logística de una recepción:
+ * texto, quién y cuándo. Una por recepción; guardar de nuevo la reemplaza. Solo en
+ * `Enviada_SIESA` (409 `ESTADO_NO_OBSERVABLE` si no; 404 si no existe). El UPDATE es
+ * condicional al estado, así que un cambio de estado a mitad no escribe.
+ *
+ * @param {number|string} id
+ * @param {{observacion: string|null, por?: string}} p
+ */
+export async function guardarObservacionLogistica(id, { observacion, por }, ahora = new Date()) {
+  const { data: cabecera, error: errorLectura } = await supabase
+    .from(TABLE)
+    .select("id, estado")
+    .eq("id", id)
+    .maybeSingle();
+  if (errorLectura) fallo(errorLectura, "Error al leer la recepción");
+  if (!cabecera) throw createError(404, "Recepción no encontrada.");
+
+  const decision = decidirObservacionLogistica(cabecera, { observacion, por }, ahora);
+  if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
+
+  const { data, error } = await supabase
+    .from(TABLE)
+    .update(decision.valores)
+    .eq("id", id)
+    .eq("estado", ESTADOS.ENVIADA_SIESA)
+    .select(COLUMNAS_OBSERVACION);
+  if (error) fallo(error, "Error al guardar la observación");
+  if (!data?.length) {
+    throw createError(409, "La recepción cambió mientras se guardaba. Actualizá e intentá de nuevo.", "RECEPCION_CAMBIO");
+  }
+
+  const { estado: _estado, ...campos } = data[0];
+  return campos;
 }
 
 // ─── Corregir la referencia de factura para SIESA ──────────────────────────

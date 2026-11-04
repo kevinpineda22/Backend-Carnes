@@ -721,6 +721,19 @@ const aprobarContabilidadSchema = z.object({
   por: correo("El correo de quien aprueba no es válido.").optional(),
 });
 
+/**
+ * Observación de logística: texto de hasta 1000 caracteres; vacío o `null` la borra.
+ * `por` es opcional por lo mismo que en aprobar (con CARNES_AUTH=exigir sale del token).
+ */
+const observacionLogisticaSchema = z.object({
+  observacion: z
+    .string({ invalid_type_error: "La observación no es válida." })
+    .trim()
+    .max(1000, "La observación no puede pasar de 1000 caracteres.")
+    .nullable(),
+  por: correo("El correo de quien escribe la observación no es válido.").optional(),
+});
+
 // ─── Recibidores (gestión del admin) ───────────────────────────────────────
 
 const cedulaRecibidor = z.union([z.string().max(50), z.number()], {
@@ -808,6 +821,7 @@ export const validators = {
   anularRecepcionProveedor: validar(anularRecepcionProveedorSchema),
   listarContabilidad: validar(listarContabilidadQuerySchema, "query"),
   aprobarContabilidad: validar(aprobarContabilidadSchema),
+  observacionLogistica: validar(observacionLogisticaSchema),
 
   crearRecibidor: validar(crearRecibidorSchema),
   actualizarRecibidor: validar(actualizarRecibidorSchema),

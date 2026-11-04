@@ -1,6 +1,7 @@
 import {
   puedeAbrirAdminCarnes,
   puedeAprobarContabilidadCarnes,
+  puedeObservarLogisticaCarnes,
   puedeVerContabilidadCarnes,
   ROL_CON_RESPALDO,
   ROL_RESPALDO,
@@ -102,4 +103,9 @@ export function crearPuedeVerContabilidad(cliente) {
 /** ¿Puede marcar una recepción como aprobada por contabilidad? Solo contabilidad. */
 export function crearPuedeAprobarContabilidad(cliente) {
   return crearPregunta(cliente, puedeAprobarContabilidadCarnes);
+}
+
+/** ¿Puede escribir la observación de logística? Solo quien abre la consulta de recepciones. */
+export function crearPuedeObservarLogistica(cliente) {
+  return crearPregunta(cliente, puedeObservarLogisticaCarnes);
 }

@@ -147,3 +147,29 @@ test("anular: rechaza motivo vacío o corto, correo malo y un 'true' de texto", 
     assert.equal(error?.statusCode, 400, JSON.stringify(body));
   }
 });
+
+// ─── Observación de logística ──────────────────────────────────────────────
+
+test("observación de logística: texto recortado, con o sin correo", () => {
+  const { error, body } = correr(validators.observacionLogistica, { body: { observacion: "  hola  ", por: CORREO } });
+  assert.equal(error, undefined);
+  assert.equal(body.observacion, "hola");
+  assert.equal(correr(validators.observacionLogistica, { body: { observacion: "hola" } }).error, undefined);
+});
+
+test("observación de logística: vacío y null pasan (borran)", () => {
+  assert.equal(correr(validators.observacionLogistica, { body: { observacion: "" } }).error, undefined);
+  assert.equal(correr(validators.observacionLogistica, { body: { observacion: null } }).error, undefined);
+});
+
+test("observación de logística: 1000 pasa, 1001 no; sin campo, número o correo malo tampoco", () => {
+  assert.equal(correr(validators.observacionLogistica, { body: { observacion: "a".repeat(1000) } }).error, undefined);
+  for (const body of [
+    { observacion: "a".repeat(1001) },
+    {},
+    { observacion: 5 },
+    { observacion: "hola", por: "no-es-correo" },
+  ]) {
+    assert.ok(correr(validators.observacionLogistica, { body }).error, JSON.stringify(body).slice(0, 40));
+  }
+});

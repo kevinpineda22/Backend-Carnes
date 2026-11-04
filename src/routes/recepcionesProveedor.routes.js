@@ -7,6 +7,7 @@ import {
   requireAdminCarnes,
   requireAprobarContabilidadCarnes,
   requireContabilidadCarnes,
+  requireObservacionLogisticaCarnes,
 } from "../middleware/authCarnes.js";
 
 const router = Router();
@@ -124,6 +125,14 @@ router.post(
   validators.idParam,
   validators.aprobarContabilidad,
   AdminController.aprobarContabilidad,
+);
+// Observación de logística (solo quien abre la consulta de recepciones): una por recepción.
+router.put(
+  "/:id/observacion-logistica",
+  requireObservacionLogisticaCarnes,
+  validators.idParam,
+  validators.observacionLogistica,
+  AdminController.guardarObservacionLogistica,
 );
 router.patch(
   "/:id/factura-siesa",

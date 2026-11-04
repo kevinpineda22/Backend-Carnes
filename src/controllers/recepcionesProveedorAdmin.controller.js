@@ -135,6 +135,28 @@ export async function detalleContabilidad(req, res, next) {
 }
 
 /**
+ * PUT /api/recepciones-proveedor/:id/observacion-logistica
+ * Body: { observacion, por }
+ *
+ * Logística deja (o borra, con texto vacío o null) UNA observación por recepción para
+ * contabilidad. Solo en Enviada_SIESA. Con `CARNES_AUTH=exigir` el autor sale del
+ * token; en `off` / `reportar`, del `por` del body (obligatorio al guardar texto).
+ */
+export async function guardarObservacionLogistica(req, res, next) {
+  try {
+    const { observacion, por } = conQuienHace(req, req.body || {}, "por");
+    const texto = typeof observacion === "string" ? observacion.trim() : "";
+    if (texto && !por) {
+      throw createError(400, "Falta quién escribe la observación: no hay un correo de sesión para registrar.");
+    }
+    const data = await AdminModel.guardarObservacionLogistica(req.datosValidados.id, { observacion: texto, por });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * POST /api/recepciones-proveedor/:id/aprobar-contabilidad
  * Body: { por }
  *

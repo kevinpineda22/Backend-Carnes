@@ -4,6 +4,7 @@ import {
   crearExistePerfil,
   crearPuedeAdministrar,
   crearPuedeAprobarContabilidad,
+  crearPuedeObservarLogistica,
   crearPuedeVerContabilidad,
   crearVerificar,
 } from "./authSupabase.js";
@@ -39,5 +40,11 @@ export const requireContabilidadCarnes = crearRequireAdmin({
 /** "Aprobar por contabilidad": SOLO contabilidad (un admin no). */
 export const requireAprobarContabilidadCarnes = crearRequireAdmin({
   puedeAdministrar: crearPuedeAprobarContabilidad(supabase),
+  bitacora: bitacoraAuth,
+});
+
+/** Observación de logística: SOLO quien abre la consulta de recepciones (ni admin ni contabilidad solos). */
+export const requireObservacionLogisticaCarnes = crearRequireAdmin({
+  puedeAdministrar: crearPuedeObservarLogistica(supabase),
   bitacora: bitacoraAuth,
 });

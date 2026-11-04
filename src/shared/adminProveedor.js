@@ -55,6 +55,7 @@ export const COLUMNAS_LISTA_ADMIN = `
   finalizado_at, siesa_at, anulado_por, anulado_at, motivo_anulacion,
   created_at, updated_at, descuento_pct,
   aprobado_contabilidad_at, aprobado_contabilidad_por,
+  observacion_logistica, observacion_logistica_por, observacion_logistica_at,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -387,6 +388,58 @@ export function decidirAprobacionContabilidad({ estado, aprobado_contabilidad_at
     );
   }
   return { accion: "aprobar" };
+}
+
+// ─── Observación de logística ──────────────────────────────────────────────
+
+export const MAX_OBSERVACION_LOGISTICA = 1000;
+
+/** Texto limpio de la observación: sin espacios en las puntas; vacío o no-texto es `null` (borrarla). */
+export function normalizarObservacionLogistica(observacion) {
+  if (typeof observacion !== "string") return null;
+  const limpia = observacion.trim();
+  return limpia === "" ? null : limpia;
+}
+
+/**
+ * ¿Se puede guardar (o borrar) la observación de logística? Solo en recepciones que
+ * ya están en SIESA, las únicas que contabilidad ve. Texto vacío = borrar: deja las
+ * tres columnas en NULL; con texto guarda texto, quién y cuándo.
+ *
+ * @returns {{accion: "guardar", valores: object} | {accion: "rechazar", status: 409, codigo: string, mensaje: string}}
+ */
+export function decidirObservacionLogistica({ estado }, { observacion, por }, ahora = new Date()) {
+  if (estado !== ESTADOS.ENVIADA_SIESA) {
+    return {
+      accion: "rechazar",
+      status: 409,
+      codigo: "ESTADO_NO_OBSERVABLE",
+      mensaje: "Solo se puede dejar una observación en una factura que ya está en SIESA.",
+    };
+  }
+  const texto = normalizarObservacionLogistica(observacion);
+  if (texto === null) {
+    return {
+      accion: "guardar",
+      valores: { observacion_logistica: null, observacion_logistica_por: null, observacion_logistica_at: null },
+    };
+  }
+  if (texto.length > MAX_OBSERVACION_LOGISTICA) {
+    return {
+      accion: "rechazar",
+      status: 400,
+      codigo: "OBSERVACION_MUY_LARGA",
+      mensaje: `La observación no puede pasar de ${MAX_OBSERVACION_LOGISTICA} caracteres.`,
+    };
+  }
+  return {
+    accion: "guardar",
+    valores: {
+      observacion_logistica: texto,
+      observacion_logistica_por: por,
+      observacion_logistica_at: ahora.toISOString(),
+    },
+  };
 }
 
 /**

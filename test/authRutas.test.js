@@ -20,7 +20,13 @@ process.env.SUPABASE_SERVICE_KEY = "clave-falsa-de-test";
 process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 
 const { default: indice } = await import("../src/routes/index.js");
-const { autenticar, requireAdminCarnes, requireContabilidadCarnes, requireAprobarContabilidadCarnes } =
+const {
+  autenticar,
+  requireAdminCarnes,
+  requireContabilidadCarnes,
+  requireAprobarContabilidadCarnes,
+  requireObservacionLogisticaCarnes,
+} =
   await import("../src/middleware/authCarnes.js");
 
 /**
@@ -32,6 +38,7 @@ const GUARDS = new Map([
   [requireAdminCarnes, "admin"],
   [requireContabilidadCarnes, "contabilidad"],
   [requireAprobarContabilidadCarnes, "aprobar"],
+  [requireObservacionLogisticaCarnes, "observar"],
 ]);
 
 const ARCHIVOS_DE_RUTAS = {
@@ -189,4 +196,10 @@ test("rutas: \"/contabilidad\" se declara ANTES de \"/:id\" (si no, se leería c
   const lista = rutas.indexOf("GET /recepciones-proveedor/contabilidad");
   const porId = rutas.indexOf("GET /recepciones-proveedor/:id");
   assert.ok(lista >= 0 && porId >= 0 && lista < porId);
+});
+
+test("rutas: la observación de logística es SOLO de quien abre la consulta, y ese guard no protege nada más", () => {
+  const todas = recorrer(indice, "", [], montajes);
+  const observar = todas.filter((r) => r.guard === "observar").map((r) => r.clave);
+  assert.deepEqual(observar, ["PUT /recepciones-proveedor/:id/observacion-logistica"]);
 });

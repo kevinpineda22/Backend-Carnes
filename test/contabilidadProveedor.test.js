@@ -6,14 +6,18 @@ import {
   puedeAbrirConsultaRecepcionesCarnes,
   puedeAbrirContabilidadCarnes,
   puedeAprobarContabilidadCarnes,
+  puedeObservarLogisticaCarnes,
   puedeVerContabilidadCarnes,
 } from "../src/shared/permisoAdminCarnes.js";
 import {
   COLUMNAS_DETALLE_ADMIN,
   COLUMNAS_LISTA_ADMIN,
   aprobacionParaContabilidad,
+  MAX_OBSERVACION_LOGISTICA,
   decidirAprobacionContabilidad,
+  decidirObservacionLogistica,
   detalleParaContabilidad,
+  normalizarObservacionLogistica,
 } from "../src/shared/adminProveedor.js";
 
 // Contabilidad: quién entra a su página, quién aprueba, qué se puede aprobar y qué
@@ -181,4 +185,99 @@ test("columnas: la lista y el detalle traen la marca de aprobación", () => {
     assert.ok(COLUMNAS_LISTA_ADMIN.includes(c), `lista sin ${c}`);
     assert.ok(COLUMNAS_DETALLE_ADMIN.includes(c), `detalle sin ${c}`);
   }
+});
+
+// ─── Observación de logística ───────────────────────────────────────────────
+
+test("observar: solo con la consulta; ni admin ni contabilidad por sí solos", () => {
+  assert.equal(puedeObservarLogisticaCarnes({ profile: perfil(CONSULTA, "logistica"), roleConfig: rol() }), true);
+  assert.equal(puedeObservarLogisticaCarnes({ profile: perfil(CONTAB), roleConfig: rol() }), false);
+  assert.equal(puedeObservarLogisticaCarnes({ profile: perfil(ADMIN, "carnes"), roleConfig: rol() }), false);
+  assert.equal(puedeObservarLogisticaCarnes({}), false);
+});
+
+test("observar: consulta junto con otras rutas sigue pudiendo", () => {
+  const ctx = { profile: perfil([...CONSULTA, ...CONTAB]), roleConfig: rol() };
+  assert.equal(puedeObservarLogisticaCarnes(ctx), true);
+  assert.equal(puedeObservarLogisticaCarnes({ profile: perfil([...CONSULTA, ...ADMIN]), roleConfig: rol() }), true);
+});
+
+test("observar: el texto se recorta y vacío o no-texto es null (borrar)", () => {
+  assert.equal(normalizarObservacionLogistica("  hola  "), "hola");
+  assert.equal(normalizarObservacionLogistica("   "), null);
+  assert.equal(normalizarObservacionLogistica(""), null);
+  assert.equal(normalizarObservacionLogistica(null), null);
+  assert.equal(normalizarObservacionLogistica(undefined), null);
+});
+
+test("observar: en Enviada_SIESA guarda texto, quién y cuándo", () => {
+  const ahora = new Date("2026-11-03T15:00:00Z");
+  const r = decidirObservacionLogistica(
+    { estado: "Enviada_SIESA" },
+    { observacion: "  Llegó con 2 cajas golpeadas ", por: "logistica@merkahorrosas.com" },
+    ahora,
+  );
+  assert.deepEqual(r, {
+    accion: "guardar",
+    valores: {
+      observacion_logistica: "Llegó con 2 cajas golpeadas",
+      observacion_logistica_por: "logistica@merkahorrosas.com",
+      observacion_logistica_at: "2026-11-03T15:00:00.000Z",
+    },
+  });
+});
+
+test("observar: texto vacío borra las tres columnas (NULL)", () => {
+  for (const observacion of ["", "   ", null]) {
+    const r = decidirObservacionLogistica({ estado: "Enviada_SIESA" }, { observacion, por: "x@y.co" });
+    assert.deepEqual(r.valores, {
+      observacion_logistica: null,
+      observacion_logistica_por: null,
+      observacion_logistica_at: null,
+    });
+  }
+});
+
+test("observar: el máximo es 1000 y pasarse se rechaza", () => {
+  assert.equal(MAX_OBSERVACION_LOGISTICA, 1000);
+  const ok = decidirObservacionLogistica({ estado: "Enviada_SIESA" }, { observacion: "a".repeat(1000), por: "x@y.co" });
+  assert.equal(ok.accion, "guardar");
+  const mal = decidirObservacionLogistica({ estado: "Enviada_SIESA" }, { observacion: "a".repeat(1001), por: "x@y.co" });
+  assert.equal(mal.accion, "rechazar");
+  assert.equal(mal.codigo, "OBSERVACION_MUY_LARGA");
+});
+
+test("observar: solo Enviada_SIESA (409 ESTADO_NO_OBSERVABLE), también para borrar", () => {
+  for (const estado of ["Borrador", "Finalizada", "Anulada"]) {
+    for (const observacion of ["hola", ""]) {
+      const r = decidirObservacionLogistica({ estado }, { observacion, por: "x@y.co" });
+      assert.equal(r.accion, "rechazar", estado);
+      assert.equal(r.status, 409, estado);
+      assert.equal(r.codigo, "ESTADO_NO_OBSERVABLE", estado);
+    }
+  }
+});
+
+test("columnas: la lista y el detalle traen la observación de logística", () => {
+  for (const c of ["observacion_logistica", "observacion_logistica_por", "observacion_logistica_at"]) {
+    assert.ok(COLUMNAS_LISTA_ADMIN.includes(c), `lista sin ${c}`);
+    assert.ok(COLUMNAS_DETALLE_ADMIN.includes(c), `detalle sin ${c}`);
+  }
+});
+
+test("detalle de contabilidad conserva la observación de logística", () => {
+  const r = detalleParaContabilidad({
+    recepcion: {
+      estado: "Enviada_SIESA",
+      aprobado_contabilidad_at: null,
+      observacion_logistica: "nota",
+      observacion_logistica_por: "l@m.co",
+      observacion_logistica_at: "2026-11-03T15:00:00Z",
+    },
+    envios: [],
+    siesa: null,
+    notaCredito: null,
+  });
+  assert.equal(r.recepcion.observacion_logistica, "nota");
+  assert.equal(r.recepcion.observacion_logistica_por, "l@m.co");
 });
