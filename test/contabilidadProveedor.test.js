@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   puedeAbrirAdminCarnes,
+  puedeAbrirConsultaRecepcionesCarnes,
   puedeAbrirContabilidadCarnes,
   puedeAprobarContabilidadCarnes,
   puedeVerContabilidadCarnes,
@@ -22,6 +23,7 @@ const perfil = (personal_routes = [], role = "contabilidad") => ({ role, persona
 const rol = (permissions = [], redirect = "/acceso") => ({ permissions, redirect });
 const CONTAB = [{ path: "/carnes/contabilidad" }];
 const ADMIN = [{ path: "/carnes/admin" }];
+const CONSULTA = [{ path: "/carnes/consulta-recepciones" }];
 
 // ─── Permisos ───────────────────────────────────────────────────────────────
 
@@ -77,6 +79,31 @@ test("sin permiso de carnes no ve ni aprueba", () => {
   const ctx = { profile: perfil([{ path: "/epp" }], "otro"), roleConfig: rol() };
   assert.equal(puedeVerContabilidadCarnes(ctx), false);
   assert.equal(puedeAprobarContabilidadCarnes(ctx), false);
+});
+
+test("consulta de recepciones (logistica): lista y detalle SI; aprobar NO; no gana admin ni contabilidad", () => {
+  const ctx = { profile: perfil(CONSULTA, "logistica"), roleConfig: rol() };
+  assert.equal(puedeAbrirConsultaRecepcionesCarnes(ctx), true);
+  assert.equal(puedeVerContabilidadCarnes(ctx), true);
+  assert.equal(puedeAprobarContabilidadCarnes(ctx), false);
+  assert.equal(puedeAbrirAdminCarnes(ctx), false);
+  assert.equal(puedeAbrirContabilidadCarnes(ctx), false);
+});
+
+test("consulta: contabilidad y admin NO abren la consulta por si solos (rutas independientes)", () => {
+  assert.equal(puedeAbrirConsultaRecepcionesCarnes({ profile: perfil(CONTAB), roleConfig: rol() }), false);
+  assert.equal(puedeAbrirConsultaRecepcionesCarnes({ profile: perfil(ADMIN, "carnes"), roleConfig: rol() }), false);
+});
+
+test("consulta: segmento, no prefijo (/carnes/consulta-recepciones-x no cuenta)", () => {
+  const ctx = { profile: perfil([{ path: "/carnes/consulta-recepciones-x" }], "logistica"), roleConfig: rol() };
+  assert.equal(puedeAbrirConsultaRecepcionesCarnes(ctx), false);
+  assert.equal(puedeVerContabilidadCarnes(ctx), false);
+});
+
+test("consulta + contabilidad en el mismo usuario: contabilidad sigue aprobando", () => {
+  const ctx = { profile: perfil([...CONSULTA, ...CONTAB]), roleConfig: rol() };
+  assert.equal(puedeAprobarContabilidadCarnes(ctx), true);
 });
 
 // ─── Qué se puede aprobar ───────────────────────────────────────────────────

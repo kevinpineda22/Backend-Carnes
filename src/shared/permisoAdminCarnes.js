@@ -27,6 +27,11 @@ export const RUTA_ADMIN_CARNES = "/carnes/admin";
  * `/carnes/admin`, así que colgarla de ahí obligaba a rehacer el guard de admin.
  */
 export const RUTA_CONTABILIDAD_CARNES = "/carnes/contabilidad";
+/**
+ * Consulta de recepciones de proveedor, SOLO LECTURA y SIN "Aprobar" (logística).
+ * Ruta aparte de `/carnes/admin` y de `/carnes/contabilidad`: ninguna cubre a las otras.
+ */
+export const RUTA_CONSULTA_RECEPCIONES_CARNES = "/carnes/consulta-recepciones";
 
 export const ROL_CON_RESPALDO = "admin_clientes";
 export const ROL_RESPALDO = "admin_proveedores";
@@ -73,13 +78,23 @@ export function puedeAbrirContabilidadCarnes(contexto = {}) {
   return puedeAbrirRuta(RUTA_CONTABILIDAD_CARNES, contexto);
 }
 
+/** ¿Puede abrir `/carnes/consulta-recepciones`? Misma regla, otra ruta. */
+export function puedeAbrirConsultaRecepcionesCarnes(contexto = {}) {
+  return puedeAbrirRuta(RUTA_CONSULTA_RECEPCIONES_CARNES, contexto);
+}
+
 /**
- * Ver la página de contabilidad (listado y detalle, solo lectura): contabilidad
- * o un admin. El admin ya tiene sus propios endpoints; se le deja entrar para
- * que quien tenga los dos permisos no se tope con un 403 en una pantalla suya.
+ * Ver el listado y el detalle de recepciones (solo lectura): contabilidad, la
+ * consulta de recepciones o un admin. El admin ya tiene sus propios endpoints; se
+ * le deja entrar para que quien tenga los dos permisos no se tope con un 403 en
+ * una pantalla suya. La consulta NO aprueba: ver `puedeAprobarContabilidadCarnes`.
  */
 export function puedeVerContabilidadCarnes(contexto = {}) {
-  return puedeAbrirContabilidadCarnes(contexto) || puedeAbrirAdminCarnes(contexto);
+  return (
+    puedeAbrirContabilidadCarnes(contexto) ||
+    puedeAbrirConsultaRecepcionesCarnes(contexto) ||
+    puedeAbrirAdminCarnes(contexto)
+  );
 }
 
 /**
