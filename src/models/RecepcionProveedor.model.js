@@ -33,8 +33,10 @@ import {
   armarFilaProveedor,
   escaparParaIlike,
   filtrarHistorial,
+  hayDevolucionEnActa,
   paginar,
   puedeEntregarActa,
+  puedeEntregarActaContabilidad,
 } from "../shared/historialRecibidor.js";
 import {
   avisosDeFactura,
@@ -283,7 +285,35 @@ export async function obtenerActa({ id, correo }) {
   if (error) fallo(error, "Error al leer el acta");
   if (!puedeEntregarActa(data, correo)) throw createError(404, "Recepción no encontrada.");
 
-  const { data: items, error: errorItems } = await supabase
+  const items = await leerItemsActa(id);
+  return { ...data, items };
+}
+
+/**
+ * El MISMO acta que `obtenerActa`, para las cuentas de solo lectura (contabilidad,
+ * consulta de recepciones y admin; el guard está en la ruta). No filtra por dueña,
+ * pero conserva el alcance del detalle de contabilidad: solo `Enviada_SIESA`. Sin
+ * devolución no hay acta: 404, igual que si la recepción no existiera.
+ *
+ * @returns {object} cabecera + `items` (solo recibidos y devueltos), misma forma que `obtenerActa`
+ */
+export async function obtenerActaContabilidad({ id }) {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select(COLUMNAS_ACTA_PROVEEDOR)
+    .eq("id", id)
+    .eq("estado", ESTADOS.ENVIADA_SIESA)
+    .maybeSingle();
+  if (error) fallo(error, "Error al leer el acta");
+  if (!puedeEntregarActaContabilidad(data)) throw createError(404, "Recepción no encontrada.");
+
+  const items = await leerItemsActa(id);
+  if (!hayDevolucionEnActa(items)) throw createError(404, "Recepción no encontrada.");
+  return { ...data, items };
+}
+
+async function leerItemsActa(id) {
+  const { data, error } = await supabase
     .from(TABLE_ITEMS)
     .select(COLUMNAS_ITEMS_ACTA_PROVEEDOR)
     .eq("recepcion_id", id)
@@ -291,8 +321,8 @@ export async function obtenerActa({ id, correo }) {
     .gt("cantidad_devuelta", 0)
     .order("orden")
     .order("id");
-  if (errorItems) fallo(errorItems, "Error al leer los productos");
-  return { ...data, items: items || [] };
+  if (error) fallo(error, "Error al leer los productos");
+  return data || [];
 }
 
 // ─── Abrir ─────────────────────────────────────────────────────────────────

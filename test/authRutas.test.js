@@ -171,6 +171,7 @@ test("rutas: contabilidad tiene EXACTAMENTE estas rutas, cada una con su guard, 
   // Lectura: contabilidad o admin.
   assert.deepEqual(de("contabilidad"), [
     "GET /recepciones-proveedor/:id/contabilidad",
+    "GET /recepciones-proveedor/:id/contabilidad/acta",
     "GET /recepciones-proveedor/contabilidad",
   ].sort());
   // Aprobar: SOLO contabilidad (un admin no).

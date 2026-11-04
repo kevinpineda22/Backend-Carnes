@@ -197,3 +197,17 @@ export const ESTADOS_CON_ACTA = [ESTADOS_PROVEEDOR.FINALIZADA, ESTADOS_PROVEEDOR
 export function puedeEntregarActa(cabecera, correo) {
   return Boolean(cabecera) && ESTADOS_CON_ACTA.includes(cabecera.estado) && mismoCorreo(cabecera.recibido_por, correo);
 }
+
+/**
+ * ¿Esta cabecera puede entregarse como acta a las cuentas de solo lectura
+ * (contabilidad / consulta)? Solo si ya está en SIESA, el mismo alcance del detalle de
+ * contabilidad: ni borrador, ni finalizada sin enviar, ni anulada.
+ */
+export function puedeEntregarActaContabilidad(cabecera) {
+  return Boolean(cabecera) && cabecera.estado === ESTADOS_PROVEEDOR.ENVIADA_SIESA;
+}
+
+/** ¿Hay al menos un renglón devuelto? Sin devolución no hay acta que entregar. */
+export function hayDevolucionEnActa(items) {
+  return Array.isArray(items) && items.length > 0;
+}

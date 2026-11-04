@@ -110,6 +110,14 @@ router.get("/:id/admin", requireAdminCarnes, validators.idParam, AdminController
 // Contabilidad: detalle sin firma ni cédula ni acciones, y la marca de aprobación.
 // "/:id/contabilidad" y "/:id/aprobar-contabilidad" tienen dos segmentos: no chocan con "/:id".
 router.get("/:id/contabilidad", requireContabilidadCarnes, validators.idParam, AdminController.detalleContabilidad);
+// Acta de devolución para contabilidad/consulta: la misma que el recibidor, solo Enviada_SIESA
+// y con devolución. Tres segmentos: no choca con "/:id/contabilidad" ni con "/:id/acta".
+router.get(
+  "/:id/contabilidad/acta",
+  requireContabilidadCarnes,
+  validators.idParam,
+  RecepcionesProveedorController.obtenerActaContabilidad,
+);
 router.post(
   "/:id/aprobar-contabilidad",
   requireAprobarContabilidadCarnes,

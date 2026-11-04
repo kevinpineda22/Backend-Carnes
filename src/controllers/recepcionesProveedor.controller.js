@@ -99,6 +99,23 @@ export async function obtenerActa(req, res, next) {
 }
 
 /**
+ * GET /api/recepciones-proveedor/:id/contabilidad/acta
+ *
+ * El mismo acta de devolución que recibe el recibidor, para las cuentas de solo
+ * lectura (contabilidad, consulta de recepciones, admin; el guard va en la ruta).
+ * Solo `Enviada_SIESA` y con devolución: 404 en cualquier otro caso. No toma
+ * correo: el acta no se filtra por dueña.
+ */
+export async function obtenerActaContabilidad(req, res, next) {
+  try {
+    const data = await RecepcionProveedorModel.obtenerActaContabilidad({ id: req.datosValidados.id });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * GET /api/recepciones-proveedor/:id
  * Cabecera + renglones para reanudar. Sin firma ni cédula del recibidor: el
  * detalle completo del admin llega en un corte posterior.
