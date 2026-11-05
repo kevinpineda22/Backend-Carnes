@@ -409,3 +409,84 @@ export function notificarConfirmacionRecibidor(recepcion, items = []) {
 export function notificarConfirmacionProveedor(recepcion, items = [], resumen = null) {
   return enviarConfirmacion("proveedor", recepcion, items, resumen);
 }
+
+/** Nombre legible del tipo de envío a SIESA, para asunto y cuerpo del correo. */
+const TIPO_ENVIO_LEGIBLE = {
+  inicial: "Entrada inicial",
+  oficial: "Entrada oficial",
+  ajuste_visceras: "Ajuste de vísceras",
+  ajuste_faltante: "Ajuste por faltante",
+  visceras_recepcion: "Vísceras de la recepción",
+};
+
+/**
+ * Avisa al admin que un envío de Talleres a SIESA terminó en error (sea porque
+ * no salió —bloqueos, configuración— o porque SIESA lo rechazó).
+ *
+ * Mismos destinatarios que el aviso de recepción finalizada. Best-effort: nunca
+ * lanza, y quien llama lo espera (Vercel congela la función al responder).
+ *
+ * @param {object} envio  fila de `carnes_siesa_envios` (tipo, referencia, recepcion_id,
+ *                        liquidacion_id, error, novedad)
+ * @param {{ sede?: string|null }} [extra]
+ */
+export async function notificarErrorEnvioSiesa(envio, { sede = null } = {}) {
+  try {
+    const tipo = TIPO_ENVIO_LEGIBLE[envio?.tipo] || String(envio?.tipo ?? "Envío");
+    const referencia = envio?.referencia || "—";
+    const panel = process.env.CARNES_PANEL_URL || "https://merkahorro.com/carnes/admin";
+
+    const filas = [
+      ["Tipo", tipo],
+      ["Referencia", referencia],
+      envio?.recepcion_id ? ["Recepción", `#${envio.recepcion_id}`] : null,
+      envio?.liquidacion_id ? ["Liquidación", `#${envio.liquidacion_id}`] : null,
+      sede ? ["Sede", sede] : null,
+    ].filter(Boolean);
+
+    const novedad = envio?.novedad
+      ? `
+      <div style="border-left:4px solid #b45309;background:#fef3c7;padding:12px 16px;margin:0 0 16px;">
+        <p style="margin:0 0 6px;font-weight:bold;color:#92400e;">Novedad</p>
+        <p style="margin:0;color:#78350f;font-size:13px;">${esc(envio.novedad)}</p>
+      </div>`
+      : "";
+
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#111827;">
+      <h2 style="margin:0 0 4px;">Error al subir a SIESA</h2>
+      <p style="margin:0 0 16px;color:#6b7280;">${esc(tipo)} · ${esc(referencia)} · ${hora()}</p>
+
+      <table cellpadding="6" cellspacing="0" width="100%"
+             style="border-collapse:collapse;font-size:14px;margin-bottom:16px;">
+        ${filas
+          .map(
+            ([k, v]) =>
+              `<tr><td style="color:#6b7280;">${esc(k)}</td><td align="right"><strong>${esc(v)}</strong></td></tr>`,
+          )
+          .join("")}
+      </table>
+
+      <div style="border-left:4px solid #b91c1c;background:#fee2e2;padding:12px 16px;margin:0 0 16px;">
+        <p style="margin:0 0 6px;font-weight:bold;color:#7f1d1d;">SIESA no recibió el documento</p>
+        <p style="margin:0;color:#7f1d1d;font-size:13px;">${esc(envio?.error || "Sin detalle del error.")}</p>
+      </div>
+      ${novedad}
+      <p style="margin:0 0 16px;font-size:13px;color:#374151;">
+        Se puede reintentar desde el panel <b>SIESA Talleres</b>:
+        <a href="${esc(panel)}">${esc(panel)}</a>
+      </p>
+
+      <p style="margin:24px 0 0;color:#9ca3af;font-size:12px;">Este correo es automático, no hace falta responderlo.</p>
+    </div>`;
+
+    return await sendEmail({
+      to: destinatariosAdmin(),
+      subject: `Carnes · Error al subir a SIESA · ${tipo} ${referencia}`.replace(/\s+/g, " ").trim(),
+      html,
+    });
+  } catch (e) {
+    console.error(`[email] Aviso de error SIESA falló: ${e?.message}`);
+    return { success: false, error: e?.message || "Error al armar el aviso" };
+  }
+}

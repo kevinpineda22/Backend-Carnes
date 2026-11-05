@@ -257,7 +257,12 @@ export async function finalizar(req, res, next) {
       data,
       notificacion,
       confirmacion,
-      siesa: { estado: siesa.estado, referencia: siesa.referencia ?? null, error: siesa.error ?? null },
+      siesa: {
+        estado: siesa.estado,
+        referencia: siesa.referencia ?? null,
+        error: siesa.error ?? null,
+        novedad: siesa.novedad ?? null,
+      },
       siesa_visceras: {
         estado: siesaVisceras.estado,
         referencia: siesaVisceras.referencia ?? null,

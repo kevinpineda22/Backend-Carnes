@@ -249,7 +249,11 @@ const VA_A_SIESA = (i) => vaASiesa(i);
  * @param {number} p.consecutivo número propio, enlaza cabecera y movimientos
  * @param {object} p.config      { tipoDocto, nit, sucursal, unidadMedida, unidadNegocio }
  * @param {string} [p.referenciaInicial] en la oficial: la referencia de la inicial
- * @returns {{ payload: object, resumen: object, bloqueos: string[] }}
+ * @param {boolean} [p.omitirSinCodigo] solo la INICIAL: los productos sin código de
+ *        SIESA no bloquean, se dejan fuera del documento y se anotan en `novedades`.
+ *        La oficial NO lo usa: ahí un producto sin código sigue bloqueando.
+ * @returns {{ payload: object, resumen: object, bloqueos: string[],
+ *             novedades: string[], omitidos: object[] }}
  */
 export function armarEntradaDirecta({
   recepcion,
@@ -258,8 +262,10 @@ export function armarEntradaDirecta({
   consecutivo,
   config = {},
   referenciaInicial,
+  omitirSinCodigo = false,
 }) {
   const bloqueos = [];
+  const novedades = [];
   const sede = recepcion?.sede || {};
 
   // ─── Lo que tiene que estar, o no se manda ───
@@ -279,21 +285,40 @@ export function armarEntradaDirecta({
   const fecha = fechaSiesa(recepcion?.fecha_ingreso);
   if (!fecha) bloqueos.push("La recepción no tiene fecha de ingreso.");
 
-  // Sin código bloquea: un producto sin homologar no puede entrar al ERP. Las
-  // vísceras no viajan nunca (`vaASiesa`), así que no cuentan acá.
+  // Sin código: en la oficial bloquea (un producto sin homologar no puede entrar
+  // al ERP con el costo liquidado). En la inicial —`omitirSinCodigo`— no se frena
+  // a la sede: esos renglones se dejan fuera, se sube el resto y se deja una
+  // novedad para que el admin los homologue antes de liquidar. Las vísceras no
+  // viajan nunca (`vaASiesa`), así que no cuentan acá.
   const sinCodigo = items.filter(
     (i) => esProducto(i) && (Number(i.cantidad) || 0) > 0 && !tieneCodigoSiesa(i),
   );
-  if (sinCodigo.length) {
+  const omitidos = omitirSinCodigo ? sinCodigo : [];
+  if (sinCodigo.length && !omitirSinCodigo) {
     bloqueos.push(
       `${sinCodigo.length} renglón(es) sin código de SIESA: ` +
         sinCodigo.map((i) => i.descripcion).join(", ") +
         ". Homologalos antes de enviar.",
     );
   }
+  if (omitidos.length) {
+    const uno = omitidos.length === 1;
+    novedades.push(
+      `${omitidos.length} ${uno ? "renglón sin código" : "renglones sin código"} de SIESA ` +
+        `no se ${uno ? "subió" : "subieron"}: ` +
+        omitidos.map((i) => i.descripcion).join(", ") +
+        `. ${uno ? "Homologarlo" : "Homologarlos"} antes de liquidar.`,
+    );
+  }
 
-  const renglones = items.filter(VA_A_SIESA);
-  if (renglones.length === 0) bloqueos.push("La recepción no tiene renglones con cantidad.");
+  const renglones = items.filter((i) => VA_A_SIESA(i) && !omitidos.includes(i));
+  if (renglones.length === 0) {
+    bloqueos.push(
+      omitidos.length
+        ? "Ningún renglón tiene código de SIESA: no hay nada que subir. Homologarlos y reintentar."
+        : "La recepción no tiene renglones con cantidad.",
+    );
+  }
 
   // ─── El precio depende del tipo de entrada ───
   //
@@ -432,6 +457,8 @@ export function armarEntradaDirecta({
       fecha: recepcion?.fecha_ingreso ?? null,
     },
     bloqueos,
+    novedades,
+    omitidos,
   };
 }
 

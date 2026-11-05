@@ -322,3 +322,86 @@ test("una víscera sin código no bloquea; un producto sin código sí", () => {
   assert.match(b, /Corte sin homologar/);
   assert.doesNotMatch(b, /Lengua/);
 });
+
+// ─── Inicial parcial: productos sin código se omiten ────────────────────────
+
+const ITEMS_CON_HUERFANO = [
+  ...ITEMS,
+  { tipo: "adicional", codigo_item: null, descripcion: "ASADURA DE CERDO", cantidad: 2, costo_base: 1000 },
+];
+
+test("inicial con omitirSinCodigo: no bloquea, sube el resto y deja la novedad", () => {
+  const { payload, resumen, bloqueos, novedades, omitidos } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: ITEMS_CON_HUERFANO,
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+    omitirSinCodigo: true,
+  });
+  assert.deepEqual(bloqueos, []);
+  assert.equal(payload.Movimientos.length, 2);
+  assert.ok(payload.Movimientos.every((m) => m.ITEM));
+  assert.equal(resumen.renglones, 2);
+  // Los totales reflejan solo lo que se manda: 4.49 + 14.19 kg.
+  assert.equal(resumen.totalKilos, 18.68);
+  assert.equal(omitidos.length, 1);
+  assert.deepEqual(novedades, [
+    "1 renglón sin código de SIESA no se subió: ASADURA DE CERDO. Homologarlo antes de liquidar.",
+  ]);
+});
+
+test("inicial con varios sin código: la novedad va en plural", () => {
+  const { novedades } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [
+      ...ITEMS_CON_HUERFANO,
+      { tipo: "carne", codigo_item: "  ", descripcion: "HUESO", cantidad: 1, costo_base: 500 },
+    ],
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+    omitirSinCodigo: true,
+  });
+  assert.equal(novedades.length, 1);
+  assert.match(novedades[0], /^2 renglones sin código de SIESA no se subieron: ASADURA DE CERDO, HUESO\. Homologarlos/);
+});
+
+test("inicial: si TODOS los productos están sin código, sigue siendo un bloqueo", () => {
+  const { bloqueos, novedades } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: [{ tipo: "adicional", codigo_item: null, descripcion: "ASADURA DE CERDO", cantidad: 2, costo_base: 1000 }],
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+    omitirSinCodigo: true,
+  });
+  assert.equal(novedades.length, 1);
+  assert.ok(bloqueos.some((b) => /Ningún renglón tiene código/.test(b)), JSON.stringify(bloqueos));
+});
+
+test("inicial parcial: los demás bloqueos siguen frenando", () => {
+  const recepcion = { ...RECEPCION, sede: { ...RECEPCION.sede, bodega_siesa: null } };
+  const { bloqueos } = armarEntradaDirecta({
+    recepcion,
+    items: ITEMS_CON_HUERFANO,
+    tipo: TIPO_ENVIO.INICIAL,
+    consecutivo: 1,
+    config: CONFIG,
+    omitirSinCodigo: true,
+  });
+  assert.ok(bloqueos.some((b) => /bodega/.test(b)));
+});
+
+test("sin omitirSinCodigo (la oficial) el producto sin código sigue bloqueando", () => {
+  const { bloqueos, novedades, payload } = armarEntradaDirecta({
+    recepcion: RECEPCION,
+    items: ITEMS_CON_HUERFANO,
+    tipo: TIPO_ENVIO.OFICIAL,
+    consecutivo: 2,
+    config: CONFIG,
+  });
+  assert.ok(bloqueos.some((b) => /sin código de SIESA/.test(b)));
+  assert.deepEqual(novedades, []);
+  assert.equal(payload.Movimientos.length, 3);
+});

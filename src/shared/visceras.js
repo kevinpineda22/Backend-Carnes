@@ -130,8 +130,9 @@ export function tieneCodigoSiesa(item) {
  * ¿Este renglón se manda a SIESA?
  *
  * Solo productos (carne o adicional) con cantidad — CON o SIN código: sin
- * código se manda igual y es `siesaEntrada.js` quien bloquea el envío entero,
- * para que el admin lo homologue; no desaparece en silencio.
+ * código pasa este filtro y es `siesaEntrada.js` quien decide: la oficial se
+ * bloquea entera para que el admin lo homologue; la inicial lo deja fuera y anota
+ * una novedad. No desaparece en silencio.
  *
  * Las vísceras NUNCA van en la entrada (inicial ni oficial), tengan código o
  * no. Lo definió el negocio el 29/09/2026, con el Excel de referencia en la

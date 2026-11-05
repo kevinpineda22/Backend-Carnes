@@ -105,9 +105,11 @@ const enviarASiesaFalso = async (payload, opts) => {
   const r = guion.shift() ?? { ok: true };
   return r.ok
     ? { ok: true, status: 200, respuesta: { ok: 1 }, error: null }
-    : { ok: false, incierto: Boolean(r.incierto), status: r.incierto ? null : 400, respuesta: { e: 1 }, error: r.error ?? "SIESA dijo no" };
+    : { ok: false, incierto: Boolean(r.incierto), status: r.incierto ? null : 400, respuesta: r.respuesta ?? { e: 1 }, error: r.error ?? "SIESA dijo no" };
 };
 let correos = [];
+let errores = [];
+let correoErrorLanza = false;
 
 mock.module(url("config/supabase.js"), { namedExports: { supabase: supabaseFalso } });
 mock.module(url("services/siesa.service.js"), {
@@ -117,12 +119,13 @@ mock.module(url("services/notificaciones.service.js"), {
   namedExports: {
     notificarAnularIniciales: async (liq, iniciales, oficial) => { correos.push({ liq, iniciales, oficial }); return { success: true }; },
     notificarAnularInicial: async () => ({ success: true }),
+    notificarErrorEnvioSiesa: async (envio, extra) => { errores.push({ envio, extra }); if (correoErrorLanza) throw new Error("SMTP caído"); return { success: true }; },
   },
 });
 
 const M = await import(url("models/SiesaEnvio.model.js"));
 const ofi = () => db.carnes_siesa_envios.filter((f) => f.tipo === "oficial");
-const nuevo = () => { reiniciar(); llamadas = []; guion = []; correos = []; };
+const nuevo = () => { reiniciar(); llamadas = []; guion = []; correos = []; errores = []; };
 
 test("una sola fecha: un documento, como antes", async () => {
   nuevo();
@@ -468,4 +471,130 @@ test("vísceras 23505 por el candado en vuelo: se informa el envío que ocupa, n
   assert.equal(r.repetido, true);
   assert.equal(r.envio.referencia, "TC FAL X1");
   assert.match(r.envio.error, /TC FAL X1/);
+});
+
+// ─── Inicial parcial y aviso de error ───
+
+const agregarAdicionalSinCodigo = (recepcionId) =>
+  db.carnes_recepcion_items.push({
+    id: 9000 + recepcionId, recepcion_id: recepcionId, tipo: "adicional", orden: 9,
+    codigo_item: null, descripcion: "ASADURA DE CERDO", cantidad: 2, costo_base: 100,
+  });
+
+test("inicial con un producto sin código: sube el resto, guarda la novedad y no avisa error", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  agregarAdicionalSinCodigo(2);
+  const fila = await M.enviarInicial(2, "recibidor");
+  assert.equal(fila.estado, "ok");
+  assert.equal(llamadas.length, 1);
+  assert.equal(llamadas[0].payload.Movimientos.length, 2);
+  assert.equal(fila.renglones, 2);
+  assert.equal(fila.total_kilos, 15);
+  assert.equal(
+    fila.novedad,
+    "1 renglón sin código de SIESA no se subió: ASADURA DE CERDO. Homologarlo antes de liquidar.",
+  );
+  assert.equal(db.carnes_siesa_envios[0].novedad, fila.novedad);
+  assert.equal(errores.length, 0);
+});
+
+test("inicial sin novedad: la fila no lleva la clave novedad", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  const fila = await M.enviarInicial(8, "recibidor");
+  assert.equal(fila.estado, "ok");
+  assert.ok(!("novedad" in db.carnes_siesa_envios[0]));
+  assert.equal(errores.length, 0);
+});
+
+test("inicial: si SIESA la rechaza, queda la novedad y se avisa el error por correo", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  agregarAdicionalSinCodigo(2);
+  guion = [{ ok: false, error: "Item no existe" }];
+  const fila = await M.enviarInicial(2, "recibidor");
+  assert.equal(fila.estado, "error");
+  assert.match(fila.novedad, /ASADURA DE CERDO/);
+  assert.equal(errores.length, 1);
+  assert.equal(errores[0].envio.estado, "error");
+  assert.equal(errores[0].envio.error, "Item no existe");
+  assert.equal(errores[0].envio.referencia, "TC INI R2");
+  assert.equal(errores[0].extra.sede, "Barbosa");
+});
+
+test("inicial sin_confirmar: no se avisa por correo", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  guion = [{ ok: false, incierto: true, error: "timeout" }];
+  const fila = await M.enviarInicial(8, "recibidor");
+  assert.equal(fila.estado, "sin_confirmar");
+  assert.equal(errores.length, 0);
+});
+
+test("inicial bloqueada (todos sin código): fila en error y aviso por correo, sin llamar a SIESA", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  db.carnes_recepcion_items = [];
+  agregarAdicionalSinCodigo(9);
+  const fila = await M.enviarInicial(9, "recibidor");
+  assert.equal(fila.estado, "error");
+  assert.equal(llamadas.length, 0);
+  assert.match(fila.novedad, /ASADURA DE CERDO/);
+  assert.equal(errores.length, 1);
+  assert.match(errores[0].envio.error, /Ningún renglón tiene código/);
+});
+
+test("inicial ya vigente: no se intenta ni se avisa", async () => {
+  nuevo();
+  const fila = await M.enviarInicial(2, "recibidor");
+  assert.equal(fila.repetido, true);
+  assert.equal(llamadas.length, 0);
+  assert.equal(errores.length, 0);
+});
+
+test("si el correo de error falla, el resultado del envío no cambia", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  guion = [{ ok: false, error: "SIESA dijo no" }];
+  correoErrorLanza = true;
+  try {
+    const fila = await M.enviarInicial(8, "recibidor");
+    assert.equal(fila.estado, "error");
+    assert.equal(fila.error, "SIESA dijo no");
+    assert.equal(errores.length, 1);
+  } finally {
+    correoErrorLanza = false;
+  }
+});
+
+// ─── Ajuste de vísceras rechazado por faltante: el flujo lo compensa solo ───
+
+const FALTANTE_71 = {
+  codigo: 1,
+  detalle: [{ f_valor: "Item:0000071Bodega:00201", f_detalle: "Movto Inventario: Item sin cantidad disponible Faltante Inv.: -1.5 Faltante Adic.: 0.0000" }],
+  mensaje: "Error al importar el plano",
+};
+
+test("ajuste de vísceras rechazado por faltante y compensado: no se avisa error por correo", async () => {
+  conVisceras();
+  guion = [
+    { ok: false, error: "faltante", respuesta: FALTANTE_71 },
+    { ok: true }, // compensación
+    { ok: true }, // ajuste reenviado
+  ];
+  const r = await M.enviarAjusteVisceras(6, "admin");
+  assert.equal(r.completo, true, JSON.stringify(r));
+  assert.equal(errores.length, 0);
+});
+
+test("ajuste de vísceras con faltante que no se pudo compensar: UN solo correo", async () => {
+  conVisceras();
+  guion = [
+    { ok: false, error: "faltante", respuesta: FALTANTE_71 },
+    { ok: false, error: "compensación rechazada" }, // otro error: no se reintenta
+  ];
+  const r = await M.enviarAjusteVisceras(6, "admin");
+  assert.equal(r.completo, false);
+  assert.equal(errores.filter((e) => e.envio.tipo === "ajuste_visceras").length, 1);
 });

@@ -141,6 +141,7 @@ import {
 import {
   notificarAnularInicial,
   notificarAnularIniciales,
+  notificarErrorEnvioSiesa,
 } from "../services/notificaciones.service.js";
 
 const TABLA = "carnes_siesa_envios";
@@ -167,6 +168,7 @@ const MIGRACIONES = [
   "sql/020_ajuste_visceras_liquidacion.sql",
   "sql/021_ajuste_faltante.sql",
   "sql/033_oficial_por_fecha.sql",
+  "sql/035_novedad_envio_siesa.sql",
 ];
 
 /**
@@ -406,7 +408,7 @@ export async function listar(f = {}) {
     // `bodega` y `envio_origen_id` son de sql/021 (el ajuste por faltante) y
     // `fecha_docto` de sql/033 (un documento por fecha de ingreso): sin alguna de
     // las migraciones, el listado cae a las columnas de siempre.
-    (conBodega ? "bodega, envio_origen_id, fecha_docto, " : "") +
+    (conBodega ? "bodega, envio_origen_id, fecha_docto, novedad, " : "") +
     "recepcion:carnes_recepciones ( id, especie, fecha_ingreso, estado, sede:carnes_sedes ( id, nombre ) ), " +
     // La oficial consolidada no tiene recepción: la especie y la fecha
     // salen de la liquidación.
@@ -599,6 +601,15 @@ export async function obtener(id) {
 
 // ─── El envío en sí ────────────────────────────────────────────────────────
 
+/** Correo de error de un envío de Talleres. Nunca lanza. */
+async function avisarErrorEnvio(envio, sede, etiqueta) {
+  try {
+    await notificarErrorEnvioSiesa(envio, { sede });
+  } catch (e) {
+    console.error(`🔴 SIESA ${etiqueta}: no se pudo avisar el error por correo (${e?.message}).`);
+  }
+}
+
 /**
  * Envío de UNA recepción (la inicial): arma y delega en `registrarYEnviar`.
  */
@@ -618,6 +629,9 @@ async function ejecutarEnvio({
     consecutivo,
     config: documentoSiesa(terceroId),
     referenciaInicial,
+    // La inicial no se frena por un producto sin homologar: sube el resto y deja
+    // la novedad. La oficial sigue bloqueando (ver `armarEntradaDirecta`).
+    omitirSinCodigo: tipo === TIPO_ENVIO.INICIAL,
   });
   return registrarYEnviar({
     armado,
@@ -646,9 +660,26 @@ async function ejecutarEnvio({
  *        conector destino; sin él, la CEA de carnes
  * @param {number}   [p.timeoutMs]  espera a SIESA; sin él, según el tipo
  */
-async function registrarYEnviar({ armado, base, por, vigente, etiqueta, documento, timeoutMs }) {
+async function registrarYEnviar({
+  armado,
+  base,
+  por,
+  vigente,
+  etiqueta,
+  documento,
+  timeoutMs,
+  omitirAviso,
+}) {
   const { payload, resumen, bloqueos } = armado;
   const tipo = base.tipo;
+  // Lo que se dejó fuera del documento y por qué. La clave solo viaja si hay
+  // novedad: así los envíos sin ella no dependen de la columna (sql/035).
+  const novedad = (armado.novedades || []).join(" ") || null;
+  // Solo Talleres avisa por correo; los envíos de proveedor no.
+  const avisaError = !esTipoProveedor(tipo);
+  const avisarError = async (envio) => {
+    if (avisaError) await avisarErrorEnvio(envio, resumen.sede ?? null, etiqueta);
+  };
 
   const fila = {
     ...base,
@@ -661,6 +692,7 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
     total_kilos: resumen.totalKilos,
     total_valor: resumen.totalValor,
     enviado_por: por || null,
+    ...(novedad ? { novedad } : {}),
   };
 
   // ─── No sale nada: se anota el motivo y listo ───
@@ -682,6 +714,7 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
     if (faltaNoSale) throw errorFaltaMigracion(faltaNoSale);
     if (error) fallarSiFaltaMigracion(error, "No se pudo registrar el envío", MIGRACIONES);
     console.error(`🔴 SIESA ${etiqueta}: ${noSale}`);
+    await avisarError(data);
     return data;
   }
 
@@ -779,6 +812,9 @@ async function registrarYEnviar({ armado, base, por, vigente, etiqueta, document
   if (estado !== "ok") {
     console.error(`🔴 SIESA ${etiqueta}: ${resultado.error}`);
   }
+  // Solo "error": sin_confirmar no se sabe si falló, y ok no hay nada que avisar.
+  // `omitirAviso` deja sin correo el error que el flujo corrige solo (ver `ejecutarAjuste`).
+  if (estado === "error" && !omitirAviso?.(data)) await avisarError(data);
   return data;
 }
 
@@ -2345,6 +2381,8 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
       etiqueta: alcance.etiquetaCompensacion(actual.bodega),
       documento: DOCUMENTO_AJUSTE_FALTANTE,
       timeoutMs: espera,
+      // Un rechazo por faltante que se reintenta subiendo la cantidad no es una novedad.
+      omitirAviso: (d) => soloFaltantes(d.respuesta) && intento < MAX_REINTENTOS_AJUSTE,
     });
     registros.push({ ...resumenCompensacion(fila), intento });
 
@@ -2361,6 +2399,7 @@ async function compensarBodega({ documento, origen, alcance, por, inicio }) {
         recepcionId: alcance.recepcionId,
       });
       if (!subida.documento) {
+        await avisarErrorEnvio(fila, null, alcance.etiquetaCompensacion(actual.bodega));
         return {
           ok: false,
           registros,
@@ -2467,7 +2506,22 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
   let faltantesPrevios = null;
   let rondas = 0;
 
-  const resultado = (extra = {}) => ({
+  // El ajuste rechazado por faltante no avisa al momento: lo compensa el propio
+  // flujo y lo normal es que la siguiente ronda quede ok. Si el flujo termina con
+  // ese rechazo sin resolver (y no está solo pendiente o en vuelo), se avisa acá.
+  const resultado = async (extra = {}) => {
+    if (
+      fila?.estado === "error" &&
+      !fila.repetido &&
+      soloFaltantes(fila.respuesta) &&
+      !extra.pendiente &&
+      !extra.enVuelo
+    ) {
+      await avisarErrorEnvio(fila, null, alcance.etiqueta);
+    }
+    return resultadoSinAviso(extra);
+  };
+  const resultadoSinAviso = (extra = {}) => ({
     completo: fila?.estado === "ok",
     repetido: Boolean(fila?.repetido) || undefined,
     envio: {
@@ -2525,6 +2579,7 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
       etiqueta: `${alcance.etiqueta}${ronda > 1 ? ` (ronda ${ronda})` : ""}`,
       documento: DOCUMENTO_AJUSTE_VISCERAS,
       timeoutMs: espera,
+      omitirAviso: (d) => soloFaltantes(d.respuesta),
     });
 
     // ok, sin confirmar, reservado por otro: no hay nada que compensar.
