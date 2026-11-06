@@ -32,6 +32,7 @@ import {
   valorDevuelto,
 } from "./proveedorValores.js";
 import { DIAS_BORRADOR_VIEJO, diasDesde } from "./aperturaProveedor.js";
+import { conResumenFactura } from "./facturaProveedor.js";
 import { TIPO_ENVIO_PROVEEDOR } from "./siesaProveedor.js";
 import {
   decidirReintentoEntrada,
@@ -56,6 +57,7 @@ export const COLUMNAS_LISTA_ADMIN = `
   created_at, updated_at, descuento_pct,
   aprobado_contabilidad_at, aprobado_contabilidad_por,
   observacion_logistica, observacion_logistica_por, observacion_logistica_at,
+  factura_archivos,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -173,7 +175,8 @@ export function armarFilaListado({ cabecera, items = [], envios = [], ahora = ne
   const notaCreditoEstado = (nc.vigente || nc.ultimo)?.estado ?? null;
 
   return {
-    ...cabecera,
+    // `factura_archivos` sale sin rutas de Storage y con `factura_total` (0 = sin factura).
+    ...conResumenFactura(cabecera),
     factura_siesa_efectiva: facturaSiesaEfectiva(cabecera),
     ...borrador,
     resumen,

@@ -55,6 +55,8 @@ import {
   planearReintento,
   resolverRechazos,
 } from "../shared/guardadoProveedor.js";
+import { validarFacturaParaFinalizar } from "../shared/facturaProveedor.js";
+import { limpiarStorage as limpiarFacturaStorage } from "./FacturaProveedor.model.js";
 import {
   MENSAJE_CAMBIO_AL_FINALIZAR,
   armarActualizacionFinalizar,
@@ -87,6 +89,7 @@ const MIGRACIONES = [
   "sql/028_proveedor_descuento_secciones.sql",
   "sql/029_cortes_adicionales_descuentos.sql",
   "sql/030_grupos_impositivos.sql",
+  "sql/036_factura_proveedor.sql",
 ];
 
 /**
@@ -100,7 +103,7 @@ const CAMPOS_CABECERA = `
   factura, factura_siesa, sede_id, bodega_siesa, codigo_co, fecha_recepcion,
   estado, recibido_por, abierto_at, recibidor_nombre, recibidor_otro,
   finalizado_at, siesa_at, observaciones, created_at, updated_at, descuento_pct,
-  descuento_pct_proveedor,
+  descuento_pct_proveedor, factura_archivos,
   sede:carnes_sedes ( id, codigo_co, nombre )
 `;
 
@@ -693,7 +696,11 @@ export async function descartar(id) {
     .eq("estado", ESTADOS.BORRADOR)
     .select("id");
   if (error) fallo(error, "Error al descartar la recepción");
-  if (data?.length) return { id: data[0].id };
+  if (data?.length) {
+    // Los archivos de la factura ya no tienen a qué pertenecer (mejor esfuerzo).
+    await limpiarFacturaStorage(id);
+    return { id: data[0].id };
+  }
 
   // 0 filas: no existe, o ya no es borrador. Se distingue para decirle la verdad.
   const { data: existente, error: errorLectura } = await supabase
@@ -751,7 +758,8 @@ async function resolverTrasConflicto(id) {
  * — nunca se firma sobre renglones distintos a los que se validaron.
  *
  *   1. Cabecera. Si ya está firmada: reintento (devuelve el estado, NO vuelve a
- *      firmar). Anulada: 409.
+ *      firmar). Anulada: 409. Sin al menos un archivo de la factura vinculado: 422
+ *      `FACTURA_REQUERIDA` (sql/036).
  *   2. Renglones y `validarRecepcion` sobre lo que HAY EN LA BASE (422 con el
  *      detalle por renglón). Plata y cantidades del cliente no entran.
  *   3. Recibidor (de la lista: snapshot desde la base; "Otro": nombre + cédula) y
@@ -772,6 +780,11 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data, prove
   if (decision.accion === "rechazar") throw createError(decision.status, decision.mensaje, decision.codigo);
   // Ya firmada: se ignoran firma y recibidor del cuerpo. No se reescribe nada.
   if (decision.accion === "reintento") return resultadoFinalizar(id, true);
+
+  // 1b. Sin foto de la factura no se firma. Se mira lo vinculado en la BASE (la
+  // lectura de la cabecera ya lo trae), no lo que diga el cliente.
+  const factura = validarFacturaParaFinalizar(cabecera.factura_archivos);
+  if (!factura.ok) throw createError(factura.status, factura.mensaje, factura.codigo);
 
   // 2. Renglones, y la validación completa sobre la base.
   const items = await leerItems(id);

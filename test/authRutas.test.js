@@ -96,6 +96,9 @@ const SIN_GUARD_DE_ADMIN = [
   "PATCH /recepciones-proveedor/:id",
   "POST /recepciones-proveedor/:id/cortes-adicionales",
   "DELETE /recepciones-proveedor/:id/cortes-adicionales/:item_id",
+  "POST /recepciones-proveedor/:id/factura/subidas",
+  "POST /recepciones-proveedor/:id/factura/confirmar",
+  "POST /recepciones-proveedor/:id/factura/quitar",
   "POST /recepciones-proveedor/:id/finalizar",
   "DELETE /recepciones-proveedor/:id",
 ];
@@ -179,6 +182,7 @@ test("rutas: contabilidad tiene EXACTAMENTE estas rutas, cada una con su guard, 
   assert.deepEqual(de("contabilidad"), [
     "GET /recepciones-proveedor/:id/contabilidad",
     "GET /recepciones-proveedor/:id/contabilidad/acta",
+    "GET /recepciones-proveedor/:id/contabilidad/factura",
     "GET /recepciones-proveedor/contabilidad",
   ].sort());
   // Aprobar: SOLO contabilidad (un admin no).
@@ -196,6 +200,17 @@ test("rutas: \"/contabilidad\" se declara ANTES de \"/:id\" (si no, se leería c
   const lista = rutas.indexOf("GET /recepciones-proveedor/contabilidad");
   const porId = rutas.indexOf("GET /recepciones-proveedor/:id");
   assert.ok(lista >= 0 && porId >= 0 && lista < porId);
+});
+
+test("rutas: la factura se LEE solo con guard (admin o contabilidad); subir/quitar es del recibidor y solo escribe en borrador", () => {
+  const todas = recorrer(indice, "", [], montajes);
+  const por = (clave) => todas.find((r) => r.clave === clave);
+  assert.equal(por("GET /recepciones-proveedor/:id/admin/factura")?.guard, "admin");
+  assert.equal(por("GET /recepciones-proveedor/:id/contabilidad/factura")?.guard, "contabilidad");
+  // Ninguna ruta de lectura de la factura queda sin guard.
+  const lecturas = todas.filter((r) => /\/factura$/.test(r.clave) && r.clave.startsWith("GET"));
+  assert.equal(lecturas.length, 2);
+  assert.ok(lecturas.every((r) => r.protegido));
 });
 
 test("rutas: la observación de logística es SOLO de quien abre la consulta, y ese guard no protege nada más", () => {

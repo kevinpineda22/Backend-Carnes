@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as RecepcionesProveedorController from "../controllers/recepcionesProveedor.controller.js";
 import * as AdminController from "../controllers/recepcionesProveedorAdmin.controller.js";
+import * as FacturaController from "../controllers/facturaProveedor.controller.js";
 import * as ProveedoresController from "../controllers/proveedores.controller.js";
 import { validators } from "../middleware/validators.js";
 import {
@@ -79,6 +80,29 @@ router.delete(
   RecepcionesProveedorController.quitarCorteAdicional,
 );
 
+// Foto de la factura (obligatoria para firmar). Los archivos NO pasan por el
+// backend (Vercel no deja pasar 10 MB): 1) se piden URLs firmadas, 2) el navegador
+// sube directo a Storage, 3) se confirma y recién ahí quedan vinculados. Solo en
+// borrador. Ver shared/facturaProveedor.js.
+router.post(
+  "/:id/factura/subidas",
+  validators.idParam,
+  validators.solicitarSubidasFactura,
+  FacturaController.solicitarSubidas,
+);
+router.post(
+  "/:id/factura/confirmar",
+  validators.idParam,
+  validators.confirmarFactura,
+  FacturaController.confirmar,
+);
+router.post(
+  "/:id/factura/quitar",
+  validators.idParam,
+  validators.quitarFactura,
+  FacturaController.quitar,
+);
+
 // Firmar. Borrador -> Finalizada; sobre una ya firmada es un reintento que no vuelve a firmar.
 router.post(
   "/:id/finalizar",
@@ -108,6 +132,8 @@ router.post(
 // corregir la referencia de factura para SIESA y anular. "/:id" de arriba sigue
 // siendo el del recibidor, sin firma ni cédula.
 router.get("/:id/admin", requireAdminCarnes, validators.idParam, AdminController.detalle);
+// Admin: enlaces firmados (10 min) de la foto de la factura, de solo lectura.
+router.get("/:id/admin/factura", requireAdminCarnes, validators.idParam, FacturaController.urlsAdmin);
 // Contabilidad: detalle sin firma ni cédula ni acciones, y la marca de aprobación.
 // "/:id/contabilidad" y "/:id/aprobar-contabilidad" tienen dos segmentos: no chocan con "/:id".
 router.get("/:id/contabilidad", requireContabilidadCarnes, validators.idParam, AdminController.detalleContabilidad);
@@ -118,6 +144,14 @@ router.get(
   requireContabilidadCarnes,
   validators.idParam,
   RecepcionesProveedorController.obtenerActaContabilidad,
+);
+// Foto de la factura para contabilidad/consulta/admin: enlaces firmados de solo lectura,
+// solo Enviada_SIESA (como el acta).
+router.get(
+  "/:id/contabilidad/factura",
+  requireContabilidadCarnes,
+  validators.idParam,
+  FacturaController.urlsContabilidad,
 );
 router.post(
   "/:id/aprobar-contabilidad",

@@ -682,6 +682,49 @@ const validarActaRecepcionProveedor = (req, res, next) => {
   });
 };
 
+// ─── Foto de la factura (sql/036) ──────────────────────────────────────────
+// Solo la FORMA. Cantidad total, tipo y tamaño permitidos los decide
+// `shared/facturaProveedor.js` (una sola copia de cada regla); el tope de 20 de acá
+// solo evita que un cuerpo absurdo llegue al modelo.
+
+const solicitarSubidasFacturaSchema = z.object({
+  editado_por: correo("El correo de quien sube la factura no es válido.").nullish(),
+  archivos: z
+    .array(
+      z.object({
+        nombre: z.string({ invalid_type_error: "El nombre del archivo no es válido." }).max(300),
+        tipo: z.string({ invalid_type_error: "El tipo del archivo no es válido." }).max(100),
+        tamano: z.coerce
+          .number({ invalid_type_error: "El tamaño del archivo no es válido." })
+          .int("El tamaño del archivo no es válido.")
+          .nonnegative("El tamaño del archivo no es válido."),
+      }),
+      { required_error: "Adjunta al menos un archivo.", invalid_type_error: "Los archivos no son válidos." },
+    )
+    .min(1, "Adjunta al menos un archivo.")
+    .max(20, "Son demasiados archivos."),
+});
+
+const rutaFacturaSchema = z.string({ invalid_type_error: "La ruta del archivo no es válida." }).max(300);
+
+const confirmarFacturaSchema = z.object({
+  editado_por: correo("El correo de quien sube la factura no es válido.").nullish(),
+  archivos: z
+    .array(
+      z.object({
+        path: rutaFacturaSchema,
+        nombre: z.string({ invalid_type_error: "El nombre del archivo no es válido." }).max(300).nullish(),
+      }),
+      { required_error: "Indica los archivos subidos.", invalid_type_error: "Los archivos no son válidos." },
+    )
+    .min(1, "Indica los archivos subidos.")
+    .max(20, "Son demasiados archivos."),
+});
+
+const quitarFacturaSchema = z.object({
+  path: rutaFacturaSchema,
+});
+
 /** Corregir la referencia de factura para SIESA: quién y la referencia nueva (el formato lo valida el modelo puro). */
 const corregirFacturaSiesaProveedorSchema = z.object({
   por: correo("El correo de quien corrige no es válido."),
@@ -813,6 +856,9 @@ export const validators = {
   guardarRecepcionProveedor: validar(guardarRecepcionProveedorSchema),
   finalizarRecepcionProveedor: validar(finalizarRecepcionProveedorSchema),
   reintentarSiesaProveedor: validar(reintentarSiesaProveedorSchema),
+  solicitarSubidasFactura: validar(solicitarSubidasFacturaSchema),
+  confirmarFactura: validar(confirmarFacturaSchema),
+  quitarFactura: validar(quitarFacturaSchema),
   listarRecepcionesProveedor: validar(listarRecepcionesProveedorQuerySchema, "query"),
   listarMisRecepciones: validar(listarMisRecepcionesQuerySchema, "query"),
   listarEnCurso: validar(listarEnCursoQuerySchema, "query"),

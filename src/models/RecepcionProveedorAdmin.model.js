@@ -6,6 +6,7 @@ import { normalizarFactura, resumenRecepcion } from "../shared/proveedorValores.
 import { esConflictoReintentable, esViolacionUnica } from "../shared/aperturaProveedor.js";
 import { TIPO_ENVIO_PROVEEDOR } from "../shared/siesaProveedor.js";
 import { resumirEnvios, motivoEnvioVigente, siesaDeEnvios } from "../shared/siesaProveedorEnvio.js";
+import { conResumenFactura } from "../shared/facturaProveedor.js";
 import {
   COLUMNAS_DETALLE_ADMIN,
   COLUMNAS_ENVIOS_LISTA,
@@ -58,6 +59,7 @@ const MIGRACIONES = [
   "sql/030_grupos_impositivos.sql",
   "sql/032_aprobacion_contabilidad.sql",
   "sql/034_observacion_logistica.sql",
+  "sql/036_factura_proveedor.sql",
 ];
 
 /** Igual que en `RecepcionProveedor.model.js`: un deadlock es un 409 que se reintenta, no un 500. */
@@ -222,7 +224,7 @@ export async function detalle(id, ahora = new Date()) {
 
   return {
     recepcion: {
-      ...cabecera,
+      ...conResumenFactura(cabecera),
       factura_siesa_efectiva: facturaSiesaEfectiva(cabecera),
       ...datosBorrador(cabecera, ahora),
       items: itemsConDevuelto(items, { descuentoPct: cabecera.descuento_pct }),
