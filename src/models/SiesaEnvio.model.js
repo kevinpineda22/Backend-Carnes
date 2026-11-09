@@ -235,6 +235,34 @@ async function cargarRecepcion(recepcionId) {
 }
 
 /**
+ * La referencia de la entrada inicial vigente de cada recepción de Talleres, para
+ * el historial del recibidor. Se lee del envío (nunca se recalcula): las anteriores
+ * al cambio de formato siguen con la suya. Una consulta para todas; si falla,
+ * devuelve vacío —el historial se ve igual, solo sin el código—.
+ *
+ * @param {Array<number|string>} ids
+ * @returns {Promise<Map<string, string>>} id de recepción → referencia
+ */
+export async function referenciasInicialesDe(ids = []) {
+  const mapa = new Map();
+  if (!ids.length) return mapa;
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("recepcion_id, referencia, enviado_at")
+    .in("recepcion_id", ids)
+    .eq("tipo", TIPO_ENVIO.INICIAL)
+    .in("estado", VIGENTES)
+    .order("enviado_at", { ascending: true });
+  if (error) {
+    console.error(`🔴 Referencias iniciales del historial: ${error.message}`);
+    return mapa;
+  }
+  // Ascendente: la más reciente de cada recepción es la que queda.
+  for (const fila of data || []) mapa.set(String(fila.recepcion_id), fila.referencia);
+  return mapa;
+}
+
+/**
  * El envío que ocupa el lugar de esta recepción y tipo —enviando, ok o
  * sin_confirmar—, o null si se puede mandar.
  */

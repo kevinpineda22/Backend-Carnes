@@ -96,6 +96,21 @@ export function referenciaEnvio(recepcionId, tipo) {
 }
 
 /**
+ * El bloque `siesa` que el recibidor ve al finalizar Talleres. Siempre lleva la
+ * referencia de la entrada inicial para anotarla en la factura física: la del envío
+ * si existe (puede ser de formato anterior) y, si no (SIESA apagado o falló antes
+ * de reservar el envío), la que tendrá cuando se envíe.
+ */
+export function siesaParaRecibidor(siesa, recepcionId) {
+  return {
+    estado: siesa?.estado ?? null,
+    referencia: siesa?.referencia ?? referenciaEnvio(recepcionId, TIPO_ENVIO.INICIAL),
+    error: siesa?.error ?? null,
+    novedad: siesa?.novedad ?? null,
+  };
+}
+
+/**
  * Referencia de la oficial de una liquidación: `TC OFI L12`.
  *
  * `L` y no `R` para que en SIESA se distinga a simple vista de las oficiales

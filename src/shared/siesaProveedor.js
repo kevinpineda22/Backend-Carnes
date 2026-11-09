@@ -95,6 +95,21 @@ export function referenciaNotaCreditoProveedor(recepcionId) {
   return ajustarReferencia(`TC PRV N${recepcionId}`, `TCPN${recepcionId}`);
 }
 
+/**
+ * Las referencias que el recibidor anota en la factura física. Es la ÚNICA fuente
+ * del formato: el front las muestra tal cual vienen. Existen aunque SIESA todavía
+ * no haya confirmado el documento (la referencia se deriva del id de la recepción,
+ * no del envío), y la de la nota crédito solo si hubo devolución.
+ *
+ * @returns {{ entrada: string, nota_credito: ?string }}
+ */
+export function referenciasProveedor(recepcionId, { conDevolucion = false } = {}) {
+  return {
+    entrada: referenciaProveedor(recepcionId),
+    nota_credito: conDevolucion ? referenciaNotaCreditoProveedor(recepcionId) : null,
+  };
+}
+
 /** Consecutivo propio de la entrada: `id × 10 + 4`. */
 export const consecutivoEntradaProveedor = (recepcionId) => Number(recepcionId) * 10 + 4;
 

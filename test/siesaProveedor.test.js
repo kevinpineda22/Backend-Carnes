@@ -8,10 +8,11 @@ import {
   armarNotaCreditoProveedor,
   referenciaProveedor,
   referenciaNotaCreditoProveedor,
+  referenciasProveedor,
   consecutivoEntradaProveedor,
   consecutivoNotaCreditoProveedor,
 } from "../src/shared/siesaProveedor.js";
-import { decimal, notasDocumento } from "../src/shared/siesaEntrada.js";
+import { decimal, notasDocumento, siesaParaRecibidor } from "../src/shared/siesaEntrada.js";
 import {
   DOCUMENTO_CARNES,
   DOCUMENTO_NOTA_CREDITO_PROVEEDOR,
@@ -103,6 +104,31 @@ test("tipos de envío: caben en la columna tipo (VARCHAR(20)) y son los de sql/0
   for (const tipo of ["inicial", "oficial", "ajuste_visceras", "ajuste_faltante"]) {
     assert.ok(sql.includes(`'${tipo}'`), `sql/023 perdió ${tipo}`);
   }
+});
+
+test("referenciasProveedor: entrada siempre; nota crédito solo con devolución", () => {
+  assert.deepEqual(referenciasProveedor(77), { entrada: "TC PRV R77", nota_credito: null });
+  assert.deepEqual(referenciasProveedor(77, { conDevolucion: true }), {
+    entrada: "TC PRV R77",
+    nota_credito: "TC PRV N77",
+  });
+  assert.equal(referenciasProveedor(12345, { conDevolucion: true }).nota_credito, "TCPN12345");
+});
+
+test("siesaParaRecibidor: usa la referencia del envío; si no hay, la que tendrá", () => {
+  assert.deepEqual(siesaParaRecibidor({ estado: "ok", referencia: "R23I", novedad: "x" }, 23), {
+    estado: "ok",
+    referencia: "R23I",
+    error: null,
+    novedad: "x",
+  });
+  assert.deepEqual(siesaParaRecibidor({ estado: "apagado" }, 162), {
+    estado: "apagado",
+    referencia: "TC INI R162",
+    error: null,
+    novedad: null,
+  });
+  assert.equal(siesaParaRecibidor({ estado: "error", error: "boom" }, 162).referencia, "TC INI R162");
 });
 
 test("referenciaProveedor / referenciaNotaCreditoProveedor: legibles y de hasta 12 caracteres", () => {

@@ -124,9 +124,34 @@ test("armarFilaTalleres: forma de la fila y sin firma ni cédula", () => {
     recibidor_nombre: "Ana Pérez",
     total_kilos: 12.5,
     renglones: 1,
+    referencia_entrada: null,
   });
   assert.equal("firma_data" in fila, false);
   assert.equal("recibidor_cedula" in fila, false);
+});
+
+test("armarFilaTalleres: lleva la referencia de la entrada inicial que se le pasa", () => {
+  const cabecera = { id: 162, fecha_ingreso: "2026-10-18", especie: "res", estado: "Recibido" };
+  assert.equal(armarFilaTalleres({ cabecera, referencia: "TC INI R162" }).referencia_entrada, "TC INI R162");
+  assert.equal(armarFilaTalleres({ cabecera, referencia: undefined }).referencia_entrada, null);
+});
+
+test("armarFilaProveedor: referencias de entrada y de nota crédito solo cuando corresponden", () => {
+  const cabecera = { id: 77, fecha_recepcion: "2026-10-17", estado: "Enviada_SIESA", descuento_pct: 0 };
+  const sinDev = [{ cantidad: 5, valor_total: 1000, cantidad_devuelta: 0 }];
+  const conDev = [{ cantidad: 5, valor_total: 1000, cantidad_devuelta: 2 }];
+
+  const a = armarFilaProveedor({ cabecera, items: sinDev });
+  assert.equal(a.referencia_entrada, "TC PRV R77");
+  assert.equal(a.referencia_nota_credito, null);
+
+  const b = armarFilaProveedor({ cabecera: { ...cabecera, estado: "Finalizada" }, items: conDev });
+  assert.equal(b.referencia_entrada, "TC PRV R77");
+  assert.equal(b.referencia_nota_credito, "TC PRV N77");
+
+  const anulada = armarFilaProveedor({ cabecera: { ...cabecera, estado: "Anulada" }, items: conDev });
+  assert.equal(anulada.referencia_entrada, null);
+  assert.equal(anulada.referencia_nota_credito, null);
 });
 
 test("armarFilaProveedor: el total es neto del descuento", () => {

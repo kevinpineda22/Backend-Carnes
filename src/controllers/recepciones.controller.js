@@ -4,6 +4,7 @@ import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
 import { hoyBogota } from "../shared/proveedorValores.js";
+import { siesaParaRecibidor } from "../shared/siesaEntrada.js";
 import { normalizarCorreo, ventanaHistorial } from "../shared/historialRecibidor.js";
 
 /**
@@ -257,12 +258,7 @@ export async function finalizar(req, res, next) {
       data,
       notificacion,
       confirmacion,
-      siesa: {
-        estado: siesa.estado,
-        referencia: siesa.referencia ?? null,
-        error: siesa.error ?? null,
-        novedad: siesa.novedad ?? null,
-      },
+      siesa: siesaParaRecibidor(siesa, data.id),
       siesa_visceras: {
         estado: siesaVisceras.estado,
         referencia: siesaVisceras.referencia ?? null,

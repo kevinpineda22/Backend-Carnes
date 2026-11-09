@@ -1,4 +1,5 @@
 import { notaCreditoRequerida } from "../shared/finalizarProveedor.js";
+import { referenciasProveedor } from "../shared/siesaProveedor.js";
 import * as SiesaEnvio from "./SiesaEnvio.model.js";
 
 /* =============================================
@@ -26,7 +27,7 @@ import * as SiesaEnvio from "./SiesaEnvio.model.js";
  * @param {object} p.recepcion     la recepción ya finalizada (como la devuelve `obtener`)
  * @param {object} p.resumen       `resumenRecepcion(items)`
  * @param {boolean} p.yaFinalizada true si esta llamada fue un reintento sobre una recepción ya firmada
- * @returns {Promise<{siesa: {estado: string, referencia: ?string, error: ?string, envio_id: ?number},
+ * @returns {Promise<{referencias: {entrada: string, nota_credito: ?string}, siesa: {estado: string, referencia: ?string, error: ?string, envio_id: ?number},
  *   notaCredito: {requerida: boolean, estado: string, bloqueo: ?string, referencia?: ?string, error?: ?string},
  *   cambios: ?{estado: string, siesa_at: ?string}, aviso: ?string}>}
  *   `siesa.estado`: ok | error | apagado | enviando | sin_confirmar | pendiente.
@@ -35,9 +36,12 @@ import * as SiesaEnvio from "./SiesaEnvio.model.js";
  */
 export async function despuesDeFinalizar({ recepcion, resumen, yaFinalizada }) {
   const requerida = notaCreditoRequerida(resumen);
+  // Lo que el recibidor anota en la factura física: sale siempre, aun si SIESA falla.
+  const referencias = referenciasProveedor(recepcion.id, { conDevolucion: requerida });
   try {
     const r = await SiesaEnvio.enviarEntradaProveedor(recepcion.id, recepcion.recibido_por);
     return {
+      referencias,
       siesa: r.siesa,
       // Si el armado de la nota crédito falló no hay estado propio: "pendiente".
       notaCredito: r.notaCredito ?? { requerida, estado: "pendiente", bloqueo: null },
@@ -48,6 +52,7 @@ export async function despuesDeFinalizar({ recepcion, resumen, yaFinalizada }) {
     // `enviarEntradaProveedor` no lanza; esto cubre solo lo que no se espera.
     console.error(`🔴 Post-finalizar proveedor #${recepcion?.id}: ${e?.message}`);
     return {
+      referencias,
       siesa: { estado: "error", referencia: null, error: e?.message || "Error al enviar a SIESA.", envio_id: null },
       notaCredito: { requerida, estado: "pendiente", bloqueo: null },
       cambios: null,

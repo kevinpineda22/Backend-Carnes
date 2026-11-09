@@ -15,6 +15,7 @@
 import { ESTADOS as ESTADOS_TALLERES } from "./estados.js";
 import { ESTADOS as ESTADOS_PROVEEDOR } from "./estadosProveedor.js";
 import { resumenRecepcion } from "./proveedorValores.js";
+import { referenciasProveedor } from "./siesaProveedor.js";
 
 /** Días hacia atrás que cubre el historial si no se pide otra ventana. */
 export const VENTANA_DIAS_DEFECTO = 60;
@@ -121,9 +122,11 @@ export function resumenTalleres(items = []) {
   return { total_kilos: Math.round(total * 1000) / 1000, renglones };
 }
 
-export function armarFilaTalleres({ cabecera, items = [] }) {
+export function armarFilaTalleres({ cabecera, items = [], referencia = null }) {
   const { total_kilos, renglones } = resumenTalleres(items);
   return {
+    // Entrada inicial en SIESA (la del envío vigente), para anotarla o consultarla después.
+    referencia_entrada: referencia ?? null,
     id: cabecera.id,
     fecha_ingreso: cabecera.fecha_ingreso,
     especie: cabecera.especie,
@@ -156,7 +159,18 @@ export function armarFilaProveedor({ cabecera, items = [] }) {
     iva: resumen.iva ?? 0,
     total_con_iva: resumen.total_con_iva ?? resumen.total,
     renglones: resumen.renglones,
+    // Códigos para consultar después: los que se anotaron en la factura física.
+    // Una recepción anulada ya no tiene documento vigente, así que no se muestran.
+    ...referenciasDeFila(cabecera.id, cabecera.estado, resumen.renglones_con_devolucion),
   };
+}
+
+function referenciasDeFila(id, estado, renglonesConDevolucion) {
+  if (estado !== ESTADOS_PROVEEDOR.FINALIZADA && estado !== ESTADOS_PROVEEDOR.ENVIADA_SIESA) {
+    return { referencia_entrada: null, referencia_nota_credito: null };
+  }
+  const { entrada, nota_credito } = referenciasProveedor(id, { conDevolucion: aNumero(renglonesConDevolucion) > 0 });
+  return { referencia_entrada: entrada, referencia_nota_credito: nota_credito };
 }
 
 /**

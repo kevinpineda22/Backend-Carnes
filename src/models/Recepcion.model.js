@@ -180,10 +180,15 @@ export async function listarMias({ correo, desde, hasta, limite, offset = 0 }) {
     items.push(...(filasItems || []));
   }
   const itemsPor = agruparPor(items, "recepcion_id");
+  const referencias = await SiesaEnvioModel.referenciasInicialesDe(cabeceras.map((c) => c.id));
 
   return {
     recepciones: cabeceras.map((cabecera) =>
-      armarFilaTalleres({ cabecera, items: itemsPor[String(cabecera.id)] || [] }),
+      armarFilaTalleres({
+        cabecera,
+        items: itemsPor[String(cabecera.id)] || [],
+        referencia: referencias.get(String(cabecera.id)),
+      }),
     ),
     hay_mas,
   };
