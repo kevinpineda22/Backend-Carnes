@@ -602,6 +602,24 @@ test("armarEntradaProveedor: el mismo item en dos secciones viaja como dos movim
   assert.equal(resumen.totalValor, 1902);
 });
 
+test("armarEntradaProveedor: el mismo item en tres secciones (con alas, sin alas, otros) viaja como tres movimientos", () => {
+  const { payload, resumen } = armarEntradaProveedor({
+    recepcion: RECEPCION_DESCUENTO,
+    items: ["despresado", "sin_despresar", "otros"].map((seccion, i) => ({
+      ...UNIDADES, id: 10 + i, seccion, valor_total: 1001, valor_unitario: null, valor_fuente: "total", cantidad: 1,
+    })),
+    config: CONFIG,
+  });
+  assert.equal(payload.Movimientos.length, 3);
+  assert.deepEqual(payload.Movimientos.map((m) => m.VALOR_BRUTO), [decimal(951, 0), decimal(951, 0), decimal(951, 0)]);
+  assert.equal(resumen.totalValor, 2853);
+});
+
+test("armarEntradaProveedor: el bloqueo de un renglón de 'otros' lo nombra con su sección", () => {
+  const { bloqueos } = armar({ items: [{ ...KILOS, unidad: "LB", seccion: "otros" }] });
+  assert.ok(bloqueos.some((b) => b.includes("Molida (Otros)")), bloqueos.join(" | "));
+});
+
 test("armarEntradaProveedor: sin descuento_pct el valor no cambia", () => {
   const { payload } = armar();
   assert.equal(payload.Movimientos[0].VALOR_BRUTO, decimal(2000000, 0));
@@ -621,7 +639,7 @@ test("armarNotaCreditoProveedor: con descuento, el valor devuelto también va ne
 test("armarEntradaProveedor: los bloqueos nombran la sección del renglón", () => {
   const libras = { ...KILOS, unidad: "LB", seccion: "sin_despresar" };
   const { bloqueos } = armar({ items: [libras] });
-  assert.ok(bloqueos.some((b) => b.includes("Molida (Sin despresar)")), bloqueos.join(" | "));
+  assert.ok(bloqueos.some((b) => b.includes("Molida (Sin alas)")), bloqueos.join(" | "));
   const sinSeccion = armar({ items: [{ ...KILOS, unidad: "LB" }] }).bloqueos;
   assert.ok(sinSeccion.some((b) => b.includes("Molida") && !/despresar/i.test(b)), sinSeccion.join(" | "));
 });

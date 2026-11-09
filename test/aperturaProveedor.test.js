@@ -6,7 +6,9 @@ import {
   avisosDeFactura,
   decidirApertura,
   diasDesde,
+  SECCION_OTROS,
   esConflictoReintentable,
+  esRenglonSeccionOtros,
   esRecepcionNoBorrador,
   esViolacionUnica,
   formatearFechaBogota,
@@ -231,7 +233,7 @@ test("renglonesDesdePlantilla: snapshot completo, equivalencia vacía por defect
 
 test("renglonesDesdePlantilla: con secciones sale la plantilla dos veces, despresado primero", () => {
   const plantilla = [
-    { id: 11, codigo_item: "1234", descripcion_item: "PECHUGA", unidad: "KL", equivalencia: "Pechuga", orden: 1 },
+    { id: 11, codigo_item: "1234", descripcion_item: "ALAS", unidad: "KL", equivalencia: "Alas", orden: 1 },
     { id: 12, codigo_item: "5678", descripcion_item: "MUSLO", unidad: "KL", equivalencia: "Muslo", orden: 2 },
   ];
   const filas = renglonesDesdePlantilla(plantilla, 99, { secciones: true });
@@ -249,6 +251,51 @@ test("renglonesDesdePlantilla: con secciones sale la plantilla dos veces, despre
   const { seccion: _a, ...primera } = filas[0];
   const { seccion: _b, ...tercera } = filas[2];
   assert.deepEqual(primera, tercera);
+});
+
+test("renglonesDesdePlantilla: con secciones, 'otros' lleva solo las filas con PECHUGA y va al final", () => {
+  const plantilla = [
+    { id: 11, codigo_item: "1234", descripcion_item: "POLLO", unidad: "KL", equivalencia: "Pechuga con hueso", orden: 1 },
+    { id: 12, codigo_item: "5678", descripcion_item: "MUSLO", unidad: "KL", equivalencia: "Muslo", orden: 2 },
+    { id: 13, codigo_item: "9999", descripcion_item: "PECHUGA S/H", unidad: "KL", equivalencia: "", orden: 3 },
+  ];
+  const filas = renglonesDesdePlantilla(plantilla, 99, { secciones: true });
+  assert.equal(filas.length, 3 + 3 + 2);
+  assert.deepEqual(
+    filas.map((f) => [f.seccion, f.equivalencia_id]),
+    [
+      ["despresado", 11], ["despresado", 12], ["despresado", 13],
+      ["sin_despresar", 11], ["sin_despresar", 12], ["sin_despresar", 13],
+      [SECCION_OTROS, 11], [SECCION_OTROS, 13],
+    ],
+  );
+  // Misma fila de plantilla, mismo item: solo cambia la sección.
+  const { seccion: _a, ...enAlas } = filas[0];
+  const { seccion: _b, ...enOtros } = filas[6];
+  assert.deepEqual(enAlas, enOtros);
+});
+
+test("renglonesDesdePlantilla: sin ninguna pechuga no hay sección 'otros'", () => {
+  const plantilla = [{ id: 12, codigo_item: "5678", descripcion_item: "MUSLO", unidad: "KL", equivalencia: "Muslo", orden: 2 }];
+  const filas = renglonesDesdePlantilla(plantilla, 99, { secciones: true });
+  assert.equal(filas.length, 2);
+  assert.ok(filas.every((f) => f.seccion !== SECCION_OTROS));
+});
+
+test("renglonesDesdePlantilla: sin secciones no genera 'otros' aunque haya pechuga", () => {
+  const filas = renglonesDesdePlantilla([{ id: 1, codigo_item: "1", unidad: "KL", equivalencia: "Pechuga" }], 99);
+  assert.deepEqual(filas.map((f) => f.seccion), [""]);
+});
+
+test("esRenglonSeccionOtros: PECHUGA sin importar mayúsculas ni tildes; usa la descripción si no hay equivalencia", () => {
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "pechuga" }), true);
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "PÉCHUGA entera" }), true);
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "Filete de Pechuga" }), true);
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "", descripcion_item: "PECHUGA SIN HUESO" }), true);
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "Muslo", descripcion_item: "PECHUGA" }), false);
+  assert.equal(esRenglonSeccionOtros({ equivalencia: "Alas" }), false);
+  assert.equal(esRenglonSeccionOtros({}), false);
+  assert.equal(esRenglonSeccionOtros(null), false);
 });
 
 // ─── Errores de la base ────────────────────────────────────────────────────

@@ -191,8 +191,38 @@ export function avisosDeFactura(factura) {
   ];
 }
 
-/** Secciones de la pantalla para los proveedores con `secciones_despresado`, en el orden en que se muestran. */
+/**
+ * Secciones de la pantalla para los proveedores con `secciones_despresado`, en el
+ * orden en que se muestran. Las dos primeras ("Con alas" y "Sin alas") reciben la
+ * plantilla completa; "otros" solo las filas que cumplen `esRenglonSeccionOtros`.
+ * Las llaves son internas y no cambian aunque cambie la etiqueta (hay datos con ellas).
+ */
 export const SECCIONES_DESPRESADO = ["despresado", "sin_despresar"];
+
+/** Llave de la tercera sección ("Otros"), que va después de `SECCIONES_DESPRESADO`. */
+export const SECCION_OTROS = "otros";
+
+/** Texto (en mayúsculas y sin tildes) que hace que una fila de la plantilla vaya a "Otros". */
+export const TEXTO_SECCION_OTROS = "PECHUGA";
+
+/** Mayúsculas y sin tildes, para comparar nombres sin depender de cómo se digitaron. */
+function normalizarNombre(texto) {
+  return String(texto ?? "")
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase();
+}
+
+/**
+ * ¿Esta fila de la plantilla también va en la sección "Otros"? Hoy: su nombre
+ * (la equivalencia, que es lo que se muestra; si está vacía, la descripción de
+ * SIESA) contiene "PECHUGA", sin importar mayúsculas ni tildes.
+ * Es la ÚNICA regla: para cambiar qué entra a "Otros" se edita acá.
+ */
+export function esRenglonSeccionOtros(equivalencia) {
+  const nombre = String(equivalencia?.equivalencia ?? "").trim() || equivalencia?.descripcion_item;
+  return normalizarNombre(nombre).includes(TEXTO_SECCION_OTROS);
+}
 
 /**
  * Los renglones de una recepción nueva: uno por fila de la plantilla, con todo lo
@@ -200,23 +230,27 @@ export const SECCIONES_DESPRESADO = ["despresado", "sin_despresar"];
  * cambia una recepción ya abierta. `equivalencia_id` solo dice de dónde salió.
  *
  * Con `secciones` (proveedor con `secciones_despresado`) la plantilla sale DOS
- * veces: primero todas las filas en "despresado" y luego todas en "sin_despresar".
- * Es el mismo codigo_item, solo una separación visual. Sin secciones, `seccion` es ''.
+ * veces: primero todas las filas en "despresado" y luego todas en "sin_despresar";
+ * al final, solo las filas que cumplen `esRenglonSeccionOtros` salen una tercera
+ * vez en "otros" (si ninguna cumple, no hay sección). Es el mismo codigo_item,
+ * solo una separación visual. Sin secciones, `seccion` es ''.
  */
 export function renglonesDesdePlantilla(equivalencias = [], recepcionId, { secciones = false } = {}) {
-  const grupos = secciones ? SECCIONES_DESPRESADO : [""];
-  return grupos.flatMap((seccion) =>
-    equivalencias.map((e) => ({
-      recepcion_id: recepcionId,
-      equivalencia_id: e.id,
-      codigo_item: e.codigo_item,
-      descripcion_item: e.descripcion_item ?? null,
-      unidad: e.unidad,
-      equivalencia: e.equivalencia ?? "",
-      orden: e.orden ?? 0,
-      seccion,
-    })),
-  );
+  const aRenglon = (e, seccion) => ({
+    recepcion_id: recepcionId,
+    equivalencia_id: e.id,
+    codigo_item: e.codigo_item,
+    descripcion_item: e.descripcion_item ?? null,
+    unidad: e.unidad,
+    equivalencia: e.equivalencia ?? "",
+    orden: e.orden ?? 0,
+    seccion,
+  });
+  if (!secciones) return equivalencias.map((e) => aRenglon(e, ""));
+  return [
+    ...SECCIONES_DESPRESADO.flatMap((seccion) => equivalencias.map((e) => aRenglon(e, seccion))),
+    ...equivalencias.filter(esRenglonSeccionOtros).map((e) => aRenglon(e, SECCION_OTROS)),
+  ];
 }
 
 // ─── Errores de la base ────────────────────────────────────────────────────

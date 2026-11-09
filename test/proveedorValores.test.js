@@ -36,6 +36,7 @@ import {
   excesoConfirmado,
   confirmacionesPendientes,
   valorDevuelto,
+  etiquetaSeccion,
   validarRenglon,
   validarRecepcion,
   resumenRecepcion,
@@ -733,4 +734,13 @@ test("cantidadAlmacenada: lo guardado es lo que manda el builder (UND trunca a 2
   assert.equal(cantidadAlmacenada(5.3339, "UND"), 5.33);
   assert.equal(cantidadAlmacenada(2.6666, "KL"), 2.667);
   assert.equal(cantidadAlmacenada(10.5, "kg"), 10.5);
+});
+
+test("etiquetaSeccion: las llaves internas se muestran como Con alas / Sin alas / Otros", () => {
+  assert.equal(etiquetaSeccion("despresado"), "Con alas");
+  assert.equal(etiquetaSeccion("sin_despresar"), "Sin alas");
+  assert.equal(etiquetaSeccion("otros"), "Otros");
+  assert.equal(etiquetaSeccion(""), "");
+  assert.equal(etiquetaSeccion("desconocida"), "");
+  assert.equal(etiquetaSeccion(undefined), "");
 });

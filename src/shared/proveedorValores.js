@@ -322,9 +322,10 @@ export function valorDevuelto({ cantidad, valor_total, cantidad_devuelta } = {})
   return Math.round((total * acotada) / c);
 }
 
-const ETIQUETAS_SECCION = { despresado: "Despresado", sin_despresar: "Sin despresar" };
+// Las llaves son internas (hay datos guardados con ellas); solo cambia lo que se lee.
+const ETIQUETAS_SECCION = { despresado: "Con alas", sin_despresar: "Sin alas", otros: "Otros" };
 
-/** "despresado" → "Despresado"; sin sección o desconocida → "". */
+/** "despresado" → "Con alas"; "sin_despresar" → "Sin alas"; "otros" → "Otros"; sin sección o desconocida → "". */
 export function etiquetaSeccion(seccion) {
   return ETIQUETAS_SECCION[seccion] || "";
 }

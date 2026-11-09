@@ -9,8 +9,8 @@
  * ─── Decisiones ────────────────────────────────────────────────────────────
  *
  *   · `origen` = 'adicional' marca el renglón; los de la plantilla son 'plantilla'.
- *   · SIN sección (`seccion` = ''), aunque el proveedor trabaje con "Despresado /
- *     Sin despresar" (Bucanero). La sección es una separación visual de la lista de
+ *   · SIN sección (`seccion` = ''), aunque el proveedor trabaje con secciones
+ *     ("Con alas / Sin alas / Otros", Bucanero). La sección es una separación visual de la lista de
  *     la plantilla; un corte adicional se muestra aparte, bajo "Cortes adicionales",
  *     y es UN renglón (no se duplica por sección). La llave única de la base
  *     (recepcion_id, equivalencia_id, seccion) no lo toca: `equivalencia_id` es NULL.
