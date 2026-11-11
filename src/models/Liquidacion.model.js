@@ -822,6 +822,9 @@ export async function eliminar(id) {
  * consolidado a medias sin que el admin sepa cuáles entraron.
  */
 export async function vincular(id, recepcionIds = []) {
+  // Con documentos vigentes en SIESA la recepción nueva no estaría en ellos, y su
+  // kilaje cambiaría el reparto de costos que ya se mandó.
+  await exigirSinDocumentosEnSiesa(id, "vincular recepciones");
   const liquidacion = await exigirEditable(id);
 
   const { data: candidatas, error } = await supabase

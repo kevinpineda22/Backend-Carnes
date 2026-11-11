@@ -1,4 +1,4 @@
-// reabrir / eliminar / costear no pueden tocar una liquidación con documentos vigentes
+// reabrir / eliminar / costear / vincular no pueden tocar una liquidación con documentos vigentes
 // en SIESA (la oficial por fecha puede estar parcial con la liquidación Costeada).
 // Supabase falso; usa mock.module (npm test corre con --experimental-test-module-mocks).
 import test, { mock } from "node:test";
@@ -35,6 +35,7 @@ for (const [nombre, accion, texto] of [
   ["reabrir", () => L.reabrir(6), /reabrirla/],
   ["eliminar", () => L.eliminar(6), /borrarla/],
   ["costear", () => L.costear(6), /volver a costearla/],
+  ["vincular", () => L.vincular(6, [11, 12]), /vincular recepciones/],
 ]) {
   test(`${nombre}: con una oficial por fecha ya ok en SIESA responde 409 y no toca nada`, async () => {
     otrasConsultas = [];
