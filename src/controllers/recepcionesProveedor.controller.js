@@ -2,7 +2,7 @@ import * as RecepcionProveedorModel from "../models/RecepcionProveedor.model.js"
 import * as PostFinalizarProveedor from "../models/PostFinalizarProveedor.model.js";
 import * as SiesaEnvioModel from "../models/SiesaEnvio.model.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
-import { notificarConfirmacionProveedor } from "../services/notificaciones.service.js";
+import { notificarConfirmacionProveedor, notificarRecepcionProveedor } from "../services/notificaciones.service.js";
 import { hoyBogota } from "../shared/proveedorValores.js";
 import { normalizarCorreo, ventanaHistorial } from "../shared/historialRecibidor.js";
 
@@ -232,6 +232,16 @@ export async function finalizar(req, res, next) {
         ? Promise.resolve(null)
         : notificarConfirmacionProveedor(recepcion, recepcion.items, resumen),
     ]);
+    // El aviso a CARNES_MAIL_PROVEEDORES va DESPUÉS de SIESA para llevar su
+    // resultado. Nunca lanza (y por si acaso, un fallo acá no cambia la respuesta).
+    let avisoProveedores = null;
+    if (!yaFinalizada) {
+      try {
+        avisoProveedores = await notificarRecepcionProveedor(recepcion, recepcion.items, resumen, despues);
+      } catch (e) {
+        avisoProveedores = { success: false, error: e?.message };
+      }
+    }
     res.json({
       ok: true,
       // Si la entrada quedó ok, la recepción ya pasó a Enviada_SIESA: que `data` lo diga.
@@ -239,6 +249,7 @@ export async function finalizar(req, res, next) {
       resumen,
       ya_finalizada: yaFinalizada,
       confirmacion,
+      aviso_proveedores: avisoProveedores,
       ...despues,
     });
   } catch (error) {

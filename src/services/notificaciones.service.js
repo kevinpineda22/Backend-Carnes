@@ -1,5 +1,11 @@
-import { sendEmail, destinatariosAdmin, destinatariosAnulacion } from "./email.service.js";
+import {
+  sendEmail,
+  destinatariosAdmin,
+  destinatariosAnulacion,
+  destinatariosProveedores,
+} from "./email.service.js";
 import { armarConfirmacion } from "../shared/confirmacionRecepcion.js";
+import { armarAvisoProveedores } from "../shared/avisoRecepcionProveedor.js";
 
 /* =============================================
    Avisos por correo del módulo de carnes.
@@ -408,6 +414,35 @@ export function notificarConfirmacionRecibidor(recepcion, items = []) {
  */
 export function notificarConfirmacionProveedor(recepcion, items = [], resumen = null) {
   return enviarConfirmacion("proveedor", recepcion, items, resumen);
+}
+
+/**
+ * Avisa a los destinatarios de CARNES_MAIL_PROVEEDORES que una recepción de
+ * proveedor quedó finalizada, con el resultado de SIESA. Sin destinatarios no
+ * manda nada (no hay respaldo al admin): solo deja un log. Nunca lanza; quien
+ * llama lo espera (Vercel congela la función al responder).
+ *
+ * @param {object} recepcion  recepción finalizada de `carnes_proveedor_recepciones`
+ * @param {object[]} items    renglones
+ * @param {object} resumen    `resumenRecepcion(items, { descuentoPct })`
+ * @param {object} [siesa]    resultado de `despuesDeFinalizar` ({ referencias, siesa, notaCredito })
+ */
+export async function notificarRecepcionProveedor(recepcion, items = [], resumen = null, siesa = null) {
+  try {
+    const to = destinatariosProveedores();
+    if (to.length === 0) {
+      console.log(
+        `[email] Aviso de la recepción de proveedor #${recepcion?.id} omitido: ` +
+          "CARNES_MAIL_PROVEEDORES vacía.",
+      );
+      return { success: false, omitido: true };
+    }
+    const { subject, html } = armarAvisoProveedores(recepcion, items, resumen, siesa);
+    return await sendEmail({ to, subject, html });
+  } catch (e) {
+    console.error(`[email] Aviso de proveedores de la recepción #${recepcion?.id} falló: ${e?.message}`);
+    return { success: false, error: e?.message || "Error al armar el aviso" };
+  }
 }
 
 /** Nombre legible del tipo de envío a SIESA, para asunto y cuerpo del correo. */

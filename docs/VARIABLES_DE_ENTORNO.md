@@ -8,12 +8,13 @@ Environment Variables cuando se despliegue).
 
 ## Lo que falta en el `.env` actual
 
-El `.env` que ya existe tiene Supabase y SMTP. Faltan cuatro, y sin las dos
+El `.env` que ya existe tiene Supabase y SMTP. Faltan cinco, y sin las dos
 primeras el módulo queda a medias:
 
 | Variable | Qué pasa si falta |
 |---|---|
 | `CARNES_MAIL_ADMIN` | **el aviso al admin no sale**. Queda en el log del server y nada más. |
+| `CARNES_MAIL_PROVEEDORES` | **el aviso de recepción de proveedor no sale** (no cae al admin). Queda en el log del server. |
 | `CARNES_ADMIN_KEY` | `GET /api/sedes/tokens` y `regenerar-token` responden 503. No se pueden imprimir los stickers de QR. |
 | `CARNES_PANEL_URL` | el botón del correo apunta al default. |
 | `CARNES_SANDBOX` | sin ella el sandbox queda **apagado** y los correos de prueba salen de verdad. |
@@ -37,6 +38,12 @@ EMAIL_PASS=
 # Quién recibe el aviso de "el recibidor ya terminó". Acepta varios separados
 # por coma. Sin esto el correo no sale, y queda registrado en el log del server.
 CARNES_MAIL_ADMIN=
+
+# Quién recibe el aviso de cada recepción de proveedor finalizada (proveedor,
+# factura, productos, devoluciones, totales y resultado de SIESA). Acepta varios
+# separados por coma o punto y coma. SIN respaldo al admin: si está vacía ese
+# correo no sale y queda registrado en el log del server.
+CARNES_MAIL_PROVEEDORES=
 
 # A dónde apunta el botón "Revisar y aprobar" del correo.
 CARNES_PANEL_URL=https://merkahorro.com/carnes/admin

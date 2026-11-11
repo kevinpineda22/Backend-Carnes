@@ -22,6 +22,8 @@ import { sandboxOn } from "../config/sandbox.js";
    Destinatarios (acepta varios separados por coma):
 
      CARNES_MAIL_ADMIN → quien recibe el aviso de "el recibidor ya terminó".
+     CARNES_MAIL_PROVEEDORES → quien recibe el aviso de cada recepción de
+                               proveedor finalizada (sin respaldo: vacía = no sale).
    ============================================= */
 
 const transporter = nodemailer.createTransport({
@@ -37,14 +39,14 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Parsea una lista de correos separados por coma, deduplicando sin distinguir
+ * Parsea una lista de correos separados por coma o punto y coma, deduplicando sin distinguir
  * mayúsculas. Sin la deduplicación, un correo repetido en la variable de entorno
  * le llega dos veces a la misma persona.
  */
 function lista(valor) {
   const vistos = new Set();
   return String(valor || "")
-    .split(",")
+    .split(/[,;]/)
     .map((s) => s.trim())
     .filter(Boolean)
     .filter((correo) => {
@@ -58,6 +60,15 @@ function lista(valor) {
 /** Se lee por llamada, no se cachea: ver el comentario de `sandboxOn`. */
 export function destinatariosAdmin() {
   return lista(process.env.CARNES_MAIL_ADMIN);
+}
+
+/**
+ * Quien recibe el aviso interno de cada recepción de proveedor finalizada. SIN
+ * respaldo al admin a propósito: es un aviso de otra área, y si la variable está
+ * vacía el correo simplemente no sale. Se lee por llamada, no se cachea.
+ */
+export function destinatariosProveedores() {
+  return lista(process.env.CARNES_MAIL_PROVEEDORES);
 }
 
 /**
