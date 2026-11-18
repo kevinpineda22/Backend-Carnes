@@ -31,9 +31,11 @@
    ============================================= */
 
 import {
+  LIMITES,
   TOPE_FILAS_EXCEL,
   claveFila,
   idsADesactivar,
+  normalizarEquivalencia,
   normalizarHojaEquivalencias,
 } from "./equivalenciasProveedor.js";
 
@@ -321,6 +323,152 @@ export function planearCorteManual({ existentes = [], corte }) {
       descripcion_item: corte.descripcion_item ?? null,
       unidad: corte.unidad,
       equivalencia: "",
+      orden,
+      activo: true,
+    },
+  };
+}
+
+// ─── Editar / agregar una equivalencia de un corte ─────────────────────────
+
+export const MENSAJE_EQUIVALENCIA_LARGA = `La equivalencia no puede pasar de ${LIMITES.equivalencia} caracteres.`;
+export const MENSAJE_EQUIVALENCIA_VACIA = "Escribí la equivalencia.";
+const MENSAJE_FILA_NO_ENCONTRADA = "La fila de la plantilla no existe o ya no está activa.";
+
+/**
+ * La equivalencia escrita a mano, normalizada igual que la del Excel (texto recortado)
+ * y con el mismo tope de ancho de la columna.
+ *
+ * @returns {{ ok: true, equivalencia: string } | { ok: false, mensaje: string }}
+ */
+export function normalizarEquivalenciaManual(valor) {
+  if (typeof valor !== "string") return { ok: false, mensaje: "La equivalencia no es válida." };
+  const equivalencia = normalizarEquivalencia(valor);
+  if (equivalencia.length > LIMITES.equivalencia) {
+    return { ok: false, mensaje: MENSAJE_EQUIVALENCIA_LARGA };
+  }
+  return { ok: true, equivalencia };
+}
+
+/** Las filas del mismo corte (codigo_item + unidad) que `origen`, sin contar a `origen`. */
+function hermanasDelCorte(origen, existentes) {
+  const codigo = String(origen.codigo_item).trim();
+  return existentes.filter(
+    (e) =>
+      e.id !== origen.id &&
+      String(e.codigo_item).trim() === codigo &&
+      e.unidad === origen.unidad,
+  );
+}
+
+const choque = (hermana, equivalencia) => {
+  const conflicto = { accion: "conflicto", codigo: "EQUIVALENCIA_YA_EXISTE" };
+  if (hermana.activo) {
+    return {
+      ...conflicto,
+      mensaje:
+        equivalencia === ""
+          ? "Este corte ya tiene una fila sin equivalencia."
+          : "Este corte ya tiene esa equivalencia.",
+    };
+  }
+  return {
+    ...conflicto,
+    inactiva: true,
+    mensaje:
+      equivalencia === ""
+        ? "Este corte tuvo antes una fila sin equivalencia que está desactivada. No se puede reutilizar desde acá."
+        : "Esa equivalencia existe en este corte como fila desactivada. No se puede reutilizar desde acá.",
+  };
+};
+
+/**
+ * Qué pasa al EDITAR la equivalencia de una fila de la plantilla.
+ *
+ * `origen` es la fila que se edita y `existentes` las filas del proveedor de su corte
+ * (activas e inactivas; basta con las del mismo código y unidad, pero se filtra igual).
+ *
+ *   · `origen` no existe o está inactiva                 → "no_encontrada".
+ *   · Texto mayor al ancho de la columna                 → "invalida" (400).
+ *   · Mismo valor que ya tiene                           → "sin_cambios": no se escribe.
+ *   · Otra fila ACTIVA del corte ya tiene ese valor      → "conflicto" (409). Vale también
+ *     para '' (solo puede haber una fila "sin equivalencia" activa por corte).
+ *   · Una fila INACTIVA del corte ya tiene ese valor     → "conflicto" con `inactiva: true`
+ *     (409). No se fusionan: reactivarla desde una edición reescribiría otra fila.
+ *   · Si no                                              → "actualizar".
+ *
+ * @returns {{ accion: "no_encontrada" }
+ *         | { accion: "invalida", mensaje: string }
+ *         | { accion: "sin_cambios" }
+ *         | { accion: "conflicto", codigo: string, mensaje: string, inactiva?: boolean }
+ *         | { accion: "actualizar", id: *, equivalencia: string }}
+ */
+export function planearEdicionEquivalencia({ origen, existentes = [], equivalencia }) {
+  if (!origen || !origen.activo) return { accion: "no_encontrada", mensaje: MENSAJE_FILA_NO_ENCONTRADA };
+  const normal = normalizarEquivalenciaManual(equivalencia);
+  if (!normal.ok) return { accion: "invalida", mensaje: normal.mensaje };
+
+  const nueva = normal.equivalencia;
+  if (nueva === (origen.equivalencia ?? "")) return { accion: "sin_cambios" };
+
+  const hermanas = hermanasDelCorte(origen, existentes).filter(
+    (e) => (e.equivalencia ?? "") === nueva,
+  );
+  // Si coinciden una activa y una inactiva (imposible por el UNIQUE) gana la activa.
+  const rival = hermanas.find((e) => e.activo) ?? hermanas[0];
+  if (rival) return choque(rival, nueva);
+  return { accion: "actualizar", id: origen.id, equivalencia: nueva };
+}
+
+/**
+ * Qué pasa al AGREGAR otra equivalencia al mismo corte de una fila de la plantilla.
+ *
+ *   · `origen` no existe o está inactiva                 → "no_encontrada".
+ *   · Vacía o más larga que la columna                   → "invalida" (400).
+ *   · Una fila ACTIVA del corte ya la tiene (incluida `origen`) → "duplicada" (409).
+ *   · Una fila INACTIVA con la llave exacta del UNIQUE   → "reactivar" (como "Agregar corte").
+ *   · Si no                                              → "crear" una fila con el mismo
+ *     código, descripción y unidad.
+ *
+ * `orden`: la fila nueva (o reactivada) toma el MISMO `orden` que `origen`. La lectura de
+ * la plantilla ordena por (orden, id), así que queda justo detrás de `origen` y de sus
+ * otras equivalencias sin renumerar el resto de la plantilla (`orden` es un entero sin
+ * huecos; meter un valor intermedio obligaría a reescribir todas las filas siguientes).
+ * Una fila reactivada con un id menor puede aparecer antes de `origen`: es el costo de
+ * no renumerar.
+ *
+ * @returns {{ accion: "no_encontrada", mensaje: string }
+ *         | { accion: "invalida", mensaje: string }
+ *         | { accion: "duplicada", codigo: string, mensaje: string }
+ *         | { accion: "reactivar", id: *, orden: number }
+ *         | { accion: "crear", fila: object }}
+ */
+export function planearEquivalenciaAdicional({ origen, existentes = [], equivalencia }) {
+  if (!origen || !origen.activo) return { accion: "no_encontrada", mensaje: MENSAJE_FILA_NO_ENCONTRADA };
+  const normal = normalizarEquivalenciaManual(equivalencia);
+  if (!normal.ok) return { accion: "invalida", mensaje: normal.mensaje };
+  const nueva = normal.equivalencia;
+  if (nueva === "") return { accion: "invalida", mensaje: MENSAJE_EQUIVALENCIA_VACIA };
+
+  const mismas = [origen, ...hermanasDelCorte(origen, existentes)].filter(
+    (e) => (e.equivalencia ?? "") === nueva,
+  );
+  if (mismas.some((e) => e.activo)) {
+    return {
+      accion: "duplicada",
+      codigo: "EQUIVALENCIA_YA_EXISTE",
+      mensaje: "Este corte ya tiene esa equivalencia.",
+    };
+  }
+  const orden = Number(origen.orden) || 0;
+  if (mismas.length > 0) return { accion: "reactivar", id: mismas[0].id, orden };
+  return {
+    accion: "crear",
+    fila: {
+      codigo_item: String(origen.codigo_item).trim(),
+      descripcion_item: origen.descripcion_item ?? null,
+      unidad: origen.unidad,
+      equivalencia: nueva,
       orden,
       activo: true,
     },

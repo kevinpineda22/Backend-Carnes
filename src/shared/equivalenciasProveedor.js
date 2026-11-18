@@ -487,6 +487,15 @@ export function claveFila({ codigo_item, unidad, equivalencia }) {
 }
 
 /**
+ * La equivalencia como la deja la carga de Excel: texto recortado (los espacios duros
+ * cuentan como espacio) y '' si no hay nada. Es la MISMA normalización de la hoja, para
+ * que una equivalencia escrita a mano y una del Excel produzcan la misma llave del UNIQUE.
+ */
+export function normalizarEquivalencia(valor) {
+  return texto(valor);
+}
+
+/**
  * Ids de equivalencias ACTIVAS que ya no están en la hoja y hay que desactivar.
  * Nunca se borran: las recepciones ya hechas apuntan a su fila.
  *

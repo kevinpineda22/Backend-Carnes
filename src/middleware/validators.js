@@ -9,7 +9,13 @@ import {
   LIMITE_HISTORIAL_MAX,
   OFFSET_HISTORIAL_MAX,
 } from "../shared/historialRecibidor.js";
-import { TOPE_COLUMNAS_CARGA, TOPE_FILAS_CARGA } from "../shared/plantillaProveedor.js";
+import {
+  MENSAJE_EQUIVALENCIA_LARGA,
+  MENSAJE_EQUIVALENCIA_VACIA,
+  TOPE_COLUMNAS_CARGA,
+  TOPE_FILAS_CARGA,
+} from "../shared/plantillaProveedor.js";
+import { LIMITES as LIMITES_PLANTILLA, normalizarEquivalencia } from "../shared/equivalenciasProveedor.js";
 
 /* =============================================
    Validación de entrada con zod.
@@ -386,6 +392,32 @@ const agregarCorteProveedorSchema = z.object({
 const agregarCorteAdicionalSchema = z.object({
   editado_por: correo("El correo de quien agrega el corte no es válido."),
   ...corteDelCatalogo,
+});
+
+/** `:id` del proveedor + `:equivalencia_id` de la fila de su plantilla. */
+const plantillaFilaParamsSchema = z.object({
+  id: idParamSchema.shape.id,
+  equivalencia_id: z.coerce
+    .number({ invalid_type_error: "La fila de la plantilla no es válida." })
+    .int("La fila de la plantilla no es válida.")
+    .positive("La fila de la plantilla no es válida.")
+    .safe("La fila de la plantilla no es válida."),
+});
+
+/** La equivalencia con la misma normalización de la carga de Excel; '' = "Sin equivalencia". */
+const equivalenciaEscrita = z
+  .string({ required_error: "Falta la equivalencia.", invalid_type_error: "La equivalencia no es válida." })
+  .transform(normalizarEquivalencia)
+  .refine((v) => v.length <= LIMITES_PLANTILLA.equivalencia, MENSAJE_EQUIVALENCIA_LARGA);
+
+const editarEquivalenciaProveedorSchema = z.object({
+  por: correo("El correo de quien edita la equivalencia no es válido."),
+  equivalencia: equivalenciaEscrita,
+});
+
+const agregarEquivalenciaProveedorSchema = z.object({
+  por: correo("El correo de quien agrega la equivalencia no es válido."),
+  equivalencia: equivalenciaEscrita.refine((v) => v.length > 0, MENSAJE_EQUIVALENCIA_VACIA),
 });
 
 /** `:id` de la recepción + `:item_id` del renglón. */
@@ -850,6 +882,9 @@ export const validators = {
   buscarCortes: validar(buscarCortesQuerySchema, "query"),
   agregarCorteProveedor: validar(agregarCorteProveedorSchema),
   agregarCorteAdicional: validar(agregarCorteAdicionalSchema),
+  plantillaFilaParams: validar(plantillaFilaParamsSchema, "params"),
+  editarEquivalenciaProveedor: validar(editarEquivalenciaProveedorSchema),
+  agregarEquivalenciaProveedor: validar(agregarEquivalenciaProveedorSchema),
   corteAdicionalParams: validar(corteAdicionalParamsSchema, "params"),
 
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),

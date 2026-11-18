@@ -7,6 +7,8 @@ import {
   idsADesactivarDelPlan,
   planearCargaPlantilla,
   planearCorteManual,
+  planearEdicionEquivalencia,
+  planearEquivalenciaAdicional,
   validarFormaFilas,
 } from "../shared/plantillaProveedor.js";
 import * as CatalogoModel from "./Catalogo.model.js";
@@ -261,6 +263,129 @@ export async function agregarCorte(id, { codigo_item, unidad, descripcion_item, 
   console.log(
     `➕ Corte ${corte.codigo_item} (${corte.unidad}) agregado a la plantilla del proveedor #${id} por ${por}` +
       (plan.accion === "reactivar" ? " (reactivado)" : ""),
+  );
+  return { fila, reactivada: plan.accion === "reactivar" };
+}
+
+/* =============================================
+   Editar / agregar una equivalencia de un corte desde el admin
+   (PATCH /proveedores/:id/plantilla/:equivalencia_id y
+    POST  /proveedores/:id/plantilla/:equivalencia_id/equivalencias).
+
+   Las reglas viven en `planearEdicionEquivalencia` y `planearEquivalenciaAdicional`.
+   Toda lectura y escritura va por (proveedor_id, id): un id de otro proveedor es 404.
+   Las recepciones ya hechas guardan el TEXTO de la equivalencia, así que editar la
+   fila no cambia lo recibido.
+   ============================================= */
+
+const MENSAJE_FILA_NO_ENCONTRADA = "La fila de la plantilla no existe o ya no está activa.";
+
+/** La fila de plantilla del proveedor y sus hermanas de corte (mismo código y unidad). */
+async function leerFilaYHermanas(proveedorId, equivalenciaId) {
+  const { data: origen, error } = await supabase
+    .from("carnes_proveedor_equivalencias")
+    .select(CAMPOS_EXISTENTES)
+    .eq("proveedor_id", proveedorId)
+    .eq("id", equivalenciaId)
+    .maybeSingle();
+  if (error) fallarSiFaltaMigracion(error, "Error al leer la plantilla", MIGRACIONES);
+  if (!origen || !origen.activo) throw createError(404, MENSAJE_FILA_NO_ENCONTRADA);
+
+  const { data: existentes, error: errorHermanas } = await supabase
+    .from("carnes_proveedor_equivalencias")
+    .select(CAMPOS_EXISTENTES)
+    .eq("proveedor_id", proveedorId)
+    .eq("codigo_item", origen.codigo_item)
+    .eq("unidad", origen.unidad);
+  if (errorHermanas) fallarSiFaltaMigracion(errorHermanas, "Error al leer la plantilla", MIGRACIONES);
+  return { origen, existentes: existentes || [] };
+}
+
+/** 23505: otro admin tomó esa equivalencia entre la lectura y la escritura. */
+function fallarSiChoque(error) {
+  if (error?.code === "23505") {
+    throw createError(409, "Este corte ya tiene esa equivalencia.", "EQUIVALENCIA_YA_EXISTE");
+  }
+}
+
+/**
+ * Cambia la equivalencia de una fila activa de la plantilla.
+ * @returns {Promise<{ fila: object, cambiada: boolean }>}
+ */
+export async function editarEquivalencia(id, equivalenciaId, { equivalencia, por }) {
+  await leerProveedorActivo(id);
+  const { origen, existentes } = await leerFilaYHermanas(id, equivalenciaId);
+  const plan = planearEdicionEquivalencia({ origen, existentes, equivalencia });
+
+  if (plan.accion === "no_encontrada") throw createError(404, plan.mensaje);
+  if (plan.accion === "invalida") throw createError(400, plan.mensaje);
+  if (plan.accion === "conflicto") throw createError(409, plan.mensaje, plan.codigo);
+  if (plan.accion === "sin_cambios") {
+    const { id: filaId, codigo_item, descripcion_item, unidad, equivalencia: actual, orden } = origen;
+    return {
+      fila: { id: filaId, codigo_item, descripcion_item, unidad, equivalencia: actual, orden },
+      cambiada: false,
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("carnes_proveedor_equivalencias")
+    .update({ equivalencia: plan.equivalencia })
+    .eq("proveedor_id", id)
+    .eq("id", equivalenciaId)
+    .eq("activo", true)
+    .select(CAMPOS_EQUIVALENCIA)
+    .maybeSingle();
+  fallarSiChoque(error);
+  if (error) fallarSiFaltaMigracion(error, "No se pudo editar la equivalencia", MIGRACIONES);
+  if (!data) throw createError(404, MENSAJE_FILA_NO_ENCONTRADA);
+
+  console.log(
+    `✏️ Equivalencia de la fila #${equivalenciaId} (corte ${origen.codigo_item} ${origen.unidad}) del proveedor #${id} ` +
+      `editada por ${por}: "${origen.equivalencia ?? ""}" -> "${plan.equivalencia}"`,
+  );
+  return { fila: data, cambiada: true };
+}
+
+/**
+ * Suma otra equivalencia al mismo corte que una fila activa de la plantilla.
+ * @returns {Promise<{ fila: object, reactivada: boolean }>}
+ */
+export async function agregarEquivalencia(id, equivalenciaId, { equivalencia, por }) {
+  await leerProveedorActivo(id);
+  const { origen, existentes } = await leerFilaYHermanas(id, equivalenciaId);
+  const plan = planearEquivalenciaAdicional({ origen, existentes, equivalencia });
+
+  if (plan.accion === "no_encontrada") throw createError(404, plan.mensaje);
+  if (plan.accion === "invalida") throw createError(400, plan.mensaje);
+  if (plan.accion === "duplicada") throw createError(409, plan.mensaje, plan.codigo);
+
+  let fila;
+  if (plan.accion === "reactivar") {
+    const { data, error } = await supabase
+      .from("carnes_proveedor_equivalencias")
+      .update({ activo: true, orden: plan.orden, descripcion_item: origen.descripcion_item ?? null })
+      .eq("proveedor_id", id)
+      .eq("id", plan.id)
+      .select(CAMPOS_EQUIVALENCIA)
+      .single();
+    fallarSiChoque(error);
+    if (error) fallarSiFaltaMigracion(error, "No se pudo agregar la equivalencia", MIGRACIONES);
+    fila = data;
+  } else {
+    const { data, error } = await supabase
+      .from("carnes_proveedor_equivalencias")
+      .insert({ proveedor_id: id, ...plan.fila })
+      .select(CAMPOS_EQUIVALENCIA)
+      .single();
+    fallarSiChoque(error);
+    if (error) fallarSiFaltaMigracion(error, "No se pudo agregar la equivalencia", MIGRACIONES);
+    fila = data;
+  }
+
+  console.log(
+    `➕ Equivalencia "${fila.equivalencia}" agregada al corte ${origen.codigo_item} (${origen.unidad}) del proveedor #${id} por ${por}` +
+      (plan.accion === "reactivar" ? " (reactivada)" : ""),
   );
   return { fila, reactivada: plan.accion === "reactivar" };
 }

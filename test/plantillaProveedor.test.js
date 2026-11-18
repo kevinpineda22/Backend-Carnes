@@ -6,7 +6,10 @@ import {
   TOPE_FILAS_CARGA,
   filasAGuardar,
   idsADesactivarDelPlan,
+  normalizarEquivalenciaManual,
   planearCargaPlantilla,
+  planearEdicionEquivalencia,
+  planearEquivalenciaAdicional,
   resumenParaRespuesta,
   validarFormaFilas,
 } from "../src/shared/plantillaProveedor.js";
@@ -371,4 +374,179 @@ test("body: filas deben ser arreglos de celdas simples", () => {
   assert.equal(ancha.error.statusCode, 400);
   // null (celda vacía), números y booleanos pasan.
   assert.equal(correr({ por: CORREO, filas: [[null, 1, "x", false]] }).error, undefined);
+});
+
+// ─── Editar / agregar una equivalencia de un corte ─────────────────────────
+
+const CORREO_ADMIN = "admin@merkahorro.com";
+const fp = (id, equivalencia, extra = {}) => ({
+  id,
+  codigo_item: "20999",
+  descripcion_item: "CORTE X",
+  unidad: "KL",
+  equivalencia,
+  orden: 5,
+  activo: true,
+  ...extra,
+});
+const correrVal = (middleware, entrada, fuente = "body") => {
+  const req = { [fuente]: entrada };
+  let error;
+  middleware(req, {}, (e) => {
+    error = e;
+  });
+  return { error, body: req.body, datos: req.datosValidados };
+};
+
+test("normalizarEquivalenciaManual: recorta, acepta '' y rechaza lo que no cabe", () => {
+  assert.deepEqual(normalizarEquivalenciaManual("  Pierna  "), { ok: true, equivalencia: "Pierna" });
+  assert.deepEqual(normalizarEquivalenciaManual("   "), { ok: true, equivalencia: "" });
+  assert.equal(normalizarEquivalenciaManual("x".repeat(160)).ok, true);
+  assert.equal(normalizarEquivalenciaManual("x".repeat(161)).ok, false);
+  assert.equal(normalizarEquivalenciaManual(5).ok, false);
+});
+
+test("planearEdicionEquivalencia: la fila debe existir y estar activa", () => {
+  assert.equal(planearEdicionEquivalencia({ origen: null, equivalencia: "A" }).accion, "no_encontrada");
+  const inactiva = fp(1, "", { activo: false });
+  assert.equal(planearEdicionEquivalencia({ origen: inactiva, existentes: [inactiva], equivalencia: "A" }).accion, "no_encontrada");
+});
+
+test("planearEdicionEquivalencia: mismo valor no escribe (también tras recortar)", () => {
+  const o = fp(1, "Pierna");
+  assert.equal(planearEdicionEquivalencia({ origen: o, existentes: [o], equivalencia: "  Pierna " }).accion, "sin_cambios");
+  const vacia = fp(2, "");
+  assert.equal(planearEdicionEquivalencia({ origen: vacia, existentes: [vacia], equivalencia: "  " }).accion, "sin_cambios");
+});
+
+test("planearEdicionEquivalencia: llena una fila sin equivalencia", () => {
+  const o = fp(1, "");
+  assert.deepEqual(planearEdicionEquivalencia({ origen: o, existentes: [o], equivalencia: " Pollo entero " }), {
+    accion: "actualizar",
+    id: 1,
+    equivalencia: "Pollo entero",
+  });
+});
+
+test("planearEdicionEquivalencia: choca con otra fila ACTIVA del mismo corte", () => {
+  const o = fp(1, "A");
+  const otra = fp(2, "B");
+  const p = planearEdicionEquivalencia({ origen: o, existentes: [o, otra], equivalencia: "B" });
+  assert.equal(p.accion, "conflicto");
+  assert.equal(p.codigo, "EQUIVALENCIA_YA_EXISTE");
+  assert.equal(p.inactiva, undefined);
+});
+
+test("planearEdicionEquivalencia: dejar '' solo si el corte no tiene ya otra activa en ''", () => {
+  const o = fp(1, "A");
+  const sinEq = fp(2, "");
+  assert.equal(planearEdicionEquivalencia({ origen: o, existentes: [o, sinEq], equivalencia: "" }).accion, "conflicto");
+  assert.equal(planearEdicionEquivalencia({ origen: o, existentes: [o], equivalencia: "" }).accion, "actualizar");
+});
+
+test("planearEdicionEquivalencia: choca con una INACTIVA y lo dice (no fusiona)", () => {
+  const o = fp(1, "A");
+  const vieja = fp(2, "B", { activo: false });
+  const p = planearEdicionEquivalencia({ origen: o, existentes: [o, vieja], equivalencia: "B" });
+  assert.equal(p.accion, "conflicto");
+  assert.equal(p.inactiva, true);
+  assert.match(p.mensaje, /desactivada/);
+});
+
+test("planearEdicionEquivalencia: otros cortes y otras unidades no cuentan", () => {
+  const o = fp(1, "A");
+  const otroCodigo = fp(2, "B", { codigo_item: "111" });
+  const otraUnidad = fp(3, "B", { unidad: "UND" });
+  const p = planearEdicionEquivalencia({ origen: o, existentes: [o, otroCodigo, otraUnidad], equivalencia: "B" });
+  assert.equal(p.accion, "actualizar");
+});
+
+test("planearEdicionEquivalencia: texto demasiado largo es inválido", () => {
+  const o = fp(1, "");
+  assert.equal(planearEdicionEquivalencia({ origen: o, existentes: [o], equivalencia: "x".repeat(161) }).accion, "invalida");
+});
+
+test("planearEquivalenciaAdicional: vacía o demasiado larga es inválida", () => {
+  const o = fp(1, "A");
+  for (const equivalencia of ["", "   ", "x".repeat(161)]) {
+    assert.equal(planearEquivalenciaAdicional({ origen: o, existentes: [o], equivalencia }).accion, "invalida");
+  }
+});
+
+test("planearEquivalenciaAdicional: origen ausente o inactivo es no_encontrada", () => {
+  assert.equal(planearEquivalenciaAdicional({ origen: null, equivalencia: "B" }).accion, "no_encontrada");
+  const o = fp(1, "A", { activo: false });
+  assert.equal(planearEquivalenciaAdicional({ origen: o, existentes: [o], equivalencia: "B" }).accion, "no_encontrada");
+});
+
+test("planearEquivalenciaAdicional: duplicada si una activa del corte ya la tiene (incluida la de origen)", () => {
+  const o = fp(1, "A");
+  const otra = fp(2, "B");
+  assert.equal(planearEquivalenciaAdicional({ origen: o, existentes: [o, otra], equivalencia: "A" }).accion, "duplicada");
+  const p = planearEquivalenciaAdicional({ origen: o, existentes: [o, otra], equivalencia: " B " });
+  assert.equal(p.accion, "duplicada");
+  assert.equal(p.codigo, "EQUIVALENCIA_YA_EXISTE");
+});
+
+test("planearEquivalenciaAdicional: reactiva la inactiva con la llave exacta, con el orden del origen", () => {
+  const o = fp(1, "A", { orden: 7 });
+  const vieja = fp(9, "B", { activo: false, orden: 99 });
+  assert.deepEqual(planearEquivalenciaAdicional({ origen: o, existentes: [o, vieja], equivalencia: "B" }), {
+    accion: "reactivar",
+    id: 9,
+    orden: 7,
+  });
+});
+
+test("planearEquivalenciaAdicional: crea una fila hermana con el mismo corte y el orden del origen", () => {
+  const o = fp(1, "A", { orden: 7 });
+  assert.deepEqual(planearEquivalenciaAdicional({ origen: o, existentes: [o], equivalencia: " B " }), {
+    accion: "crear",
+    fila: {
+      codigo_item: "20999",
+      descripcion_item: "CORTE X",
+      unidad: "KL",
+      equivalencia: "B",
+      orden: 7,
+      activo: true,
+    },
+  });
+});
+
+test("planearEquivalenciaAdicional: una inactiva de otra unidad no se reutiliza", () => {
+  const o = fp(1, "A");
+  const otraUnidad = fp(2, "B", { unidad: "UND", activo: false });
+  assert.equal(planearEquivalenciaAdicional({ origen: o, existentes: [o, otraUnidad], equivalencia: "B" }).accion, "crear");
+});
+
+test("validador plantillaFilaParams: ids positivos", () => {
+  const ok = correrVal(validators.plantillaFilaParams, { id: "3", equivalencia_id: "12" }, "params");
+  assert.deepEqual([ok.error, ok.datos], [undefined, { id: 3, equivalencia_id: 12 }]);
+  for (const params of [{ id: "3", equivalencia_id: "0" }, { id: "x", equivalencia_id: "1" }, { id: "3" }]) {
+    assert.equal(correrVal(validators.plantillaFilaParams, params, "params").error?.statusCode, 400, JSON.stringify(params));
+  }
+});
+
+test("validador editarEquivalenciaProveedor: normaliza, acepta '' y respeta el tope", () => {
+  const ok = correrVal(validators.editarEquivalenciaProveedor, { por: CORREO_ADMIN, equivalencia: "  Pierna " });
+  assert.equal(ok.error, undefined);
+  assert.equal(ok.body.equivalencia, "Pierna");
+  assert.equal(correrVal(validators.editarEquivalenciaProveedor, { por: CORREO_ADMIN, equivalencia: "  " }).body.equivalencia, "");
+  const malos = [
+    { equivalencia: "A" },
+    { por: "no-es-correo", equivalencia: "A" },
+    { por: CORREO_ADMIN },
+    { por: CORREO_ADMIN, equivalencia: 5 },
+    { por: CORREO_ADMIN, equivalencia: "x".repeat(161) },
+  ];
+  for (const body of malos) {
+    assert.equal(correrVal(validators.editarEquivalenciaProveedor, body).error?.statusCode, 400, JSON.stringify(body));
+  }
+});
+
+test("validador agregarEquivalenciaProveedor: no acepta vacía", () => {
+  assert.equal(correrVal(validators.agregarEquivalenciaProveedor, { por: CORREO_ADMIN, equivalencia: " B " }).body.equivalencia, "B");
+  for (const equivalencia of ["", "   ", "x".repeat(161)]) {
+    assert.equal(correrVal(validators.agregarEquivalenciaProveedor, { por: CORREO_ADMIN, equivalencia }).error?.statusCode, 400);
+  }
 });
