@@ -11,6 +11,9 @@
  * aquí; la fórmula vive en un único lugar.
  */
 
+import { calcularCosteo } from "./costeo.js";
+import { utilidadSede } from "./utilidad.js";
+
 const MENSAJE_VALOR = "valor monetario inválido";
 
 /**
@@ -210,4 +213,76 @@ export function gastoTotal({ animalEnPie, servicioPrecorte, servicioPorAnimal, a
 export function desbloqueaServicioCero({ liquidadaAt, servicioPrecorte, servicioPorAnimal }) {
   if (liquidadaAt) return false;
   return precorteEfectivoCent(servicioPrecorte) === null && porAnimalEfectivoCent(servicioPorAnimal) === 0n;
+}
+
+// ─── Costeo de una sede ────────────────────────────────────────────────────
+
+const centavosAPesos = (centavos) => Number(centavosATexto(centavos));
+
+/**
+ * Costeo de una sede de la preliquidación. Envuelve `calcularCosteo` sin tocarlo:
+ *
+ *   1. costo teórico = `calcularCosteo` con `bonificacionViceras = false` (solo se
+ *      lee `costoTeorico`), llevado a centavos.
+ *   2. utilidad = `utilidadSede` (forma cerrada; vísceras/retomas solo aquí).
+ *   3. servicio de compra = utilidad / 2, una sola vez, mitad hacia afuera del cero.
+ *   4. UNA pasada final de `calcularCosteo` con gasto = gasto de sede + servicio de
+ *      compra y `bonificacionViceras = false`; esos renglones son los que se
+ *      congelan y se envían.
+ *
+ * Bloqueos: utilidad < 0 -> `utilidad_negativa`; la advertencia
+ * `factor_anula_costos` de la pasada final -> `costeo_invalido`.
+ *
+ * @param {object} p
+ * @param {Array} p.items renglones de carne `{cantidad, costo_base, ...}`
+ * @param {bigint} p.gastoSedeCent gasto asignado a la sede (de `montoSedes`)
+ * @param {"res"|"cerdo"} p.especie
+ * @param {bigint} [p.valorVicerasCent]
+ * @param {bigint} [p.valorRetomasCent]
+ */
+export function costearSede({ items, gastoSedeCent, especie, valorVicerasCent = 0n, valorRetomasCent = 0n }) {
+  const gastoSede = aBigIntEntero(gastoSedeCent, "gastoSedeCent");
+
+  const teorico = calcularCosteo({ items, gastos: [], bonificacionViceras: false });
+  const costoTeoricoCent = aCentavos(teorico.costoTeorico);
+
+  const utilidadCent = utilidadSede({
+    especie,
+    costoTeoricoCent,
+    gastoSedeCent: gastoSede,
+    valorVicerasCent,
+    valorRetomasCent,
+  });
+  const servicioCompraCent = roundHalfAwayFromZero(utilidadCent, 2n);
+
+  const costeoFinal = calcularCosteo({
+    items,
+    gastos: [{ concepto: "Gasto de sede y servicio de compra", valor: centavosAPesos(gastoSede + servicioCompraCent) }],
+    bonificacionViceras: false,
+  });
+
+  const bloqueos = [];
+  if (utilidadCent < 0n) {
+    bloqueos.push({
+      motivo: "utilidad_negativa",
+      detalle: `La utilidad de la sede es negativa (${centavosATexto(utilidadCent)}).`,
+    });
+  }
+  const anula = costeoFinal.advertencias.find((a) => a.codigo === "factor_anula_costos");
+  if (anula) bloqueos.push({ motivo: "costeo_invalido", detalle: anula.mensaje });
+
+  return {
+    costoTeoricoCent,
+    utilidadCent,
+    servicioCompraCent,
+    costeoFinal,
+    bloqueos,
+    plan: {
+      gasto_sede: centavosATexto(gastoSede),
+      utilidad: centavosATexto(utilidadCent),
+      servicio_compra: centavosATexto(servicioCompraCent),
+      valor_viceras: centavosATexto(especie === "res" ? valorVicerasCent : 0n),
+      valor_retomas: centavosATexto(especie === "cerdo" ? valorRetomasCent : 0n),
+    },
+  };
 }
