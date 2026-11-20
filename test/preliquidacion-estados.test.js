@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { transicionSede } from "../src/shared/preliquidacionEstados.js";
+import { transicionSede, mapearEnvio } from "../src/shared/preliquidacionEstados.js";
 
 const AHORA = new Date("2026-11-20T03:00:00.000Z");
+
+const ESTADOS_TODOS = ["vinculada", "bloqueada", "lista_para_enviar", "calculada", "enviando", "enviada", "error", "sin_confirmar", "anulada", "simulada"];
+const ESTADOS_NO_ENVIANDO = ESTADOS_TODOS.filter((e) => e !== "enviando");
+const ESTADOS_NO_ENVIADA = ESTADOS_TODOS.filter((e) => e !== "enviada");
 
 const hay = (efectos, esperado) =>
   efectos.some((e) => Object.entries(esperado).every(([k, v]) => e[k] === v));
@@ -312,4 +316,226 @@ test("transicionSede es pura: no muta el contexto y devuelve objetos nuevos", ()
   const b = transicionSede("bloqueada", "costeo_ok", ctx);
   assert.notEqual(a, b);
   assert.deepEqual(a, b);
+});
+
+// ═══ PARTE B: envío y cierre ═════════════════════════════════════════════════
+
+// ─── resultados de registrarYEnviar ────────────────────────────────────────
+
+test("enviando + envio_ok -> enviada: recepción Enviado_SIESA, avisa anulación y prueba el autocierre", () => {
+  const r = transicionSede("enviando", "envio_ok", { envioId: 91 });
+  assert.equal(r.estado, "enviada");
+  assert.equal(r.campos.envio_id, 91);
+  assert.equal(r.campos.requiere_correccion, false);
+  assert.ok(hay(r.efectos, { tipo: "recepcion", estado: "Enviado_SIESA" }));
+  assert.ok(hay(r.efectos, { tipo: "avisar_anulacion" }));
+  assert.ok(hay(r.efectos, { tipo: "intentar_autocierre" }));
+  assert.ok(hay(r.efectos, { tipo: "borrar_alertas", evento: "requiere_correccion" }));
+});
+
+test("enviando + envio_repetido_ok -> enviada con el envío existente y SIN segundo aviso de anulación", () => {
+  const r = transicionSede("enviando", "envio_repetido_ok", { envioId: 77 });
+  assert.equal(r.estado, "enviada");
+  assert.equal(r.campos.envio_id, 77);
+  assert.equal(r.campos.requiere_correccion, false);
+  assert.ok(hay(r.efectos, { tipo: "recepcion", estado: "Enviado_SIESA" }));
+  assert.ok(!r.efectos.some((e) => e.tipo === "avisar_anulacion"));
+  assert.ok(hay(r.efectos, { tipo: "intentar_autocierre" }));
+});
+
+test("enviando + envio_repetido_enviando -> enviando con el envío existente, no reclamable, con alerta", () => {
+  const r = transicionSede("enviando", "envio_repetido_enviando", { envioId: 77 });
+  assert.equal(r.estado, "enviando");
+  assert.equal(r.campos.envio_id, 77);
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "envio_en_vuelo" }));
+  // con envio_id puesto, una nueva reclamada automática ya no procede
+  assert.throws(() => transicionSede("enviando", "reclamada", { envioId: 77 }), /transición inválida/);
+});
+
+test("enviando + envio_sin_confirmar -> sin_confirmar con alerta", () => {
+  const r = transicionSede("enviando", "envio_sin_confirmar", { envioId: 12 });
+  assert.equal(r.estado, "sin_confirmar");
+  assert.equal(r.campos.envio_id, 12);
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "sin_confirmar" }));
+});
+
+test("enviando + envio_error(transitorio, intentos<3) -> error transitorio sin alerta", () => {
+  const r = transicionSede("enviando", "envio_error", { errorTipo: "transitorio", intentos: 2 });
+  assert.equal(r.estado, "error");
+  assert.equal(r.campos.error_tipo, "transitorio");
+  assert.equal(r.campos.motivo_pendiente, undefined);
+  assert.ok(!r.efectos.some((e) => e.tipo === "alerta"));
+});
+
+test("enviando + envio_error(transitorio, intentos>=3) -> error con reintentos_agotados y alerta", () => {
+  const r = transicionSede("enviando", "envio_error", { errorTipo: "transitorio", intentos: 3 });
+  assert.equal(r.estado, "error");
+  assert.equal(r.campos.error_tipo, "transitorio");
+  assert.equal(r.campos.motivo_pendiente, "reintentos_agotados");
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "reintentos_agotados" }));
+  // desde ahí solo el admin: la reclamada automática ya no procede
+  assert.throws(
+    () => transicionSede("error", "reclamada", { errorTipo: "transitorio", intentos: 3, ultimaCorrida: 1, corridaId: 2 }),
+    /transición inválida/,
+  );
+});
+
+test("enviando + envio_error(permanente) -> error permanente con alerta envio_error", () => {
+  const r = transicionSede("enviando", "envio_error", { errorTipo: "permanente", intentos: 1 });
+  assert.equal(r.estado, "error");
+  assert.equal(r.campos.error_tipo, "permanente");
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "envio_error" }));
+});
+
+test("envio_error exige un errorTipo válido", () => {
+  assert.throws(() => transicionSede("enviando", "envio_error", { intentos: 1 }), /errorTipo/);
+  assert.throws(() => transicionSede("enviando", "envio_error", { errorTipo: "raro" }), /errorTipo/);
+});
+
+test("enviando + armado_bloqueado -> bloqueada(armado_invalido) con detalle y alerta, nunca error", () => {
+  const r = transicionSede("enviando", "armado_bloqueado", { detalle: "ítem sin código SIESA" });
+  assert.equal(r.estado, "bloqueada");
+  assert.equal(r.campos.motivo_bloqueo, "armado_invalido");
+  assert.equal(r.campos.detalle_bloqueo, "ítem sin código SIESA");
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "armado_invalido" }));
+});
+
+test("los eventos de envío solo aplican desde enviando", () => {
+  const eventos = [
+    ["envio_ok", {}],
+    ["envio_repetido_ok", {}],
+    ["envio_repetido_enviando", {}],
+    ["envio_sin_confirmar", {}],
+    ["envio_error", { errorTipo: "transitorio" }],
+    ["armado_bloqueado", {}],
+  ];
+  for (const estado of ESTADOS_NO_ENVIANDO) {
+    for (const [evento, ctx] of eventos) {
+      assert.throws(() => transicionSede(estado, evento, ctx), /transición inválida/, `${estado} + ${evento}`);
+    }
+  }
+});
+
+// ─── resolver() ────────────────────────────────────────────────────────────
+
+for (const estado of ["enviando", "sin_confirmar"]) {
+  test(`${estado} + resuelto_ok -> enviada, limpia requiere_correccion y prueba el autocierre`, () => {
+    const r = transicionSede(estado, "resuelto_ok", { envioId: 5 });
+    assert.equal(r.estado, "enviada");
+    assert.equal(r.campos.requiere_correccion, false);
+    assert.ok(hay(r.efectos, { tipo: "recepcion", estado: "Enviado_SIESA" }));
+    assert.ok(hay(r.efectos, { tipo: "intentar_autocierre" }));
+  });
+
+  test(`${estado} + resuelto_error -> error permanente (solo admin, nunca reintento automático)`, () => {
+    const r = transicionSede(estado, "resuelto_error", {});
+    assert.equal(r.estado, "error");
+    assert.equal(r.campos.error_tipo, "permanente");
+    assert.throws(
+      () => transicionSede("error", "reclamada", { errorTipo: "permanente", intentos: 1, ultimaCorrida: 1, corridaId: 2 }),
+      /transición inválida/,
+    );
+  });
+}
+
+test("resuelto_ok / resuelto_error lanzan desde los demás estados", () => {
+  for (const estado of ["vinculada", "bloqueada", "calculada", "lista_para_enviar", "enviada", "error", "anulada", "simulada"]) {
+    assert.throws(() => transicionSede(estado, "resuelto_ok", {}), /transición inválida/);
+    assert.throws(() => transicionSede(estado, "resuelto_error", {}), /transición inválida/);
+  }
+});
+
+// ─── anulación y corrección ────────────────────────────────────────────────
+
+test("enviada + anulacion_confirmada -> anulada y la recepción vuelve a Costeado", () => {
+  const r = transicionSede("enviada", "anulacion_confirmada");
+  assert.equal(r.estado, "anulada");
+  assert.ok(hay(r.efectos, { tipo: "recepcion", estado: "Costeado" }));
+});
+
+test("anulacion_confirmada solo desde enviada", () => {
+  for (const estado of ESTADOS_NO_ENVIADA) {
+    assert.throws(() => transicionSede(estado, "anulacion_confirmada"), /transición inválida/);
+  }
+});
+
+for (const estado of ["enviando", "enviada", "sin_confirmar"]) {
+  test(`${estado} + recalcular_no_enviadas -> mismo estado con requiere_correccion y alerta`, () => {
+    const r = transicionSede(estado, "recalcular_no_enviadas");
+    assert.equal(r.estado, estado);
+    assert.equal(r.campos.requiere_correccion, true);
+    assert.ok(hay(r.efectos, { tipo: "alerta", evento: "requiere_correccion" }));
+  });
+}
+
+test("recalcular_no_enviadas lanza desde los estados no enviados (esos se recostean)", () => {
+  for (const estado of ["vinculada", "bloqueada", "calculada", "lista_para_enviar", "error", "anulada", "simulada"]) {
+    assert.throws(() => transicionSede(estado, "recalcular_no_enviadas"), /transición inválida/);
+  }
+});
+
+test("correccion_descartada: en cualquier estado con requiere_correccion limpia el flag y borra sus alertas", () => {
+  for (const estado of ESTADOS_TODOS) {
+    const r = transicionSede(estado, "correccion_descartada", { requiereCorreccion: true });
+    assert.equal(r.estado, estado);
+    assert.equal(r.campos.requiere_correccion, false);
+    assert.ok(hay(r.efectos, { tipo: "borrar_alertas", evento: "requiere_correccion" }));
+  }
+});
+
+test("correccion_descartada lanza si la sede no requiere corrección", () => {
+  assert.throws(() => transicionSede("enviada", "correccion_descartada", { requiereCorreccion: false }), /transición inválida/);
+  assert.throws(() => transicionSede("enviada", "correccion_descartada", {}), /transición inválida/);
+});
+
+// ─── mapearEnvio ───────────────────────────────────────────────────────────
+
+test("mapearEnvio: ok no repetido -> envio_ok con el id del envío", () => {
+  assert.deepEqual(mapearEnvio({ estado: "ok", id: 9 }), { evento: "envio_ok", ctx: { envioId: 9 } });
+});
+
+test("mapearEnvio: repetido ok / enviando", () => {
+  assert.equal(mapearEnvio({ estado: "ok", repetido: true, id: 9 }).evento, "envio_repetido_ok");
+  assert.equal(mapearEnvio({ estado: "enviando", repetido: true, id: 9 }).evento, "envio_repetido_enviando");
+  assert.equal(mapearEnvio({ estado: "enviando", repetido: true, id: 9 }).ctx.envioId, 9);
+});
+
+test("mapearEnvio: sin_confirmar (timeout o corte) -> envio_sin_confirmar", () => {
+  assert.deepEqual(mapearEnvio({ estado: "sin_confirmar", id: 4 }), { evento: "envio_sin_confirmar", ctx: { envioId: 4 } });
+});
+
+test("mapearEnvio: rechazo de SIESA (4xx o 200 con rechazo) -> envio_error permanente", () => {
+  for (const http_status of [400, 401, 404, 422, 200]) {
+    const m = mapearEnvio({ estado: "error", id: 3, http_status, error: "x" });
+    assert.equal(m.evento, "envio_error");
+    assert.equal(m.ctx.errorTipo, "permanente", String(http_status));
+  }
+});
+
+test("mapearEnvio: red, 500 y no conectado -> envio_error transitorio", () => {
+  for (const http_status of [null, undefined, 500, 501]) {
+    const m = mapearEnvio({ estado: "error", id: 3, http_status, error: "x" });
+    assert.equal(m.evento, "envio_error");
+    assert.equal(m.ctx.errorTipo, "transitorio", String(http_status));
+  }
+});
+
+test("mapearEnvio: bloqueos de armado ganan sobre el estado de la fila (nunca error)", () => {
+  const m = mapearEnvio(
+    { estado: "error", id: 3, http_status: undefined, error: "Falta código" },
+    { armadoBloqueos: ["Falta código SIESA.", "Sin tercero."] },
+  );
+  assert.equal(m.evento, "armado_bloqueado");
+  assert.equal(m.ctx.detalle, "Falta código SIESA. Sin tercero.");
+});
+
+test("mapearEnvio: estados no mapeables lanzan", () => {
+  assert.throws(() => mapearEnvio({ estado: "apagado" }), /no mapeable/);
+  assert.throws(() => mapearEnvio({ estado: "error", repetido: true }), /no mapeable/);
+  assert.throws(() => mapearEnvio(null), /no mapeable/);
+});
+
+test("mapearEnvio + transicionSede: el resultado de la fila alimenta la tabla sin traducciones extra", () => {
+  const { evento, ctx } = mapearEnvio({ estado: "ok", id: 9 });
+  assert.equal(transicionSede("enviando", evento, ctx).estado, "enviada");
 });
