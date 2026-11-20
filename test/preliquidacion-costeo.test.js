@@ -6,6 +6,8 @@ import {
   centavosATexto,
   roundHalfAwayFromZero,
   montoSedes,
+  gastoTotal,
+  desbloqueaServicioCero,
 } from "../src/shared/preliquidacionCosteo.js";
 
 // ─── aCentavos ─────────────────────────────────────────────────────────────
@@ -198,4 +200,111 @@ test("montoSedes: entradas inválidas se rechazan", () => {
   assert.throws(() => montoSedes([sede(1, 4)], ok), /excede/i);
   assert.throws(() => montoSedes([sede(1, 1)], { ...ok, gastoTotalCent: 1.5 }), /gastoTotalCent/);
   assert.deepEqual(montoSedes([], ok), []);
+});
+
+// ─── gastoTotal (1.5) ──────────────────────────────────────────────────────
+
+const pesos = (texto) => aCentavos(texto);
+const BASE = { animalEnPie: "9000000", servicioPrecorte: null, servicioPorAnimal: "50000", animales: 10, gastos: [], saldos: [] };
+
+test("gastoTotal A-S1: servicio vacío usa servicio_por_animal x animales", () => {
+  const r = gastoTotal(BASE);
+  assert.equal(r.servicioAplicadoCent, pesos("500000"));
+  assert.equal(r.gastoTotalCent, pesos("9500000"));
+  assert.equal(r.costoPorAnimalCent, pesos("950000"));
+  assert.equal(r.bloqueo, undefined);
+  assert.deepEqual(r.saldoIds, []);
+});
+
+test("gastoTotal A-S5: el servicio real precorte manda sobre el predeterminado", () => {
+  const r = gastoTotal({ ...BASE, servicioPrecorte: "700000" });
+  assert.equal(r.servicioAplicadoCent, pesos("700000"));
+  assert.equal(r.gastoTotalCent, pesos("9700000"));
+});
+
+test("gastoTotal C-S6: servicio vacío con predeterminado 50.000 y 10 animales aporta 500.000", () => {
+  const r = gastoTotal({ ...BASE, animalEnPie: "9500000" });
+  assert.equal(r.servicioAplicadoCent, pesos("500000"));
+  assert.equal(r.gastoTotalCent, pesos("10000000"));
+  assert.equal(r.costoPorAnimalCent, pesos("1000000"));
+});
+
+test("gastoTotal C-S10: saldo pendiente +200.000 sube el total a 10.200.000 (1.020.000 por animal)", () => {
+  const r = gastoTotal({ ...BASE, animalEnPie: "9500000", saldos: [{ id: 11, valor: "200000", estado: "pendiente" }] });
+  assert.equal(r.gastoTotalCent, pesos("10200000"));
+  assert.equal(r.costoPorAnimalCent, pesos("1020000"));
+  assert.deepEqual(r.saldoIds, [11]);
+});
+
+test("gastoTotal E-S3: 9.000.000 + 500.000 + saldo 200.000 = 9.700.000", () => {
+  const r = gastoTotal({ ...BASE, saldos: [{ id: 3, valor: "200000", estado: "pendiente" }] });
+  assert.equal(r.gastoTotalCent, pesos("9700000"));
+});
+
+test("gastoTotal E-S2: saldo negativo (-100.000) reduce el gasto total", () => {
+  const r = gastoTotal({ ...BASE, saldos: [{ id: 4, valor: "-100000", estado: "pendiente" }] });
+  assert.equal(r.gastoTotalCent, pesos("9400000"));
+  assert.deepEqual(r.saldoIds, [4]);
+});
+
+test("gastoTotal: solo suman los saldos pendientes; los demás estados se ignoran y no entran a saldoIds", () => {
+  const saldos = [
+    { id: 1, valor: "200000", estado: "pendiente" },
+    { id: 2, valor: "999999", estado: "aplicado" },
+    { id: 3, valor: "999999", estado: "movido" },
+    { id: 4, valor: "999999", estado: "descartado" },
+    { id: 5, valor: "-50000", estado: "pendiente" },
+  ];
+  const r = gastoTotal({ ...BASE, saldos });
+  assert.equal(r.gastoTotalCent, pesos("9650000"));
+  assert.deepEqual(r.saldoIds, [1, 5]);
+});
+
+test("gastoTotal: gastos manuales respetan el signo (+1 suma, -1 resta)", () => {
+  const gastos = [
+    { concepto: "Transporte", valor: "120000.50", signo: 1 },
+    { concepto: "Descuento", valor: "20000.25", signo: -1 },
+  ];
+  const r = gastoTotal({ ...BASE, gastos });
+  assert.equal(r.gastoTotalCent, pesos("9600000.25"));
+});
+
+test("gastoTotal: bloqueo servicio_cero cuando no hay servicio real ni predeterminado", () => {
+  const r = gastoTotal({ ...BASE, servicioPorAnimal: "0" });
+  assert.equal(r.bloqueo, "servicio_cero");
+  assert.equal(r.servicioAplicadoCent, 0n);
+  const conCero = gastoTotal({ ...BASE, servicioPrecorte: "0", servicioPorAnimal: "0" });
+  assert.equal(conCero.bloqueo, "servicio_cero");
+});
+
+test("gastoTotal: costo por animal es solo de despliegue y redondea half-away en centavos", () => {
+  const r = gastoTotal({ animalEnPie: "10000001", servicioPrecorte: "0.01", servicioPorAnimal: "1", animales: 3 });
+  assert.equal(r.gastoTotalCent, pesos("10000001.01"));
+  assert.equal(r.costoPorAnimalCent, roundHalfAwayFromZero(r.gastoTotalCent, 3n));
+});
+
+test("gastoTotal: la salida sirve como p_plan de carnes_preliq_liquidar (NUMERIC como texto)", () => {
+  const r = gastoTotal({ ...BASE, saldos: [{ id: 9, valor: "200000", estado: "pendiente" }] });
+  assert.deepEqual(r.plan, {
+    servicio_aplicado: "500000.00",
+    gasto_total: "9700000.00",
+    costo_por_animal: "970000.00",
+    saldo_ids: [9],
+  });
+});
+
+test("gastoTotal: animales inválidos se rechazan", () => {
+  for (const animales of [0, -1, 2.5, "10", null]) {
+    assert.throws(() => gastoTotal({ ...BASE, animales }), /animales/i);
+  }
+});
+
+// ─── desbloqueaServicioCero (1.5) ──────────────────────────────────────────
+
+test("desbloqueaServicioCero: solo sin liquidar, sin servicio precorte y con predeterminado 0", () => {
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: null, servicioPorAnimal: "0" }), true);
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: "0", servicioPorAnimal: "0" }), true);
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: "2026-11-21T03:00:00Z", servicioPrecorte: null, servicioPorAnimal: "0" }), false);
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: "700000", servicioPorAnimal: "0" }), false);
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: null, servicioPorAnimal: "50000" }), false);
 });

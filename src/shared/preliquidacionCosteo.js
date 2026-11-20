@@ -128,3 +128,66 @@ export function montoSedes(sedesOrdenadas, { gastoTotalCent, animales }) {
   }
   return resultado;
 }
+
+// ─── Gasto total de la preliquidación ──────────────────────────────────────
+
+/**
+ * Única implementación de la fórmula del gasto total (el plan de
+ * `carnes_preliq_liquidar` sale de aquí; plpgsql no repite la fórmula):
+ *
+ *   servicioAplicado = servicioPrecorte ?? servicioPorAnimal x animales
+ *   gastoTotal       = animalEnPie + servicioAplicado + Σ gastos (signo) + Σ saldos pendientes
+ *
+ * Entradas NUMERIC como texto/número en pesos; salidas en centavos BigInt.
+ * `saldos` debe traer solo los dirigidos a esta preliquidación; se ignoran los
+ * que declaran un estado distinto de `pendiente`.
+ *
+ * @returns {{servicioAplicadoCent: bigint, gastoTotalCent: bigint, costoPorAnimalCent: bigint,
+ *   saldoIds: Array<*>, bloqueo?: "servicio_cero", plan: object}}
+ */
+export function gastoTotal({ animalEnPie, servicioPrecorte, servicioPorAnimal, animales, gastos = [], saldos = [] }) {
+  if (!Number.isInteger(animales) || animales <= 0) {
+    throw new Error(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
+  }
+
+  const precorte = servicioPrecorte == null ? null : aCentavos(servicioPrecorte);
+  const servicioAplicadoCent =
+    precorte !== null ? precorte : aCentavos(servicioPorAnimal) * BigInt(animales);
+
+  let total = aCentavos(animalEnPie) + servicioAplicadoCent;
+  for (const g of gastos) total += aCentavos(g.valor) * BigInt(g.signo);
+
+  const saldoIds = [];
+  for (const s of saldos) {
+    if (s.estado !== undefined && s.estado !== "pendiente") continue;
+    total += aCentavos(s.valor);
+    saldoIds.push(s.id);
+  }
+
+  const costoPorAnimalCent = roundHalfAwayFromZero(total, BigInt(animales));
+  const resultado = {
+    servicioAplicadoCent,
+    gastoTotalCent: total,
+    costoPorAnimalCent,
+    saldoIds,
+    plan: {
+      servicio_aplicado: centavosATexto(servicioAplicadoCent),
+      gasto_total: centavosATexto(total),
+      costo_por_animal: centavosATexto(costoPorAnimalCent),
+      saldo_ids: saldoIds,
+    },
+  };
+  if (servicioAplicadoCent === 0n) resultado.bloqueo = "servicio_cero";
+  return resultado;
+}
+
+/**
+ * ¿Cargar un servicio real desbloquea una preliquidación bloqueada por
+ * `servicio_cero`? Solo si aún no se liquidó, no hay servicio precorte y el
+ * predeterminado por animal es 0. Va como `p_desbloqueo` al PATCH de servicio.
+ */
+export function desbloqueaServicioCero({ liquidadaAt, servicioPrecorte, servicioPorAnimal }) {
+  if (liquidadaAt) return false;
+  const sinPrecorte = servicioPrecorte == null || aCentavos(servicioPrecorte) === 0n;
+  return sinPrecorte && aCentavos(servicioPorAnimal) === 0n;
+}
