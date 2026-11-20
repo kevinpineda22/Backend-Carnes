@@ -17,6 +17,7 @@ import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcio
 import { armarRecibidor, idRecibidorListado, validarFirma } from "../shared/finalizarProveedor.js";
 import * as RecibidorModel from "./Recibidor.model.js";
 import { agruparPor, enLotes } from "../shared/adminProveedor.js";
+import { validarNovillosCierre } from "../shared/novillosObligatorio.js";
 import {
   COLUMNAS_HISTORIAL_TALLERES,
   COLUMNAS_ITEMS_HISTORIAL_TALLERES,
@@ -1133,22 +1134,14 @@ export async function finalizar(id, { recibido_por, recibidor, firma_data }, db 
     );
   }
 
-  // Sin novillos, las vísceras que se calculan por novillo (Higado, Riñon,
-  // Corazon, Bofe, Pajarilla, Punta de falda) quedan TODAS en 0 — no porque no
-  // llegaron, sino porque nadie cargó el dato del que dependen. Cerrar así deja
-  // esa carne sin costear y sin subir a SIESA, y nadie se entera hasta que
-  // alguien audite el consolidado. Tolerante sin sql/016: si `factor_novillo`
-  // no existe todavía en ningún renglón, este `some` da `false` y no bloquea.
-  const tieneViceraPorFactor = recepcion.items.some(
-    (i) => i.tipo === "vicera" && i.factor_novillo !== null && i.factor_novillo !== undefined,
-  );
-  if (tieneViceraPorFactor && !(Number(recepcion.novillos) > 0)) {
-    throw createError(
-      409,
-      "Falta la cantidad de novillos: sin ese dato las vísceras que se calculan " +
-        "por novillo quedan en cero.",
-    );
-  }
+  // Novillos (canales, en cerdo): obligatorio, entero y > 0 al cerrar. Sin ese dato
+  // la preliquidación no sabe cuántos animales consume la sede y las vísceras que
+  // se calculan por novillo (Higado, Riñon, Corazon, Bofe, Pajarilla, Punta de
+  // falda) quedan TODAS en 0 — no porque no llegaron, sino porque nadie cargó el
+  // dato del que dependen. La regla vive en `shared/novillosObligatorio.js` y solo
+  // aplica al finalizar: las filas ya cerradas con 0 no se tocan.
+  const novillosOk = validarNovillosCierre(recepcion.novillos);
+  if (!novillosOk.ok) throw createError(400, novillosOk.mensaje, novillosOk.codigo);
 
   const idListado = idRecibidorListado(recibidor);
   const fila = idListado === null ? null : await RecibidorModel.obtenerPorId(idListado);

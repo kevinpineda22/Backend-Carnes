@@ -998,7 +998,8 @@ export const validators = {
           required_error: "Falta la cantidad.",
           invalid_type_error: "La cantidad debe ser un número.",
         })
-        .nonnegative("La cantidad no puede ser negativa."),
+        .int("La cantidad debe ser un número entero.")
+        .positive("La cantidad debe ser mayor que cero."),
       editado_por: correo("Falta el correo de quien edita."),
     }),
   ),
