@@ -308,3 +308,58 @@ test("desbloqueaServicioCero: solo sin liquidar, sin servicio precorte y con pre
   assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: "700000", servicioPorAnimal: "0" }), false);
   assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: null, servicioPorAnimal: "50000" }), false);
 });
+
+// ─── M3: servicio_precorte <= 0 se trata como no cargado (1.6) ─────────────
+
+test("M3: precorte 0 con servicio_por_animal > 0 usa el predeterminado (antes quedaba bloqueada sin salida)", () => {
+  const r = gastoTotal({ ...BASE, servicioPrecorte: "0" });
+  assert.equal(r.servicioAplicadoCent, pesos("500000"));
+  assert.equal(r.gastoTotalCent, pesos("9500000"));
+  assert.equal(r.bloqueo, undefined);
+});
+
+test("M3: precorte negativo con servicio_por_animal > 0 también usa el predeterminado", () => {
+  const r = gastoTotal({ ...BASE, servicioPrecorte: "-1" });
+  assert.equal(r.servicioAplicadoCent, pesos("500000"));
+  assert.equal(r.bloqueo, undefined);
+});
+
+test("M3: tabla precorte {null,0,>0,<0} x por_animal {0,>0}: gastoTotal y desbloqueaServicioCero coinciden", () => {
+  const precortes = [null, "0", "700000", "-5"];
+  const porAnimales = ["0", "50000"];
+  const esperado = {
+    // clave: `${precorte}|${porAnimal}` -> servicio aplicado en pesos (0 = bloqueada)
+    "null|0": "0",
+    "0|0": "0",
+    "700000|0": "700000",
+    "-5|0": "0",
+    "null|50000": "500000",
+    "0|50000": "500000",
+    "700000|50000": "700000",
+    "-5|50000": "500000",
+  };
+  for (const servicioPrecorte of precortes) {
+    for (const servicioPorAnimal of porAnimales) {
+      const clave = `${servicioPrecorte}|${servicioPorAnimal}`;
+      const g = gastoTotal({ ...BASE, servicioPrecorte, servicioPorAnimal });
+      const desbloquea = desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte, servicioPorAnimal });
+      assert.equal(g.servicioAplicadoCent, pesos(esperado[clave]), `servicio aplicado ${clave}`);
+      const bloqueada = g.bloqueo === "servicio_cero";
+      assert.equal(bloqueada, g.servicioAplicadoCent === 0n, `bloqueo ${clave}`);
+      // Sin callejón: bloqueada por gastoTotal <=> un servicio real la desbloquea.
+      assert.equal(desbloquea, bloqueada, `paridad ${clave}`);
+    }
+  }
+});
+
+test("M3: desbloqueaServicioCero trata precorte negativo como no cargado", () => {
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: "-5", servicioPorAnimal: "0" }), true);
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: "0", servicioPorAnimal: "50000" }), false);
+});
+
+test("M3: un predeterminado negativo no es un servicio válido: bloquea y se puede desbloquear", () => {
+  const g = gastoTotal({ ...BASE, servicioPorAnimal: "-10" });
+  assert.equal(g.servicioAplicadoCent, 0n);
+  assert.equal(g.bloqueo, "servicio_cero");
+  assert.equal(desbloqueaServicioCero({ liquidadaAt: null, servicioPrecorte: null, servicioPorAnimal: "-10" }), true);
+});

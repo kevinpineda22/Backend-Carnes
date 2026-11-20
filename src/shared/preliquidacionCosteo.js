@@ -132,10 +132,31 @@ export function montoSedes(sedesOrdenadas, { gastoTotalCent, animales }) {
 // ─── Gasto total de la preliquidación ──────────────────────────────────────
 
 /**
+ * Servicio precorte efectivo en centavos, o `null` si no cuenta como cargado.
+ * M3: un precorte <= 0 se trata como no cargado; si no, un 0 (o negativo) bloquearía
+ * la preliquidación por `servicio_cero` aun con predeterminado > 0, y
+ * `desbloqueaServicioCero` no podría destrabarla. Se usa en `gastoTotal` y en
+ * `desbloqueaServicioCero` para que ambos decidan igual en toda combinación.
+ * El SQL de `carnes_preliq_actualizar_servicio` debe revalidar con el mismo
+ * criterio (`COALESCE(servicio_precorte, 0) <= 0`).
+ */
+function precorteEfectivoCent(servicioPrecorte) {
+  if (servicioPrecorte == null) return null;
+  const cent = aCentavos(servicioPrecorte);
+  return cent > 0n ? cent : null;
+}
+
+/** Servicio predeterminado por animal en centavos; un valor negativo no es un servicio válido (0). */
+function porAnimalEfectivoCent(servicioPorAnimal) {
+  const cent = aCentavos(servicioPorAnimal);
+  return cent > 0n ? cent : 0n;
+}
+
+/**
  * Única implementación de la fórmula del gasto total (el plan de
  * `carnes_preliq_liquidar` sale de aquí; plpgsql no repite la fórmula):
  *
- *   servicioAplicado = servicioPrecorte ?? servicioPorAnimal x animales
+ *   servicioAplicado = servicioPrecorte (si > 0) ?? servicioPorAnimal x animales
  *   gastoTotal       = animalEnPie + servicioAplicado + Σ gastos (signo) + Σ saldos pendientes
  *
  * Entradas NUMERIC como texto/número en pesos; salidas en centavos BigInt.
@@ -150,9 +171,9 @@ export function gastoTotal({ animalEnPie, servicioPrecorte, servicioPorAnimal, a
     throw new Error(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
   }
 
-  const precorte = servicioPrecorte == null ? null : aCentavos(servicioPrecorte);
+  const precorte = precorteEfectivoCent(servicioPrecorte);
   const servicioAplicadoCent =
-    precorte !== null ? precorte : aCentavos(servicioPorAnimal) * BigInt(animales);
+    precorte !== null ? precorte : porAnimalEfectivoCent(servicioPorAnimal) * BigInt(animales);
 
   let total = aCentavos(animalEnPie) + servicioAplicadoCent;
   for (const g of gastos) total += aCentavos(g.valor) * BigInt(g.signo);
@@ -188,6 +209,5 @@ export function gastoTotal({ animalEnPie, servicioPrecorte, servicioPorAnimal, a
  */
 export function desbloqueaServicioCero({ liquidadaAt, servicioPrecorte, servicioPorAnimal }) {
   if (liquidadaAt) return false;
-  const sinPrecorte = servicioPrecorte == null || aCentavos(servicioPrecorte) === 0n;
-  return sinPrecorte && aCentavos(servicioPorAnimal) === 0n;
+  return precorteEfectivoCent(servicioPrecorte) === null && porAnimalEfectivoCent(servicioPorAnimal) === 0n;
 }
