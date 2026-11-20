@@ -5,6 +5,7 @@ import {
   elegirPreliquidacion,
   planearVinculacion,
   planearVentana,
+  planearDesvinculacion,
 } from "../src/shared/preliquidacionVinculacion.js";
 
 // Una sede se identifica por su recepcionId (UNIQUE en carnes_preliquidacion_sedes).
@@ -273,4 +274,97 @@ test("planearVinculacion: entradas inválidas se rechazan", () => {
     () => planearVinculacion({ animales: 5, sedesVinculadas: [vinculada(1, 1, 1)], candidata: candidata(1, 1) }),
     /duplicad/i,
   );
+});
+
+// ─── planearDesvinculacion (M4) ────────────────────────────────────────────
+
+test("M4: desvincular libera una sede en desborde que ahora cabe (queda en liberadas y consume)", () => {
+  // animales=10, A=4 y B=5 vinculadas, C(3) bloqueada por exceso (restaba 1).
+  const A = vinculada(1, 4, 1);
+  const B = vinculada(2, 5, 2);
+  const C = excedida(3, 3, 3);
+  const plan = planearDesvinculacion({ animales: 10, sedesFijas: [C], sedesVinculadas: [A, B], recepcionId: 2 });
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.desvinculada, 2);
+  assert.deepEqual(plan.liberadas, [3]);
+  // C consume desde ahora: 10 - A(4) - C(3) = 3.
+  assert.equal(plan.restantes, 3);
+  // Se libera pero NO pasa a vincular/listas: sigue bloqueada(excede) hasta costearse.
+  assert.ok(!plan.vincular.includes(3));
+  assert.deepEqual(plan.vincular, [1]);
+});
+
+test("M4: un desborde que sigue sin caber no se libera", () => {
+  const A = vinculada(1, 4, 1);
+  const B = vinculada(2, 5, 2);
+  const C = excedida(3, 7, 3);
+  const plan = planearDesvinculacion({ animales: 10, sedesFijas: [C], sedesVinculadas: [A, B], recepcionId: 2 });
+  assert.deepEqual(plan.liberadas, []);
+  assert.equal(plan.restantes, 6);
+});
+
+test("M4: varios desbordes se liberan en orden de prioridad mientras quepan", () => {
+  const A = vinculada(1, 4, 1);
+  const B = vinculada(2, 5, 2);
+  const C = excedida(3, 3, 3, { recibidoAt: "2026-12-01T15:00:00.000Z" });
+  const D = excedida(4, 2, 4, { recibidoAt: "2026-12-01T16:00:00.000Z" });
+  // Al desvincular B quedan 6: C(3) cabe, D(2) también (restan 1 después).
+  const ambas = planearDesvinculacion({ animales: 10, sedesFijas: [C, D], sedesVinculadas: [A, B], recepcionId: 2 });
+  assert.deepEqual(ambas.liberadas, [3, 4]);
+  assert.equal(ambas.restantes, 1);
+  // Con 8 animales quedan 4: cabe la primera (3) y la segunda (2) ya no.
+  const una = planearDesvinculacion({ animales: 8, sedesFijas: [C, D], sedesVinculadas: [A, B], recepcionId: 2 });
+  assert.deepEqual(una.liberadas, [3]);
+  assert.equal(una.restantes, 1);
+});
+
+test("B-S7: desvincular devuelve los animales a restantes", () => {
+  const A = vinculada(1, 4, 1);
+  const B = vinculada(2, 5, 2);
+  const antes = planearVinculacion({ animales: 10, sedesVinculadas: [A, B] });
+  assert.equal(antes.restantes, 1);
+  const despues = planearDesvinculacion({ animales: 10, sedesVinculadas: [A, B], recepcionId: 2 });
+  assert.equal(despues.restantes, 6);
+  assert.deepEqual(despues.vincular, [1]);
+});
+
+test("desvincular una vinculada libera su slot; las demás conservan prioridad y ocupan los suyos", () => {
+  const A = vinculada(1, 2, 1);
+  const B = vinculada(2, 2, 2);
+  const D = vinculada(3, 2, 3);
+  const plan = planearDesvinculacion({ animales: 10, sedesVinculadas: [A, B, D], recepcionId: 1 });
+  assert.deepEqual(ordenPorRecepcion(plan), { 2: 2, 3: 3 });
+});
+
+test("desvincular una sede fija no reordena a las demás fijas", () => {
+  const F1 = fija(1, 3, 1);
+  const F2 = fija(2, 3, 2, "lista_para_enviar");
+  const V = vinculada(3, 2, 3);
+  const plan = planearDesvinculacion({ animales: 10, sedesFijas: [F1, F2], sedesVinculadas: [V], recepcionId: 1 });
+  assert.equal(plan.ok, true);
+  assert.deepEqual(ordenPorRecepcion(plan), { 3: 3 });
+  assert.ok(!plan.orden.some((o) => o.recepcionId === 2), "la fija restante no aparece en el plan de orden");
+  assert.equal(plan.restantes, 10 - 3 - 2);
+});
+
+test("desvincular un desborde sin liberar no devuelve animales (nunca consumió)", () => {
+  const A = vinculada(1, 4, 1);
+  const C = excedida(3, 8, 2);
+  const plan = planearDesvinculacion({ animales: 10, sedesFijas: [C], sedesVinculadas: [A], recepcionId: 3 });
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.liberadas, []);
+  assert.equal(plan.restantes, 6);
+});
+
+test("desvincular una sede ya enviada se rechaza (flujo de corrección)", () => {
+  for (const estado of ["enviando", "enviada", "sin_confirmar", "anulada"]) {
+    const plan = planearDesvinculacion({ animales: 10, sedesFijas: [fija(1, 4, 1, estado)], recepcionId: 1 });
+    assert.deepEqual(plan, { ok: false, motivo: "sede_enviada" }, estado);
+  }
+});
+
+test("desvincular una recepción que no está vinculada se rechaza", () => {
+  const plan = planearDesvinculacion({ animales: 10, sedesVinculadas: [vinculada(1, 4, 1)], recepcionId: 99 });
+  assert.deepEqual(plan, { ok: false, motivo: "no_vinculada" });
 });

@@ -156,3 +156,32 @@ export function planearVinculacion({ animales, sedesFijas = [], sedesVinculadas 
     candidata: candidata ? (excede.includes(candidata.recepcionId) ? "excede" : "vinculada") : null,
   };
 }
+
+// ─── planearDesvinculacion ─────────────────────────────────────────────────
+
+/** Estados de sede que ya salieron (o están saliendo) hacia SIESA: no se desvinculan. */
+const ESTADOS_ENVIADOS = new Set(["enviando", "enviada", "sin_confirmar", "anulada"]);
+
+/**
+ * Plan de desvinculación (M4): quita la sede y recalcula la capacidad igual que
+ * una vinculación, de modo que los desbordes que ahora caben salen en `liberadas`
+ * (si no, quedarían bloqueados para siempre aunque sobre capacidad).
+ *
+ * Las sedes fijas restantes no se reordenan; las vinculadas se reasignan a los
+ * slots que ya ocupaban (sin el de la sede quitada).
+ *
+ * @returns {{ok: true, desvinculada: *} & ReturnType<typeof planearVinculacion>
+ *   | {ok: false, motivo: "sede_enviada"|"no_vinculada"}}
+ */
+export function planearDesvinculacion({ animales, sedesFijas = [], sedesVinculadas = [], recepcionId }) {
+  const objetivo = [...sedesFijas, ...sedesVinculadas].find((s) => s.recepcionId === recepcionId);
+  if (!objetivo) return { ok: false, motivo: "no_vinculada" };
+  if (ESTADOS_ENVIADOS.has(objetivo.estado)) return { ok: false, motivo: "sede_enviada" };
+
+  const plan = planearVinculacion({
+    animales,
+    sedesFijas: sedesFijas.filter((s) => s.recepcionId !== recepcionId),
+    sedesVinculadas: sedesVinculadas.filter((s) => s.recepcionId !== recepcionId),
+  });
+  return { ok: true, desvinculada: recepcionId, ...plan };
+}
