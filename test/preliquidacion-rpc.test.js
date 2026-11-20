@@ -149,3 +149,102 @@ test("sin fórmulas de negocio en plpgsql (R8: las decisiones viven en JS)", () 
 test("existe el script manual de carreras de 039 set A en test/sql", () => {
   assert.ok(existsSync(join(RAIZ, "test", "sql", "039a_rpc_vinculacion.sql")));
 });
+
+// ═══ Conjunto B (tarea 1.15b) ═══════════════════════════════════════════════
+
+const CONJUNTO_B = {
+  carnes_preliq_actualizar_servicio: {
+    parametros: ["p_id", "p_servicio", "p_por", "p_fecha_primer_ingreso", "p_corte", "p_desbloqueo"],
+    codigos: ["ok", "tardio", "version_cambiada", "no_encontrada", "servicio_invalido"],
+  },
+  carnes_preliq_liquidar: {
+    parametros: ["p_id", "p_version", "p_corte", "p_plan"],
+    codigos: ["ok", "ya_liquidada", "antes_del_corte", "version_cambiada", "no_encontrada", "no_liquidable"],
+  },
+  carnes_preliq_congelar_sede: {
+    parametros: ["p_sede_id", "p_sede_version", "p_orden_version", "p_plan"],
+    codigos: ["ok", "version_cambiada", "no_liberada", "no_encontrada", "desde_invalido"],
+  },
+  carnes_preliq_transicionar_sede: {
+    parametros: ["p_sede_id", "p_sede_version", "p_desde", "p_hacia", "p_campos"],
+    codigos: ["ok", "version_cambiada", "no_encontrada", "recepcion_estado_invalido"],
+  },
+};
+
+for (const [nombre, def] of Object.entries(CONJUNTO_B)) {
+  test(`${nombre}: existe con sus parámetros y devuelve JSONB`, () => {
+    const cuerpo = cuerpoFuncion(nombre);
+    assert.ok(cuerpo, `falta la función ${nombre}`);
+    for (const p of def.parametros) assert.ok(cuerpo.includes(p), `${nombre} sin parámetro ${p}`);
+    assert.match(cuerpo, /RETURNS JSONB/);
+    assert.match(cuerpo, /LANGUAGE plpgsql/);
+  });
+
+  test(`${nombre}: declara todos sus códigos de resultado`, () => {
+    const cuerpo = cuerpoFuncion(nombre);
+    for (const c of def.codigos) assert.ok(cuerpo.includes(`'${c}'`), `${nombre} no devuelve '${c}'`);
+  });
+}
+
+test("M3: actualizar_servicio revalida con COALESCE(servicio_precorte,0) <= 0, igual que gastoTotal", () => {
+  const f = cuerpoFuncion("carnes_preliq_actualizar_servicio");
+  assert.match(f, /COALESCE\(servicio_precorte, 0\) <= 0/);
+  assert.match(f, /servicio_por_animal <= 0/);
+  assert.doesNotMatch(f, /COALESCE\(servicio_precorte, 0\) = 0/);
+  assert.doesNotMatch(f, /servicio_por_animal = 0/);
+});
+
+test("actualizar_servicio: FOR UPDATE, fecha_primer_ingreso cubierta, tardío por liquidada_at o corte (R5)", () => {
+  const f = cuerpoFuncion("carnes_preliq_actualizar_servicio");
+  assert.match(f, /FOR UPDATE/);
+  assert.match(f, /fecha_primer_ingreso IS DISTINCT FROM p_fecha_primer_ingreso/);
+  assert.match(f, /liquidada_at IS NOT NULL OR \(p_corte IS NOT NULL AND now\(\) > p_corte\)/);
+  assert.match(f, /servicio_precorte_at\s*=/);
+  assert.match(f, /version\s*=\s*version \+ 1/);
+});
+
+test("liquidar: orden de chequeos ya_liquidada -> antes_del_corte -> version_cambiada, y saldos aplicados", () => {
+  const f = cuerpoFuncion("carnes_preliq_liquidar");
+  assert.match(f, /FOR UPDATE/);
+  const a = f.indexOf("'ya_liquidada'");
+  const b = f.indexOf("'antes_del_corte'");
+  const c = f.indexOf("'version_cambiada'");
+  assert.ok(a >= 0 && b > a && c > b, "orden de chequeos incorrecto");
+  assert.match(f, /now\(\) < p_corte/);
+  assert.match(f, /saldo_ids/);
+  assert.match(f, /estado = 'aplicado'/);
+  assert.match(f, /liquidada_at\s*=\s*now\(\)/);
+  assert.match(f, /orden_version\s*=\s*orden_version \+ 1/);
+  // El plan sale de JS: la RPC copia los valores, no los calcula.
+  assert.match(f, /p_plan->>'gasto_total'/);
+  assert.match(f, /p_plan->>'servicio_aplicado'/);
+});
+
+test("congelar_sede: bloquea cabecera y sede, valida versiones y rechaza no_liberada", () => {
+  const f = cuerpoFuncion("carnes_preliq_congelar_sede");
+  assert.equal((f.match(/FOR UPDATE/g) || []).length >= 2, true, "debe bloquear cabecera y sede");
+  assert.match(f, /liquidada_at IS NULL/);
+  assert.match(f, /orden_version <> p_orden_version/);
+  assert.match(f, /version <> p_sede_version/);
+  assert.match(f, /liberada_at IS NULL/);
+  assert.match(f, /costeo_orden_version\s*=\s*p_orden_version/);
+  assert.match(f, /costeo_animales\s*=/);
+  for (const desde of ["vinculada", "calculada", "error", "lista_para_enviar", "anulada", "simulada", "bloqueada"]) {
+    assert.ok(f.includes(`'${desde}'`), `desde ${desde}`);
+  }
+});
+
+test("transicionar_sede: CAS por estado y versión, escribe solo columnas permitidas", () => {
+  const f = cuerpoFuncion("carnes_preliq_transicionar_sede");
+  assert.match(f, /FOR UPDATE/);
+  assert.match(f, /estado <> p_desde/);
+  assert.match(f, /version <> p_sede_version/);
+  assert.match(f, /version\s*=\s*version \+ 1/);
+  for (const c of ["motivo_bloqueo", "detalle_bloqueo", "liberada_at", "motivo_pendiente", "requiere_correccion", "error_tipo", "intentos", "envio_id"]) {
+    assert.ok(f.includes(`'${c}'`), `columna permitida ${c}`);
+  }
+});
+
+test("existe el script manual de carreras de 039 set B en test/sql", () => {
+  assert.ok(existsSync(join(RAIZ, "test", "sql", "039b_rpc_liquidacion.sql")));
+});
