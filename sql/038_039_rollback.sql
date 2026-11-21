@@ -16,7 +16,7 @@
 --      vinculada ya está Enviado_SIESA (misma guarda que `carnes_preliq_desvincular`).
 --   2. las recepciones vinculadas que NO se enviaron vuelven al flujo legado, igual
 --      que `carnes_preliq_desvincular`: costos limpios, Costeado -> Aprobado.
---   3. funciones de 039 (firmas exactas).
+--   3. funciones de 040 (si existen) y de 039 (firmas exactas).
 --   4. índice, CHECKs y columna `preliquidacion_id` de carnes_recepciones.
 --   5. tablas de 038, de las hojas a las raíces.
 --
@@ -105,7 +105,15 @@ BEGIN
   END IF;
 END $$;
 
--- 3. Funciones de sql/039 (las dos auxiliares y las ocho de negocio), con sus firmas exactas.
+-- 3a. Funciones de sql/040 (envío a SIESA), si esa migración se aplicó. Sin dependencias
+--     declaradas, quedarían huérfanas al borrar las tablas. Con IF EXISTS es inocuo si 040 no
+--     se aplicó. Lo normal es correr antes sql/040_rollback.sql.
+DROP FUNCTION IF EXISTS carnes_preliq_cerrar(BIGINT, INTEGER, NUMERIC);
+DROP FUNCTION IF EXISTS carnes_preliq_sincronizar_envio(BIGINT, INTEGER, TEXT, TEXT, JSONB);
+DROP FUNCTION IF EXISTS carnes_preliq_cerrar_envio(BIGINT, UUID, JSONB);
+DROP FUNCTION IF EXISTS carnes_preliq_reclamar_sede(BIGINT, INTEGER, TEXT, UUID, BIGINT, TEXT, BOOLEAN);
+
+-- 3b. Funciones de sql/039 (las dos auxiliares y las ocho de negocio), con sus firmas exactas.
 DROP FUNCTION IF EXISTS carnes_preliq_transicionar_sede(BIGINT, INTEGER, TEXT, TEXT, JSONB);
 DROP FUNCTION IF EXISTS carnes_preliq_congelar_sede(BIGINT, INTEGER, INTEGER, JSONB);
 DROP FUNCTION IF EXISTS carnes_preliq_liquidar(BIGINT, INTEGER, TIMESTAMPTZ, JSONB);

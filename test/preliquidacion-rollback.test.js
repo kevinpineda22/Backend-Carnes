@@ -21,6 +21,8 @@ const leer = (f) =>
 
 const s038 = leer("038_preliquidacion.sql");
 const s039 = leer("039_preliquidacion_rpc.sql");
+const s040 = leer("040_preliquidacion_rpc_envio.sql");
+const rollback040 = leer("040_rollback.sql");
 const rollback = leer("038_039_rollback.sql");
 
 const TIPOS = { INT: "INTEGER", INT4: "INTEGER", INTEGER: "INTEGER", BIGINT: "BIGINT", TEXT: "TEXT", JSONB: "JSONB",
@@ -37,11 +39,11 @@ const indices = [...s038.matchAll(/CREATE (?:UNIQUE )?INDEX IF NOT EXISTS (\w+)/
 const checks = [...s038.matchAll(/ADD CONSTRAINT (\w+)/g)].map((m) => m[1]);
 const columnasRecepciones = [...s038.matchAll(/ALTER TABLE carnes_recepciones\s+ADD COLUMN IF NOT EXISTS (\w+)/g)].map((m) => m[1]);
 
-/** Firma `nombre(tipos...)` de cada función de 039, en el orden de declaración. */
-function firmasFunciones() {
+/** Firma `nombre(tipos...)` de cada función del archivo SQL dado, en el orden de declaración. */
+function firmasFunciones(sql) {
   const out = [];
   const re = /CREATE OR REPLACE FUNCTION (\w+)\s*\(([^)]*)\)/g;
-  for (const m of s039.matchAll(re)) {
+  for (const m of sql.matchAll(re)) {
     const tipos = m[2]
       .split(",")
       .map((p) => p.trim())
@@ -51,7 +53,11 @@ function firmasFunciones() {
   }
   return out;
 }
-const funciones = firmasFunciones();
+const funciones039 = firmasFunciones(s039);
+const funciones040 = firmasFunciones(s040);
+// 040 redefine carnes_preliq_transicionar_sede (ya cubierta por el DROP de 039): no cuenta dos veces.
+const funciones040Nuevas = funciones040.filter((f) => !funciones039.some((g) => g.nombre === f.nombre));
+const funciones = [...funciones039, ...funciones040Nuevas];
 
 /** `DROP FUNCTION IF EXISTS nombre(tipos)` del rollback. */
 const dropsFunciones = [...rollback.matchAll(/DROP FUNCTION IF EXISTS (\w+)\s*\(([^)]*)\)/g)].map((m) => ({
@@ -66,16 +72,17 @@ test("los regex de extracción ven los objetos esperados (piso, para no pasar en
   assert.ok(indices.length >= 8, `índices: ${indices.length}`);
   assert.deepEqual(checks.sort(), ["ck_carnes_recepciones_liq_xor_preliq", "ck_carnes_recepciones_preliq_novillos"]);
   assert.deepEqual(columnasRecepciones, ["preliquidacion_id"]);
-  assert.equal(funciones.length, 10);
+  assert.equal(funciones039.length, 10);
+  assert.equal(funciones040Nuevas.length, 4);
 });
 
-test("cada función de 039 tiene su DROP con la firma exacta", () => {
+test("cada función de 039 y las nuevas de 040 tienen su DROP con la firma exacta", () => {
   for (const f of funciones) {
     const drop = dropsFunciones.find((d) => d.nombre === f.nombre);
     assert.ok(drop, `falta DROP FUNCTION de ${f.nombre}`);
     assert.deepEqual(drop.tipos, f.tipos, `firma de ${f.nombre}`);
   }
-  assert.equal(dropsFunciones.length, funciones.length, "el rollback borra funciones que 039 no crea");
+  assert.equal(dropsFunciones.length, funciones.length, "el rollback borra funciones que 039/040 no crean");
 });
 
 test("cada tabla de 038 tiene su DROP TABLE IF EXISTS y no sobra ninguno", () => {
@@ -184,4 +191,49 @@ test("el encabezado avisa que es solo para revertir el lunes y que borra datos",
   assert.match(crudo, /2026-11-23/);
   assert.match(crudo, /SOLO si hay que revertir/i);
   assert.match(crudo, /borra TODOS los datos/i);
+});
+
+// ─── sql/040_rollback.sql ──────────────────────────────────────────────────
+
+test("038_039_rollback también elimina las funciones nuevas de 040 (no quedan huérfanas)", () => {
+  for (const f of funciones040Nuevas) {
+    const drop = dropsFunciones.find((d) => d.nombre === f.nombre);
+    assert.ok(drop, `falta DROP de ${f.nombre} en 038_039_rollback`);
+    assert.deepEqual(drop.tipos, f.tipos);
+  }
+});
+
+test("040_rollback: una transacción con lock_timeout, DROP IF EXISTS de cada función nueva y sin CASCADE", () => {
+  assert.match(rollback040, /BEGIN;\s*SET LOCAL lock_timeout = '5s';/);
+  assert.equal([...rollback040.matchAll(/^\s*COMMIT;/gm)].length, 1);
+  assert.doesNotMatch(rollback040, /\bCASCADE\b/i);
+  const drops = [...rollback040.matchAll(/DROP FUNCTION IF EXISTS (\w+)\s*\(([^)]*)\)/g)].map((m) => ({
+    nombre: m[1],
+    tipos: m[2].split(",").map((t) => normalizar(t)),
+  }));
+  assert.equal(drops.length, funciones040Nuevas.length);
+  for (const f of funciones040Nuevas) {
+    const d = drops.find((x) => x.nombre === f.nombre);
+    assert.ok(d, `040_rollback sin DROP de ${f.nombre}`);
+    assert.deepEqual(d.tipos, f.tipos, `firma de ${f.nombre}`);
+  }
+  assert.doesNotMatch(rollback040, /DROP TABLE|DROP COLUMN|DROP CONSTRAINT/i, "040 no toca tablas ni columnas");
+});
+
+/** Cuerpo de carnes_preliq_transicionar_sede en un SQL, normalizado en espacios. */
+function cuerpoTransicionar(sql) {
+  const i = sql.indexOf("CREATE OR REPLACE FUNCTION carnes_preliq_transicionar_sede");
+  const fin = sql.indexOf("$fn$ LANGUAGE plpgsql;", i);
+  return sql.slice(i, fin).replace(/\s+/g, " ").trim();
+}
+
+test("040_rollback restaura carnes_preliq_transicionar_sede idéntica a la de 039", () => {
+  assert.equal(cuerpoTransicionar(rollback040), cuerpoTransicionar(s039));
+  assert.notEqual(cuerpoTransicionar(s040), cuerpoTransicionar(s039), "040 sí debe cambiarla");
+});
+
+test("040_rollback va antes de revertir 038/039 y el encabezado lo documenta", () => {
+  const crudo = readFileSync(join(RAIZ, "040_rollback.sql"), "utf8");
+  assert.match(crudo, /sql\/038_039_rollback\.sql/);
+  assert.match(crudo, /ANTES|primero/i);
 });
