@@ -1090,6 +1090,8 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     enviadas: 0,
     simuladas: 0,
     errores: 0,
+    sin_confirmar: 0,
+    inicial_pendiente: 0,
     omitidas: 0,
     pendientes: 0,
     agotado: false,
@@ -1238,6 +1240,8 @@ export async function procesarPreliquidacion(id, opciones = {}) {
       if (r?.resultado === "enviada") resumen.enviadas += 1;
       else if (r?.resultado === "simulada") resumen.simuladas += 1;
       else if (r?.resultado === "error_envio" || r?.resultado === "error") resumen.errores += 1;
+      else if (r?.resultado === "sin_confirmar") resumen.sin_confirmar += 1;
+      else if (r?.resultado === "inicial_pendiente") resumen.inicial_pendiente += 1;
     } catch (error) {
       resumen.errores += 1;
       log.error?.(`Envío de la sede ${sede.id} falló: ${error?.message}`);

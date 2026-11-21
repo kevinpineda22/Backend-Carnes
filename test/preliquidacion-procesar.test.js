@@ -368,3 +368,16 @@ test("el origen admin pasa el origen a procesarSede (reinicio de intentos lo dec
   await procesar({ origen: "admin" });
   assert.equal(llamadas[0].ctx.origen, "admin");
 });
+
+test("el resumen cuenta sin_confirmar e inicial_pendiente para el contrato del cron", async () => {
+  let n = 0;
+  const mixto = async (s, ctx) => {
+    llamadas.push({ sede: s, ctx });
+    n += 1;
+    return { resultado: n === 1 ? "sin_confirmar" : "inicial_pendiente" };
+  };
+  const r = await procesar({ procesarSede: mixto });
+  assert.equal(r.sin_confirmar, 1);
+  assert.equal(r.inicial_pendiente, 1);
+  assert.equal(r.enviadas, 0);
+});

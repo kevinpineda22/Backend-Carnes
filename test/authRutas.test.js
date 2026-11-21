@@ -42,6 +42,7 @@ const GUARDS = new Map([
 ]);
 
 const ARCHIVOS_DE_RUTAS = {
+  "cron.routes.js": ["/cron", (await import("../src/routes/cron.routes.js")).default],
   "sedes.routes.js": ["/sedes", (await import("../src/routes/sedes.routes.js")).default],
   "plantilla.routes.js": ["/plantilla", (await import("../src/routes/plantilla.routes.js")).default],
   "recepciones.routes.js": ["/recepciones", (await import("../src/routes/recepciones.routes.js")).default],
@@ -69,6 +70,9 @@ const ARCHIVOS_DE_RUTAS = {
  * recibidor (basta con sesión), público, o está cerrada por otro mecanismo.
  */
 const SIN_GUARD_DE_ADMIN = [
+  // Cron de la preliquidación: lo llama GitHub Actions con CRON_SECRET (SHA-256 + timingSafeEqual,
+  // 401 sin side effects, 503 sin secreto; ver test/cron-preliquidaciones.test.js). No hay sesión de usuario.
+  "POST /cron/preliquidaciones",
   // Monitoreo: autenticar los deja pasar (RUTAS_SIN_SESION).
   "GET /health",
   "GET /health/email",
@@ -135,10 +139,12 @@ function recorrer(router, prefijo, salida, montajes) {
 
 const montajes = new Map(Object.values(ARCHIVOS_DE_RUTAS).map(([prefijo, router]) => [router, prefijo]));
 
-test("index.js monta `autenticar` ANTES que cualquier router y que /health", () => {
+test("index.js monta `autenticar` ANTES que cualquier router y que /health (salvo el cron, que usa CRON_SECRET)", () => {
   const pila = indice.stack;
-  assert.equal(pila[0].handle, autenticar, "autenticar es la primera capa");
-  const primerRouter = pila.findIndex((c) => c.handle?.stack);
+  const cron = ARCHIVOS_DE_RUTAS["cron.routes.js"][1];
+  assert.equal(pila[0].handle, cron, "la única capa previa a autenticar es el cron");
+  assert.equal(pila[1].handle, autenticar, "autenticar es la primera capa del resto");
+  const primerRouter = pila.findIndex((c, i) => i > 1 && c.handle?.stack);
   const primeraRuta = pila.findIndex((c) => c.route);
   assert.ok(primerRouter > 0 && primeraRuta > 0);
 });
