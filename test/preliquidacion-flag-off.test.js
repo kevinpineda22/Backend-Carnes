@@ -149,7 +149,6 @@ test("solo el controlador de /preliquidaciones lee el interruptor", () => {
 test("el flujo de envío a SIESA y los controladores legados no mencionan la preliquidación", () => {
   for (const archivo of [
     "services/siesa.service.js",
-    "models/SiesaEnvio.model.js",
     "controllers/recepciones.controller.js",
     "controllers/liquidaciones.controller.js",
     "controllers/siesa.controller.js",
@@ -158,6 +157,21 @@ test("el flujo de envío a SIESA y los controladores legados no mencionan la pre
     "routes/siesa.routes.js",
   ]) {
     assert.doesNotMatch(leer(archivo), /preliquidaci/i, archivo);
+  }
+});
+
+test("SiesaEnvio.model solo conoce la preliquidación por el hook del resolver (S2 2.9), sin interruptor", () => {
+  const texto = leer("models/SiesaEnvio.model.js");
+  // El hook busca la sede por envio_id: sin sede (flag apagado o envío legado) es un no-op.
+  assert.match(texto, /carnes_preliq_sincronizar_envio/);
+  assert.match(texto, /enviarOficialRecepcion/);
+  assert.doesNotMatch(texto, /preliquidacionHabilitada|estadoPreliquidacion|CARNES_PRELIQUIDACION/);
+  const nombres = new Set([...texto.matchAll(/w*preliquidaciw*/gi)].map((m) => m[0].toLowerCase()));
+  for (const n of nombres) {
+    assert.ok(
+      ["carnes_preliquidacion_sedes", "sincronizarsededepreliquidacion", "preliquidaci", "preliquidacion", "preliquidaciones"].includes(n),
+      "mención inesperada de la preliquidación en SiesaEnvio.model: " + n,
+    );
   }
 });
 
