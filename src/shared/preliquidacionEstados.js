@@ -327,6 +327,82 @@ export function mapearEnvio(fila, { armadoBloqueos = [] } = {}) {
   throw new Error(`fila de envío no mapeable (estado ${String(fila.estado)})`);
 }
 
+// ─── Conjunto reclamable (`puedeReclamar`) ─────────────────────────────────
+
+/** Segundos tras los que un `enviando` sin fila de SIESA se considera abandonado. */
+export const ABANDONO_ENVIANDO_S = 360;
+
+/**
+ * Guarda de montos obsoletos (T2): el costeo de la sede debe corresponder al
+ * conjunto de sedes (`orden_version`) y a los animales actuales. Se exige a
+ * TODO origen, admin incluido; si falla, hay que recostear (congelar) y reclamar de nuevo.
+ *
+ * @param {object} sede fila de la sede
+ * @param {{orden_version: number}} header fila de la preliquidación
+ */
+export function costeoVigente(sede, header) {
+  if (sede.gasto_sede == null) return false;
+  if (sede.costeo_orden_version == null || sede.costeo_animales == null) return false;
+  return sede.costeo_orden_version === header.orden_version && sede.costeo_animales === sede.animales;
+}
+
+const ORIGENES_AUTOMATICOS = ["schedule", "sweep", "dispatch", "inmediato"];
+
+const NO_RECLAMABLE = (motivo) => ({ ok: false, motivo });
+const RECLAMABLE = (resetIntentos = false) => ({ ok: true, resetIntentos });
+
+/**
+ * Decide si una sede puede reclamarse para enviar (la RPC `reclamar_sede` hace cumplir
+ * esta decisión con un CAS sobre la misma instantánea).
+ *
+ * Conjunto automático: calculada; simulada con SIESA activo; error transitorio con
+ * intentos < 3 de otra corrida (NULL = nunca reclamada); enviando abandonado sin envio_id.
+ * Admin: el automático más lista_para_enviar, error de cualquier tipo/intentos y simulada,
+ * con reinicio de intentos.
+ *
+ * @param {object} sede
+ * @param {{header: object, origen: string, corridaId: number, siesaActivo: boolean, ahora: Date, abandonoS?: number}} ctx
+ * @returns {{ok: true, resetIntentos: boolean} | {ok: false, motivo: string}}
+ */
+export function puedeReclamar(sede, ctx) {
+  const { header, origen, corridaId, siesaActivo, ahora, abandonoS = ABANDONO_ENVIANDO_S } = ctx ?? {};
+  if (!header) throw new Error("puedeReclamar requiere header");
+  const admin = origen === "admin";
+  if (!admin && !ORIGENES_AUTOMATICOS.includes(origen)) throw new Error(`origen desconocido: ${String(origen)}`);
+  if (corridaId == null) throw new Error("puedeReclamar requiere corridaId (R14: nunca NULL)");
+
+  const decision = decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandonoS });
+  if (!decision.ok) return decision;
+  if (!costeoVigente(sede, header)) return NO_RECLAMABLE("costeo_desactualizado");
+  return decision;
+}
+
+function decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandonoS }) {
+  switch (sede.estado) {
+    case "calculada":
+      return RECLAMABLE();
+    case "simulada":
+      if (admin) return RECLAMABLE(true);
+      return siesaActivo ? RECLAMABLE() : NO_RECLAMABLE("siesa_apagado");
+    case "lista_para_enviar":
+      return admin ? RECLAMABLE(true) : NO_RECLAMABLE("requiere_admin");
+    case "error": {
+      if (admin) return RECLAMABLE(true);
+      const reintentable = sede.error_tipo === "transitorio" && Number(sede.intentos ?? 0) < LIMITE_INTENTOS;
+      if (!reintentable) return NO_RECLAMABLE("requiere_admin");
+      if (sede.ultima_corrida != null && sede.ultima_corrida === corridaId) return NO_RECLAMABLE("ya_intentada_en_corrida");
+      return RECLAMABLE();
+    }
+    case "enviando": {
+      if (sede.envio_id != null || sede.claimed_at == null) return NO_RECLAMABLE("estado_no_reclamable");
+      const limite = new Date(ahora).getTime() - abandonoS * 1000;
+      return new Date(sede.claimed_at).getTime() < limite ? RECLAMABLE() : NO_RECLAMABLE("estado_no_reclamable");
+    }
+    default:
+      return NO_RECLAMABLE("estado_no_reclamable");
+  }
+}
+
 /**
  * @param {string} estado estado actual de la sede
  * @param {string} evento
