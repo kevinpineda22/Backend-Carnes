@@ -2,7 +2,7 @@ import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
-import { preliquidacionHabilitada } from "../config/preliquidacion.js";
+import { avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
 
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
@@ -14,7 +14,16 @@ const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
  * no depende de `CARNES_AUTH`, que hoy puede estar en `off`.
  */
 function exigirEncendida() {
-  if (!preliquidacionHabilitada()) {
+  const motivo = motivoApagado();
+  if (motivo === "auth_requerida") {
+    avisarAuthRequerida();
+    throw createError(
+      503,
+      "La preliquidación requiere autenticación exigida en producción (CARNES_AUTH=exigir).",
+      "auth_requerida",
+    );
+  }
+  if (motivo) {
     throw createError(
       409,
       "La preliquidación de talleres está apagada (CARNES_PRELIQUIDACION).",

@@ -6,9 +6,13 @@ import "dotenv/config";
 import routes from "./routes/index.js";
 import { corsMerkahorro } from "./config/cors.js";
 import { errorHandler } from "./middleware/errorHandler.js";
+import { avisarAuthRequerida } from "./config/preliquidacion.js";
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+
+// C3: avisa al arrancar si la preliquidación quedó deshabilitada por falta de CARNES_AUTH=exigir.
+avisarAuthRequerida();
 
 // ─── Middleware global ────────────────────────────
 app.use(helmet());
