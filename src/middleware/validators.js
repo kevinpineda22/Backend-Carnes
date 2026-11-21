@@ -874,7 +874,7 @@ const reenviarViscerasSchema = z.object({
 
 // Dinero de la preliquidación: número o texto numérico, no negativo.
 const preliqDinero = z
-  .union([z.number(), z.string().trim().regex(/^d+(.d+)?$/, "El valor debe ser un número.")], {
+  .union([z.number(), z.string().trim().regex(/^\d+(\.\d+)?$/, "El valor debe ser un número.")], {
     errorMap: () => ({ message: "El valor debe ser un número no negativo." }),
   })
   .refine((v) => Number(v) >= 0, "El valor no puede ser negativo.");
