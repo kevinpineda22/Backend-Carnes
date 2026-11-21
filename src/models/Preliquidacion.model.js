@@ -326,10 +326,13 @@ export async function vincularRecepcion(recepcionId, { preliquidacionId = null }
 }
 
 /** Desvincula una sede que nunca se envió. Las sedes de desborde que ahora caben salen en `liberadas`. */
-export async function desvincularSede(sedeId) {
+export async function desvincularSede(sedeId, { preliquidacionId = null } = {}) {
   return conReintentoVersion(async () => {
     const [sede] = await leerLista(T_SEDES, { id: sedeId });
-    if (!sede) throw resultadoAError({ resultado: "no_encontrada" });
+    // Una sede que no es de la preliquidación de la URL se trata como inexistente.
+    if (!sede || (preliquidacionId && String(sede.preliquidacion_id) !== String(preliquidacionId))) {
+      throw resultadoAError({ resultado: "no_encontrada" });
+    }
 
     const cabecera = await leerCabecera(sede.preliquidacion_id);
     const sedes = (await leerSedesConRecepcion(sede.preliquidacion_id)).map(aSedePlan);

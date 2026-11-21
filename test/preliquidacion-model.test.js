@@ -397,6 +397,15 @@ test("desvincularSede: una sede enviada se rechaza sin llamar a la RPC", async (
   assert.equal(rpcs.length, 0);
 });
 
+test("desvincularSede: una sede de otra preliquidación es 404 y no llama a la RPC", async () => {
+  tablas.carnes_preliquidacion_sedes = [sede({ id: 11, preliquidacion_id: 1 })];
+  await falla(() => Modelo.desvincularSede(11, { preliquidacionId: 2 }), 404, "no_encontrada");
+  assert.equal(rpcs.length, 0);
+  respuestasRpc = [{ resultado: "ok" }];
+  await Modelo.desvincularSede(11, { preliquidacionId: 1 });
+  assert.equal(rpcs.length, 1);
+});
+
 test("desvincularSede: sede inexistente es 404", async () => {
   await falla(() => Modelo.desvincularSede(77), 404, "no_encontrada");
 });

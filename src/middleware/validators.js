@@ -872,6 +872,18 @@ const reenviarViscerasSchema = z.object({
     .optional(),
 });
 
+// Dinero de la preliquidación: número o texto numérico, no negativo.
+const preliqDinero = z
+  .union([z.number(), z.string().trim().regex(/^d+(.d+)?$/, "El valor debe ser un número.")], {
+    errorMap: () => ({ message: "El valor debe ser un número no negativo." }),
+  })
+  .refine((v) => Number(v) >= 0, "El valor no puede ser negativo.");
+
+const preliqAnimales = z.coerce
+  .number({ invalid_type_error: "Los animales deben ser un número entero." })
+  .int("Los animales deben ser un número entero.")
+  .positive("Los animales deben ser mayores que cero.");
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
   reenviarVisceras: validar(reenviarViscerasSchema),
@@ -1101,6 +1113,51 @@ export const validators = {
         )
         .default([]),
     }),
+  ),
+
+  // ─── Preliquidación de talleres (res / cerdo) ─────────────────────────────
+  // Los valores de dinero llegan como número o texto de un <input>; se aceptan
+  // los dos y se rechaza lo que no sea un valor no negativo.
+  crearPreliquidacion: validar(
+    z.object({
+      especie: z.enum(ESPECIES, { errorMap: () => ({ message: "La especie debe ser res o cerdo." }) }),
+      animales: preliqAnimales,
+      animal_en_pie: preliqDinero.optional(),
+      servicio: preliqDinero.nullable().optional(),
+      tercero_id: z.string().trim().min(1).max(30).optional(),
+    }),
+  ),
+
+  actualizarPreliquidacion: validar(
+    z
+      .object({
+        animales: preliqAnimales.optional(),
+        animal_en_pie: preliqDinero.optional(),
+        servicio: preliqDinero.optional(),
+        servicio_por_animal: preliqDinero.optional(),
+        tercero_id: z.string().trim().min(1).max(30).optional(),
+      })
+      .refine((v) => Object.keys(v).length > 0, "No hay nada que actualizar."),
+  ),
+
+  guardarGastosPreliquidacion: validar(
+    z.object({
+      filas: z
+        .array(
+          z.object({
+            concepto: z.string().trim().min(1, "El gasto necesita un concepto.").max(120),
+            valor: preliqDinero,
+            signo: z.union([z.literal(1), z.literal(-1)], {
+              errorMap: () => ({ message: "El signo debe ser 1 o -1." }),
+            }),
+          }),
+        )
+        .default([]),
+    }),
+  ),
+
+  guardarConfigPreliquidacion: validar(
+    z.object({ servicio_por_animal: preliqDinero }),
   ),
 
   vincularRecepciones: validar(

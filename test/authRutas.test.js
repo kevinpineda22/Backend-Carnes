@@ -46,6 +46,10 @@ const ARCHIVOS_DE_RUTAS = {
   "plantilla.routes.js": ["/plantilla", (await import("../src/routes/plantilla.routes.js")).default],
   "recepciones.routes.js": ["/recepciones", (await import("../src/routes/recepciones.routes.js")).default],
   "liquidaciones.routes.js": ["/liquidaciones", (await import("../src/routes/liquidaciones.routes.js")).default],
+  "preliquidaciones.routes.js": [
+    "/preliquidaciones",
+    (await import("../src/routes/preliquidaciones.routes.js")).default,
+  ],
   "siesa.routes.js": ["/siesa", (await import("../src/routes/siesa.routes.js")).default],
   "transformaciones.routes.js": [
     "/transformaciones",
@@ -167,7 +171,7 @@ test("rutas: EXACTAMENTE estas quedan sin requireAdminCarnes; todas las demás l
 
 test("rutas: los routers de panel completo (plantilla, liquidaciones, siesa, desposte, transformaciones) están protegidos de punta a punta", () => {
   const todas = recorrer(indice, "", [], montajes);
-  for (const prefijo of ["/plantilla", "/liquidaciones", "/siesa", "/desposte", "/transformaciones"]) {
+  for (const prefijo of ["/plantilla", "/liquidaciones", "/preliquidaciones", "/siesa", "/desposte", "/transformaciones"]) {
     const deRouter = todas.filter((r) => r.clave.split(" ")[1].startsWith(prefijo));
     assert.ok(deRouter.length > 0, prefijo);
     assert.ok(deRouter.every((r) => r.protegido), `${prefijo} tiene una ruta sin guard`);
