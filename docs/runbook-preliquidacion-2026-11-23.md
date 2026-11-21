@@ -28,7 +28,7 @@ Marcar todo antes de tocar la base. Si un punto falla, no se ejecuta.
 - [ ] Todas las liquidaciones cerradas (consulta 2.1: cero en `Abierta` y cero en `Costeada`).
 - [ ] No hay recepciones en `Borrador` con trabajo reciente (consulta 2.1; las viejas abandonadas son aceptables).
 - [ ] Copia de seguridad hecha y verificada (sección 1).
-- [ ] Rama `feat/preliquidacion-taller` actualizada hasta el último commit de la cadena y `npm test` en verde (sección 7.1).
+- [ ] Rama `feat/preliquidacion-taller` actualizada hasta `feat/preliquidacion-taller-23-flag-escrituras` (no más allá) y `npm test` en verde (sección 7.1).
 - [ ] `CARNES_PRELIQUIDACION` **no** está definida en Vercel, o vale `off` (sección 7.3).
 - [ ] Se conoce el valor actual de `CARNES_AUTH` en Vercel (según `docs/PENDIENTES_SEGURIDAD.md:10` es `off`; ver riesgo R1).
 - [ ] Se entiende que los tres scripts de `test/sql/` dicen "SOLO en QA, NUNCA en producción" en su cabecera. Aquí se corren en producción porque no hay QA, y se justifica así: son `BEGIN ... ROLLBACK`, 038 y 039 no usan `NOTIFY`, `pg_net`, `http` ni `dblink` (verificado con búsqueda en ambos archivos), los únicos triggers que tocan son `updated_at`, y el lunes no hay actividad. Efectos residuales aceptados: bloqueos breves de fila sobre `carnes_recepciones` y consumo de valores de las secuencias `IDENTITY` (los ids de las tablas nuevas empiezan con huecos).
@@ -318,11 +318,11 @@ Motivo: el backend rechaza `finalizar` con 400 `NOVILLOS_INVALIDOS` cuando `novi
 
 ### 7.1 Preparar el tracker (backend)
 
-Ahora `main` y `feat/preliquidacion-taller` apuntan al mismo commit (`cafc578`) y la cadena de ramas `-01` a `-22` va 25+ commits por delante. Antes del merge, el tracker debe contener la punta de la cadena:
+Ahora `main` y `feat/preliquidacion-taller` apuntan al mismo commit (`cafc578`) y la cadena de ramas va por delante. Antes del merge, el tracker debe llegar hasta `-23-flag-escrituras` y NO más allá: las ramas `-24` en adelante son la etapa 2 (envío a SIESA, sql/040), sin revisar y fuera de esta migración.
 
 ```bash
 git switch feat/preliquidacion-taller
-git merge --ff-only feat/preliquidacion-taller-22-runbook   # contiene toda la cadena -01 ... -21 y este runbook
+git merge --ff-only feat/preliquidacion-taller-23-flag-escrituras   # cadena -01 ... -23: etapa 1, reversa, runbook y bloqueo de escrituras
 npm test                                                    # debe terminar en verde
 git log --oneline main..HEAD | wc -l                        # revisar cuántos commits entran
 ```
