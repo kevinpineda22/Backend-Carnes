@@ -325,3 +325,31 @@ test("[M1] enviando con envio_id y costeo obsoleto nunca se recostea (ya hay fil
   assert.deepEqual(ids(r.enCurso), [e.id]);
   assert.equal(r.pendientes, 0);
 });
+
+// ═══ M6: las sedes liberadas por desborde esperan a que la preliquidación se liquide ═══
+
+const LIBERADA = { estado: "bloqueada", motivo_bloqueo: "excede_animales", liberada_at: "2026-11-20T02:40:00.000Z", gasto_sede: null, costeo_orden_version: null, costeo_animales: null };
+
+test("[M6] bloqueada(excede, liberada) con liquidada_at NULL no entra a porCalcular ni a pendientes", () => {
+  const l = sede(LIBERADA);
+  const r = plan([l], { header: HEADER_SIN_LIQUIDAR });
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.deepEqual(ids(r.bloqueadas), [l.id]);
+  assert.equal(r.pendientes, 0);
+});
+
+test("[M6] con liquidada_at puesto la liberada se encola a costeo (lista_para_enviar) y nunca se reclama en automático", () => {
+  const l = sede(LIBERADA);
+  const r = plan([l]);
+  assert.deepEqual(ids(r.porCalcular), [l.id]);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.equal(r.pendientes, 1);
+});
+
+test("[M6] tampoco el admin la reclama antes de costearse: solo se costea", () => {
+  const l = sede(LIBERADA);
+  const r = plan([l], { origen: "admin" });
+  assert.deepEqual(ids(r.porCalcular), [l.id]);
+  assert.deepEqual(ids(r.porEnviar), []);
+});

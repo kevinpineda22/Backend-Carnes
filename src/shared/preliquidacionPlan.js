@@ -56,7 +56,9 @@ function proyectarTrasCosteo(sede, { header, origen, ahora, abandonoS }) {
 function debeCostearse(sede, { header, esAdmin, corridaId, ahora, abandonoS }) {
   if (sede.estado === "vinculada") return header.liquidada_at != null;
   if (sede.estado === "bloqueada") {
-    return sede.motivo_bloqueo === "excede_animales" && sede.liberada_at != null;
+    // M6: una liberada espera a que la preliquidación se liquide; antes no hay monto que calcular
+    // y el flujo de la corrida giraría sobre ella sin poder avanzar.
+    return sede.motivo_bloqueo === "excede_animales" && sede.liberada_at != null && header.liquidada_at != null;
   }
   if (esAdmin && ESTADOS_RECOSTEABLES_ADMIN.includes(sede.estado)) return true;
   if (costeoVigente(sede, header)) return false;
