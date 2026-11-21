@@ -396,7 +396,7 @@ async function exigirCerdo(id, { escritura = false } = {}) {
  * Las retomas del catálogo de cerdo: bloque 'bonificacion' y sin factor por
  * novillo. Las 'informativo' o por factor no son retomas y no deben aparecer.
  */
-async function listarCatalogoRetomas() {
+export async function listarCatalogoRetomas() {
   const todas = await PlantillaModel.listar("viceras", "cerdo");
   return todas.filter(
     (v) =>

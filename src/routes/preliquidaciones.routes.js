@@ -37,6 +37,11 @@ router.patch("/:id", validators.actualizarPreliquidacion, PreliquidacionesContro
 
 router.put("/:id/gastos", validators.guardarGastosPreliquidacion, PreliquidacionesController.guardarGastos);
 
+// Retomas de la entrega (solo cerdo, solo antes de congelar). No son un gasto: entran
+// a la utilidad de cada sede, repartidas por animales.
+router.get("/:id/retomas", PreliquidacionesController.obtenerRetomas);
+router.put("/:id/retomas", validators.guardarRetomas, PreliquidacionesController.guardarRetomas);
+
 router.post("/:id/recepciones", validators.vincularRecepciones, PreliquidacionesController.vincular);
 router.delete("/:id/sedes/:sedeId", PreliquidacionesController.desvincular);
 

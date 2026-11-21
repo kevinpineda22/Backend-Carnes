@@ -423,7 +423,7 @@ const congelada = () =>
  * Escribe campos de la cabecera con control de versión (CAS sobre `version`) y la
  * sube en uno. `permitirCongelada` es solo para el PATCH de servicio.
  */
-async function actualizarCabeceraConVersion(id, cambios, { alLeer } = {}) {
+export async function actualizarCabeceraConVersion(id, cambios, { alLeer } = {}) {
   for (let intento = 0; intento < MAX_INTENTOS_VERSION; intento += 1) {
     const cabecera = await leerCabecera(id);
     if (cabecera.liquidada_at) throw congelada();

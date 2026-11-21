@@ -42,6 +42,13 @@ mock.module(url("models/Preliquidacion.model.js"), {
   },
 });
 
+mock.module(url("models/PreliquidacionRetomas.model.js"), {
+  namedExports: {
+    obtenerRetomas: falso("obtenerRetomas"),
+    guardarRetomas: falso("guardarRetomas"),
+  },
+});
+
 let guardPasa = true;
 mock.module(url("middleware/authCarnes.js"), {
   namedExports: {
@@ -293,6 +300,32 @@ test("DELETE /:id/sedes/:sedeId propaga 409 sede_enviada", async () => {
   const r = await llamar("DELETE", "/3/sedes/9");
   assert.equal(r.estado, 409);
   assert.equal(r.json.codigo, "sede_enviada");
+});
+
+// ─── Retomas (cerdo) ───────────────────────────────────────────────────────
+
+test("GET /:id/retomas lee las retomas de la preliquidación", async () => {
+  respuestas.obtenerRetomas = { preliquidacion_id: 3, filas: [] };
+  const r = await llamar("GET", "/3/retomas");
+  assert.equal(r.estado, 200);
+  assert.deepEqual(llamadas[0].args, [3]);
+});
+
+test("PUT /:id/retomas valida las filas y las guarda (con el interruptor apagado también)", async () => {
+  respuestas.guardarRetomas = { total: 10 };
+  const filas = [{ vicera_item_id: 5, kilos: 10, precio: 3000 }];
+  const r = await llamar("PUT", "/3/retomas", { filas });
+  assert.equal(r.estado, 200);
+  assert.equal(llamadas[0].args[0], 3);
+  assert.deepEqual(llamadas[0].args[1].filas, filas);
+  assert.equal((await llamar("PUT", "/3/retomas", { filas: [{ vicera_item_id: "x", kilos: 1 }] })).estado, 400);
+});
+
+test("PUT /:id/retomas propaga el 409 de una preliquidación congelada", async () => {
+  respuestas.guardarRetomas = createError(409, "congelada", "preliquidacion_congelada");
+  const r = await llamar("PUT", "/3/retomas", { filas: [] });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_congelada");
 });
 
 // ─── Config ────────────────────────────────────────────────────────────────

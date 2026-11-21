@@ -1,4 +1,5 @@
 import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
+import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { preliquidacionHabilitada } from "../config/preliquidacion.js";
@@ -123,6 +124,24 @@ export async function desvincular(req, res, next) {
 export async function previsualizar(req, res, next) {
   try {
     res.json({ ok: true, data: await PreliquidacionModel.previsualizar(req.idPreliquidacion) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** GET /api/preliquidaciones/:id/retomas — solo cerdo. */
+export async function obtenerRetomas(req, res, next) {
+  try {
+    res.json({ ok: true, data: await RetomasModel.obtenerRetomas(req.idPreliquidacion) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** PUT /api/preliquidaciones/:id/retomas — solo cerdo y solo antes de congelar. */
+export async function guardarRetomas(req, res, next) {
+  try {
+    res.json({ ok: true, data: await RetomasModel.guardarRetomas(req.idPreliquidacion, req.body) });
   } catch (error) {
     next(error);
   }
