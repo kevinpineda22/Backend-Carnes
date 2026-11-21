@@ -148,6 +148,31 @@ test("aborta si hay sedes enviadas a SIESA (guarda) antes de borrar nada", () =>
   assert.ok(guarda < rollback.indexOf("DROP FUNCTION"));
 });
 
+test("la guarda replica la de carnes_preliq_desvincular (estados, envíos SIESA y recepciones enviadas)", () => {
+  const guarda = rollback.slice(rollback.indexOf("BEGIN;"), rollback.indexOf("UPDATE carnes_recepcion_items"));
+  assert.match(guarda, /'enviando', 'enviada', 'sin_confirmar', 'anulada'/);
+  assert.match(guarda, /carnes_siesa_envios/);
+  assert.match(guarda, /e\.estado IN \('ok', 'enviando', 'sin_confirmar'\)/);
+  assert.match(guarda, /'Enviado_SIESA'/);
+  assert.match(guarda, /preliquidacion_id IS NOT NULL/);
+  // Debe seguir funcionando si las tablas ya no existen.
+  assert.match(guarda, /to_regclass\('carnes_preliquidacion_sedes'\)/);
+  assert.match(guarda, /to_regclass\('carnes_siesa_envios'\)/);
+  assert.match(guarda, /information_schema\.columns/);
+});
+
+test("la limpieza de costos solo toca ítems de recepciones Costeado", () => {
+  const paso2 = rollback.slice(rollback.indexOf("UPDATE carnes_recepcion_items"), rollback.indexOf("DROP FUNCTION"));
+  const items = /UPDATE carnes_recepcion_items[\s\S]*?\$q\$;/.exec(paso2)[0];
+  assert.match(items, /preliquidacion_id IS NOT NULL AND estado = 'Costeado'/);
+});
+
+test("038 y el rollback fijan lock_timeout justo después de BEGIN", () => {
+  for (const [nombre, sql] of [["038", s038], ["rollback", rollback]]) {
+    assert.match(sql, /BEGIN;\s*SET LOCAL lock_timeout = '5s';/, nombre);
+  }
+});
+
 test("devuelve al flujo legado las recepciones vinculadas no enviadas, antes de borrar la columna", () => {
   assert.match(rollback, /SET costo_ajustado = NULL, costo_total = NULL/);
   assert.match(rollback, /SET estado = 'Aprobado', costeado_at = NULL/);

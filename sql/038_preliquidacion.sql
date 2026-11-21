@@ -41,9 +41,13 @@
 --   4. Frontend
 --
 -- Idempotente: se puede correr más de una vez. Todo o nada.
+--
+-- lock_timeout de 5s: si otra sesión retiene un lock sobre carnes_recepciones, TODO el
+-- script aborta limpio (nada se aplica). Reintentar cuando la tabla esté libre.
 -- =============================================================================
 
 BEGIN;
+SET LOCAL lock_timeout = '5s';
 
 -- 0. Precondiciones.
 DO $$
