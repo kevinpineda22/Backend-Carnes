@@ -687,3 +687,38 @@ test("[M2] correccion_descartada limpia siempre, también correccion_orden_versi
   assert.equal(r.campos.requiere_correccion, false);
   assert.equal(r.campos.correccion_orden_version, null);
 });
+
+// ─── I1: no volver a bloquear lo ya bloqueado por servicio_cero ────────────
+
+test("I1: bloqueada(servicio_cero) + costeo_bloqueado(servicio_cero) es un no-op sin escritura ni alerta", () => {
+  const r = transicionSede("bloqueada", "costeo_bloqueado", {
+    motivoBloqueo: "servicio_cero",
+    motivo: "servicio_cero",
+    detalle: "otro detalle",
+  });
+  assert.equal(r.estado, "bloqueada");
+  assert.equal(r.sinCambios, true);
+  assert.deepEqual(r.campos, {});
+  assert.deepEqual(r.efectos, []);
+});
+
+test("I1: el no-op solo aplica a servicio_cero sobre servicio_cero", () => {
+  const otroMotivo = transicionSede("bloqueada", "costeo_bloqueado", {
+    motivoBloqueo: "utilidad_negativa",
+    motivo: "servicio_cero",
+  });
+  assert.equal(otroMotivo.sinCambios, undefined);
+  assert.equal(otroMotivo.campos.motivo_bloqueo, "servicio_cero");
+  assert.ok(hay(otroMotivo.efectos, { tipo: "alerta", evento: "servicio_cero" }));
+
+  const aOtro = transicionSede("bloqueada", "costeo_bloqueado", {
+    motivoBloqueo: "servicio_cero",
+    motivo: "costeo_invalido",
+  });
+  assert.equal(aOtro.sinCambios, undefined);
+  assert.equal(aOtro.campos.motivo_bloqueo, "costeo_invalido");
+
+  const desdeVinculada = transicionSede("vinculada", "costeo_bloqueado", { motivo: "servicio_cero" });
+  assert.equal(desdeVinculada.sinCambios, undefined);
+  assert.ok(hay(desdeVinculada.efectos, { tipo: "alerta", evento: "servicio_cero" }));
+});

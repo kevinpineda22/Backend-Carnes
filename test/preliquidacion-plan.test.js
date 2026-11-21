@@ -385,3 +385,16 @@ test("[M5] automático con SIESA apagado no produce noReclamables (esas sedes ni
   const r = plan([sede({ estado: "simulada" }), sede({ estado: "lista_para_enviar" })], { siesaActivo: false });
   assert.deepEqual(r.noReclamables, []);
 });
+
+// ─── I1: servicio_cero ya bloqueada no genera trabajo por barrido ──────────
+
+test("I1: bloqueada(servicio_cero) sin liquidar no entra a ningún bucket accionable ni a pendientes", () => {
+  const cero = sede({ estado: "bloqueada", motivo_bloqueo: "servicio_cero" });
+  const r = plan([cero], { header: HEADER_SIN_LIQUIDAR });
+  assert.deepEqual(ids(r.porCorregir), []);
+  assert.deepEqual(ids(r.porReevaluar), []);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.equal(r.pendientes, 0);
+  assert.deepEqual(ids(r.bloqueadas), [cero.id]);
+});

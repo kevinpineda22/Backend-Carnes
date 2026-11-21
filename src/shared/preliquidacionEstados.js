@@ -141,6 +141,11 @@ const PARTE_A = {
     }
     const origenes = ["vinculada", "calculada", "error", "lista_para_enviar", "anulada", "simulada", "bloqueada"];
     if (!origenes.includes(estado)) return invalida(estado, "costeo_bloqueado");
+    // I1: una sede ya bloqueada por servicio_cero no se vuelve a bloquear en cada barrido:
+    // sin escritura y sin alerta (la alerta ya existe y se borra al corregirla).
+    if (estado === "bloqueada" && ctx.motivo === "servicio_cero" && ctx.motivoBloqueo === "servicio_cero") {
+      return { estado, campos: {}, efectos: [], sinCambios: true };
+    }
     return resultado(
       "bloqueada",
       { motivo_bloqueo: ctx.motivo, detalle_bloqueo: ctx.detalle ?? null, liberada_at: null },
