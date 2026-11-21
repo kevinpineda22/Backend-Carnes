@@ -217,15 +217,35 @@ const conEnvioId = (ctx) => (ctx.envioId != null ? { envio_id: ctx.envioId } : {
 const efectoBorrarAlertasCorreccion = () => ({ tipo: "borrar_alertas", evento: "requiere_correccion" });
 
 /**
- * Cierre exitoso: la sede queda `enviada`. T6: `requiere_correccion` se limpia al
- * reenviar con éxito. El refinamiento de M2 (no limpiarlo si el CEA llevó montos
- * anteriores al recálculo) se aplica en la tarea 2.6.
+ * M2: ¿este envío puede limpiar `requiere_correccion`? Solo si la sede se reclamó con un
+ * costeo de orden_version >= la del recálculo que levantó el flag
+ * (`claim_costeo_orden_version` >= `correccion_orden_version`). Un CEA con montos anteriores
+ * al recálculo no corrige nada, así que el flag sigue pidiendo la anulación y el reenvío.
+ * Sin versiones conocidas se conserva el flag (lado seguro).
+ */
+function envioLimpiaCorreccion(ctx) {
+  const { claimCosteoOrdenVersion: claim, correccionOrdenVersion: correccion } = ctx;
+  if (claim == null || correccion == null) return false;
+  return Number(claim) >= Number(correccion);
+}
+
+/**
+ * Cierre exitoso: la sede queda `enviada`. T6/M2: `requiere_correccion` se limpia solo si el
+ * envío salió con montos posteriores al recálculo (ver `envioLimpiaCorreccion`); si no, el flag
+ * y su alerta se conservan.
  */
 function aEnviada(ctx, { avisarAnulacion }) {
   const efectos = [efectoRecepcion("Enviado_SIESA")];
   if (avisarAnulacion) efectos.push({ tipo: "avisar_anulacion" });
-  efectos.push(efectoBorrarAlertasCorreccion(), { tipo: "intentar_autocierre" });
-  return resultado("enviada", { ...conEnvioId(ctx), requiere_correccion: false }, efectos);
+  const campos = { ...conEnvioId(ctx) };
+  const conservaFlag = ctx.requiereCorreccion === true && !envioLimpiaCorreccion(ctx);
+  if (!conservaFlag) {
+    campos.requiere_correccion = false;
+    if (ctx.requiereCorreccion === true) campos.correccion_orden_version = null;
+    efectos.push(efectoBorrarAlertasCorreccion());
+  }
+  efectos.push({ tipo: "intentar_autocierre" });
+  return resultado("enviada", campos, efectos);
 }
 
 const PARTE_B = {
@@ -290,14 +310,21 @@ const PARTE_B = {
     return resultado("anulada", {}, [efectoRecepcion("Costeado")]);
   },
 
-  recalcular_no_enviadas(estado) {
+  recalcular_no_enviadas(estado, ctx) {
     if (!["enviando", "enviada", "sin_confirmar"].includes(estado)) return invalida(estado, "recalcular_no_enviadas");
-    return resultado(estado, { requiere_correccion: true }, [efectoAlerta("requiere_correccion")]);
+    // La orden_version del recálculo queda guardada: decide después qué envío puede limpiar el flag (M2).
+    if (ctx.ordenVersion == null) throw new Error("recalcular_no_enviadas requiere ctx.ordenVersion");
+    return resultado(
+      estado,
+      { requiere_correccion: true, correccion_orden_version: ctx.ordenVersion },
+      [efectoAlerta("requiere_correccion")],
+    );
   },
 
   correccion_descartada(estado, ctx) {
     if (!ctx.requiereCorreccion) return invalida(estado, "correccion_descartada", "sin requiere_correccion");
-    return resultado(estado, { requiere_correccion: false }, [efectoBorrarAlertasCorreccion()]);
+    // Descartar siempre limpia, sin importar con qué montos salió el CEA (decisión humana).
+    return resultado(estado, { requiere_correccion: false, correccion_orden_version: null }, [efectoBorrarAlertasCorreccion()]);
   },
 };
 

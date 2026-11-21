@@ -461,7 +461,7 @@ test("anulacion_confirmada solo desde enviada", () => {
 
 for (const estado of ["enviando", "enviada", "sin_confirmar"]) {
   test(`${estado} + recalcular_no_enviadas -> mismo estado con requiere_correccion y alerta`, () => {
-    const r = transicionSede(estado, "recalcular_no_enviadas");
+    const r = transicionSede(estado, "recalcular_no_enviadas", { ordenVersion: 5 });
     assert.equal(r.estado, estado);
     assert.equal(r.campos.requiere_correccion, true);
     assert.ok(hay(r.efectos, { tipo: "alerta", evento: "requiere_correccion" }));
@@ -584,4 +584,106 @@ test("[M1] enviando abandonado (sin envio_id) + costeo_ok -> calculada, conserva
 test("[M1] enviando no abandonado, o con envio_id, no se puede recostear", () => {
   assert.throws(() => transicionSede("enviando", "costeo_ok", { abandonado: false, envioId: null }), /transición inválida/);
   assert.throws(() => transicionSede("enviando", "costeo_ok", { abandonado: true, envioId: 9 }), /transición inválida/);
+});
+
+// ═══ M2: requiere_correccion no se limpia con un envío de montos anteriores al recálculo ═══
+// El flag nace con la orden_version N del recálculo (`correccion_orden_version`). Un envío
+// solo lo limpia si se reclamó con un costeo de versión >= N (`claim_costeo_orden_version`).
+
+const EVENTOS_ENVIO_OK = [
+  ["enviando", "envio_ok"],
+  ["enviando", "envio_repetido_ok"],
+  ["enviando", "resuelto_ok"],
+  ["sin_confirmar", "resuelto_ok"],
+];
+
+test("[M2] recalcular_no_enviadas guarda la orden_version en correccion_orden_version", () => {
+  for (const estado of ["enviando", "enviada", "sin_confirmar"]) {
+    const r = transicionSede(estado, "recalcular_no_enviadas", { ordenVersion: 7 });
+    assert.equal(r.campos.requiere_correccion, true, estado);
+    assert.equal(r.campos.correccion_orden_version, 7, estado);
+  }
+});
+
+test("[M2] recalcular_no_enviadas exige la orden_version del recálculo", () => {
+  assert.throws(() => transicionSede("enviada", "recalcular_no_enviadas"), /ordenVersion/);
+});
+
+for (const [estado, evento] of EVENTOS_ENVIO_OK) {
+  test(`[M2] ${estado} + ${evento} con claim anterior al recálculo CONSERVA requiere_correccion`, () => {
+    const r = transicionSede(estado, evento, {
+      envioId: 31,
+      requiereCorreccion: true,
+      correccionOrdenVersion: 5,
+      claimCosteoOrdenVersion: 4,
+    });
+    assert.equal(r.estado, "enviada");
+    assert.ok(!("requiere_correccion" in r.campos), "no debe tocar el flag");
+    assert.ok(!("correccion_orden_version" in r.campos));
+    assert.ok(!hay(r.efectos, { tipo: "borrar_alertas", evento: "requiere_correccion" }), "la alerta sigue vigente");
+    assert.ok(hay(r.efectos, { tipo: "recepcion", estado: "Enviado_SIESA" }));
+    assert.ok(hay(r.efectos, { tipo: "intentar_autocierre" }));
+    assert.equal(r.campos.envio_id, 31);
+  });
+
+  for (const claim of [5, 6]) {
+    test(`[M2] ${estado} + ${evento} con claim ${claim} >= recálculo 5 LIMPIA el flag y su alerta`, () => {
+      const r = transicionSede(estado, evento, {
+        requiereCorreccion: true,
+        correccionOrdenVersion: 5,
+        claimCosteoOrdenVersion: claim,
+      });
+      assert.equal(r.campos.requiere_correccion, false);
+      assert.equal(r.campos.correccion_orden_version, null);
+      assert.ok(hay(r.efectos, { tipo: "borrar_alertas", evento: "requiere_correccion" }));
+    });
+  }
+
+  test(`[M2] ${estado} + ${evento} con flag pero sin versiones conocidas conserva el flag (lado seguro)`, () => {
+    for (const ctx of [
+      { requiereCorreccion: true },
+      { requiereCorreccion: true, correccionOrdenVersion: 5 },
+      { requiereCorreccion: true, claimCosteoOrdenVersion: 9 },
+    ]) {
+      const r = transicionSede(estado, evento, ctx);
+      assert.ok(!("requiere_correccion" in r.campos), JSON.stringify(ctx));
+    }
+  });
+}
+
+test("[M2] sin requiere_correccion el envío se comporta como antes (flag en false)", () => {
+  const r = transicionSede("enviando", "envio_ok", { requiereCorreccion: false });
+  assert.equal(r.campos.requiere_correccion, false);
+  assert.ok(hay(r.efectos, { tipo: "borrar_alertas", evento: "requiere_correccion" }));
+});
+
+test("[M2] flujo anulada -> recosteo -> lista_para_enviar -> envío limpia el flag con el claim nuevo", () => {
+  // La sede enviada se marca al recalcular (orden_version 5)...
+  let r = transicionSede("enviada", "recalcular_no_enviadas", { ordenVersion: 5 });
+  const correccionOrdenVersion = r.campos.correccion_orden_version;
+  // ...el admin anula el CEA en SIESA, se recostea con la orden_version vigente (5) y se reenvía.
+  r = transicionSede("enviada", "anulacion_confirmada");
+  assert.equal(r.estado, "anulada");
+  assert.ok(!("requiere_correccion" in r.campos), "anular no toca el flag");
+  r = transicionSede("anulada", "costeo_ok");
+  assert.equal(r.estado, "lista_para_enviar");
+  r = transicionSede("lista_para_enviar", "reclamada_admin");
+  assert.equal(r.estado, "enviando");
+  const final = transicionSede("enviando", "envio_ok", {
+    requiereCorreccion: true,
+    correccionOrdenVersion,
+    claimCosteoOrdenVersion: 5,
+  });
+  assert.equal(final.estado, "enviada");
+  assert.equal(final.campos.requiere_correccion, false);
+});
+
+test("[M2] correccion_descartada limpia siempre, también correccion_orden_version", () => {
+  const r = transicionSede("enviada", "correccion_descartada", {
+    requiereCorreccion: true,
+    correccionOrdenVersion: 9,
+    claimCosteoOrdenVersion: 1,
+  });
+  assert.equal(r.campos.requiere_correccion, false);
+  assert.equal(r.campos.correccion_orden_version, null);
 });
