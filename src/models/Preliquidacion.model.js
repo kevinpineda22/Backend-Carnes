@@ -9,7 +9,10 @@ import {
   montoSedes,
 } from "../shared/preliquidacionCosteo.js";
 import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFuentes.js";
+import { randomUUID } from "node:crypto";
 import { siesaActivo } from "../config/siesa.js";
+import { encolarAlerta } from "../services/preliquidacionAlertas.js";
+import { mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
 import { corteBogota } from "../shared/preliquidacionTiempo.js";
 import {
   elegirPreliquidacion,
@@ -69,6 +72,13 @@ const ERRORES_RESULTADO = {
   datos_invalidos: [422, "Los datos enviados no son válidos."],
   servicio_invalido: [422, "El servicio debe ser un valor mayor o igual que cero."],
   recepcion_estado_invalido: [422, "El estado de recepción indicado no es válido."],
+  no_reclamada: [409, "La sede cambió de estado y otra corrida la tomó o ya no aplica."],
+  costeo_desactualizado: [409, "Los montos de la sede están desactualizados: hay que recalcularlos."],
+  inicial_pendiente: [409, "La CEA inicial de la recepción aún no está enviada a SIESA."],
+  token_invalido: [409, "El envío de la sede fue tomado por otra instancia."],
+  siesa_apagado: [409, "El envío a SIESA está apagado."],
+  no_abierta: [409, "La preliquidación no está abierta."],
+  no_liquidada: [409, "La preliquidación aún no se ha liquidado."],
   no_encontrada: [404, "No se encontró el registro."],
   sin_recepcion: [404, "Recepción no encontrada."],
 };
@@ -712,4 +722,175 @@ export async function obtener(id) {
   const respuesta = { ...cabecera, gastos, saldos, sedes, calculo, siesa_activo: siesaActivo() };
   if (calculoError) respuesta.calculo_error = calculoError;
   return respuesta;
+}
+
+// ─── Envío de una sede (reclamar -> SIESA -> cerrar) ───────────────────────
+
+const efectosDe = (transicion, tipo) => transicion.efectos.filter((e) => e.tipo === tipo);
+
+/** El `plan` de `carnes_preliq_cerrar_envio`: el parche de `transicionSede` sin `estado`, más la recepción. */
+function armarPlanCierre(transicion) {
+  const { estado, ...campos } = transicion.campos;
+  const plan = { hacia: estado, campos };
+  const recepcion = efectosDe(transicion, "recepcion")[0];
+  if (recepcion) plan.recepcion_estado = recepcion.estado;
+  return plan;
+}
+
+/** Encola las alertas de una transición. Una alerta que falla nunca tumba el flujo. */
+async function encolarAlertas(transicion, { encolar, preliquidacionId, sedeId, ocurrencia, log }) {
+  for (const { evento } of efectosDe(transicion, "alerta")) {
+    try {
+      await encolar({ evento, preliquidacionId, sedeId, ocurrencia });
+    } catch (error) {
+      log.warn?.(`No se pudo encolar la alerta ${evento} de la sede ${sedeId}: ${error?.message}`);
+    }
+  }
+}
+
+async function enviarPorDefecto(recepcionId, opciones) {
+  const { enviarOficialRecepcion } = await import("./SiesaEnvio.model.js");
+  return enviarOficialRecepcion(recepcionId, opciones);
+}
+
+/**
+ * Con SIESA apagado ninguna sede se reclama ni se envía: la `calculada` pasa a `simulada`
+ * (M5/D8) y el resto se informa como `siesa_apagado`.
+ */
+async function simularSede(sede) {
+  const transicion = transicionSede(sede.estado, "siesa_apagado");
+  const respuesta = await llamarRpc("carnes_preliq_transicionar_sede", {
+    p_sede_id: sede.id,
+    p_sede_version: sede.version,
+    p_desde: sede.estado,
+    p_hacia: transicion.estado,
+    p_campos: {},
+  });
+  if (respuesta?.resultado === "version_cambiada" || respuesta?.resultado === "no_encontrada") {
+    return { resultado: "no_reclamada" };
+  }
+  exigirOk(respuesta);
+  return { resultado: "simulada", estado: transicion.estado, sede_version: respuesta.sede_version };
+}
+
+/**
+ * Procesa UNA sede de la preliquidación: decide si se puede reclamar, la reclama con un
+ * CAS (estado + versión), manda la CEA oficial, traduce la respuesta de SIESA a un evento
+ * de `transicionSede` y cierra el intento con el mismo token.
+ *
+ * Nunca llama a SIESA si la sede no se reclamó. Si otra instancia ganó el reclamo
+ * (`no_reclamada`) es un no-op (D-S5). La RPC `cerrar_envio` solo escribe el plan.
+ *
+ * @param {object} sede fila de la sede (con `version`, `estado`, montos y costeo congelado)
+ * @param {object} contexto
+ * @param {object} contexto.header fila de la preliquidación
+ * @param {string} contexto.origen schedule|sweep|dispatch|inmediato|admin
+ * @param {number} contexto.corridaId nunca NULL (R14)
+ * @param {Date}   [contexto.ahora]
+ * @param {boolean} [contexto.siesaActivo]
+ * @param {Function} [contexto.enviar] (recepcionId, {por, terceroId, timeoutMs}) -> {fila, armadoBloqueos}
+ * @param {Function} [contexto.encolar] puerto de alertas
+ * @returns {Promise<{resultado: string, efectos?: object[]}>}
+ */
+export async function procesarSede(sede, contexto = {}) {
+  const {
+    header,
+    origen,
+    corridaId,
+    ahora = new Date(),
+    por = null,
+    terceroId,
+    timeoutMs,
+    enviar = enviarPorDefecto,
+    encolar = encolarAlerta,
+    generarToken = randomUUID,
+    log = console,
+  } = contexto;
+  const siesaEncendido = contexto.siesaActivo ?? siesaActivo();
+
+  if (!siesaEncendido && sede.estado === "calculada") return simularSede(sede);
+
+  const decision = puedeReclamar(sede, { header, origen, corridaId, siesaActivo: siesaEncendido, ahora });
+  if (!decision.ok) return { resultado: "no_reclamable", motivo: decision.motivo };
+
+  const token = generarToken();
+  const reclamo = await llamarRpc("carnes_preliq_reclamar_sede", {
+    p_sede_id: sede.id,
+    p_sede_version: sede.version,
+    p_desde: sede.estado,
+    p_token: token,
+    p_corrida_id: corridaId,
+    p_origen: origen,
+    p_reset_intentos: decision.resetIntentos,
+  });
+
+  if (reclamo?.resultado === "no_reclamada") return { resultado: "no_reclamada" };
+  if (reclamo?.resultado === "costeo_desactualizado") return { resultado: "costeo_desactualizado" };
+  if (reclamo?.resultado === "inicial_pendiente") {
+    // La RPC marca `motivo_pendiente` y sube la versión solo la primera vez: la alerta también.
+    if (sede.motivo_pendiente !== "inicial_pendiente") {
+      const transicion = transicionSede("calculada", "inicial_no_ok");
+      await encolarAlertas(transicion, {
+        encolar,
+        preliquidacionId: sede.preliquidacion_id,
+        sedeId: sede.id,
+        ocurrencia: Number(sede.version) + 1,
+        log,
+      });
+    }
+    return { resultado: "inicial_pendiente" };
+  }
+  exigirOk(reclamo);
+
+  let envio;
+  try {
+    envio = await enviar(sede.recepcion_id, { por, terceroId, timeoutMs });
+  } catch (error) {
+    // No se sabe si SIESA llegó a recibir algo: la sede queda `enviando` y se recupera por
+    // abandono (la idempotencia de sql/010 evita el doble envío).
+    log.error?.(`Envío de la sede ${sede.id} falló antes de cerrar: ${error?.message}`);
+    return { resultado: "error_envio", error: error?.message ?? String(error) };
+  }
+
+  const { fila, armadoBloqueos = [] } = envio;
+  // I4: lo que armó el envío y lo que quedó registrado deben decir lo mismo.
+  const paridadArmado = armadoBloqueos.length ? fila?.error === armadoBloqueos.join(" ") : true;
+  if (!paridadArmado) {
+    log.warn?.(`Sede ${sede.id}: el texto de fila.error no coincide con los bloqueos del armado.`);
+  }
+
+  const { evento, ctx } = mapearEnvio(fila, { armadoBloqueos });
+  const transicion = transicionSede("enviando", evento, {
+    ...ctx,
+    intentos: reclamo.intentos,
+    requiereCorreccion: sede.requiere_correccion === true,
+    claimCosteoOrdenVersion: reclamo.claim_costeo_orden_version,
+    correccionOrdenVersion: sede.correccion_orden_version,
+  });
+
+  const cierre = await llamarRpc("carnes_preliq_cerrar_envio", {
+    p_sede_id: sede.id,
+    p_token: token,
+    p_plan: armarPlanCierre(transicion),
+  });
+  if (cierre?.resultado === "token_invalido" || cierre?.resultado === "no_encontrada") {
+    return { resultado: cierre.resultado };
+  }
+  exigirOk(cierre);
+
+  await encolarAlertas(transicion, {
+    encolar,
+    preliquidacionId: sede.preliquidacion_id,
+    sedeId: sede.id,
+    ocurrencia: cierre.sede_version,
+    log,
+  });
+
+  return {
+    resultado: transicion.estado,
+    evento,
+    sede_version: cierre.sede_version,
+    paridad_armado: paridadArmado,
+    efectos: transicion.efectos.filter((e) => e.tipo === "intentar_autocierre" || e.tipo === "avisar_anulacion"),
+  };
 }
