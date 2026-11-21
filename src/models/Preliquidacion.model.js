@@ -12,8 +12,9 @@ import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFue
 import { randomUUID } from "node:crypto";
 import { siesaActivo } from "../config/siesa.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
-import { mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
-import { corteBogota } from "../shared/preliquidacionTiempo.js";
+import { costeoVigente, mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
+import { planearEnvios } from "../shared/preliquidacionPlan.js";
+import { corteBogota, debeLiquidar } from "../shared/preliquidacionTiempo.js";
 import {
   elegirPreliquidacion,
   planearDesvinculacion,
@@ -589,15 +590,29 @@ async function leerContexto(id) {
 }
 
 /**
- * Gasto total, monto de cada sede y su costeo, con las funciones puras de
- * `src/shared` (única implementación: el frontend NO recalcula nada). Solo lee los
- * renglones de las sedes costeables.
- *
- * @returns {Promise<{gasto: object, resumen: object, porSede: Map<string, object>}>}
- *   `porSede` va vacío cuando hay un bloqueo de cabecera (`servicio_cero`).
+ * Gasto total de la cabecera. Ya liquidada, el gasto está CONGELADO en la cabecera
+ * (`gasto_total_aplicado`): los saldos pasaron a `aplicado` y no se vuelven a sumar.
+ * Sin liquidar se calcula con `gastoTotal` (única implementación de la fórmula).
  */
-async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }) {
-  const gasto = gastoTotal({
+function gastoDeCabecera({ cabecera, gastos, saldos }) {
+  if (cabecera.liquidada_at && cabecera.gasto_total_aplicado != null) {
+    const gastoTotalCent = aCentavos(cabecera.gasto_total_aplicado);
+    const servicioAplicadoCent = aCentavos(cabecera.servicio_aplicado ?? 0);
+    const costoPorAnimalCent = aCentavos(cabecera.costo_por_animal ?? 0);
+    return {
+      servicioAplicadoCent,
+      gastoTotalCent,
+      costoPorAnimalCent,
+      saldoIds: [],
+      plan: {
+        servicio_aplicado: centavosATexto(servicioAplicadoCent),
+        gasto_total: centavosATexto(gastoTotalCent),
+        costo_por_animal: centavosATexto(costoPorAnimalCent),
+        saldo_ids: [],
+      },
+    };
+  }
+  return gastoTotal({
     animalEnPie: cabecera.animal_en_pie,
     servicioPrecorte: cabecera.servicio_precorte,
     servicioPorAnimal: cabecera.servicio_por_animal,
@@ -605,6 +620,19 @@ async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }
     gastos,
     saldos,
   });
+}
+
+/**
+ * Gasto total, monto de cada sede y su costeo, con las funciones puras de
+ * `src/shared` (única implementación: el frontend NO recalcula nada). Solo lee los
+ * renglones de las sedes costeables.
+ *
+ * @returns {Promise<{gasto: object, resumen: object, porSede: Map<string, object>, detalle: Map<string, object>}>}
+ *   `porSede` va vacío cuando hay un bloqueo de cabecera (`servicio_cero`). `detalle` guarda el
+ *   costeo final (`calcularCosteo`) de cada sede: sus renglones son los que se congelan.
+ */
+async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }) {
+  const gasto = gastoDeCabecera({ cabecera, gastos, saldos });
 
   const resumen = {
     servicio_aplicado: centavosATexto(gasto.servicioAplicadoCent),
@@ -613,7 +641,8 @@ async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }
     bloqueo: gasto.bloqueo ?? null,
   };
   const porSede = new Map();
-  if (gasto.bloqueo) return { gasto, resumen, porSede };
+  const detalle = new Map();
+  if (gasto.bloqueo) return { gasto, resumen, porSede, detalle };
 
   const sedes = sedesTodas.filter((s) => !esDesborde(s)).sort((a, b) => a.orden - b.orden);
   const montos = montoSedes(
@@ -652,8 +681,9 @@ async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }
       valorRetomasCent: retomasPorSede.get(String(s.id)) ?? 0n,
     });
     porSede.set(String(s.id), { ...costeo.plan, bloqueos: costeo.bloqueos });
+    detalle.set(String(s.id), costeo.costeoFinal);
   }
-  return { gasto, resumen, porSede };
+  return { gasto, resumen, porSede, detalle };
 }
 
 /**
@@ -893,4 +923,327 @@ export async function procesarSede(sede, contexto = {}) {
     paridad_armado: paridadArmado,
     efectos: transicion.efectos.filter((e) => e.tipo === "intentar_autocierre" || e.tipo === "avisar_anulacion"),
   };
+}
+
+// ─── Corrida sobre una preliquidación ──────────────────────────────────────
+
+/**
+ * Escribe una transición de `transicionSede` por `carnes_preliq_transicionar_sede` (CAS de
+ * estado + versión) y encola sus alertas. `{ok:false}` si otra instancia cambió la sede.
+ */
+async function aplicarTransicion(sede, transicion, { encolar, log }) {
+  const { estado: hacia, ...campos } = transicion.campos;
+  const recepcion = efectosDe(transicion, "recepcion")[0];
+  if (recepcion) campos.recepcion_estado = recepcion.estado;
+  const respuesta = await llamarRpc("carnes_preliq_transicionar_sede", {
+    p_sede_id: sede.id,
+    p_sede_version: sede.version,
+    p_desde: sede.estado,
+    p_hacia: hacia,
+    p_campos: campos,
+  });
+  if (respuesta?.resultado === "version_cambiada" || respuesta?.resultado === "no_encontrada") {
+    return { ok: false, resultado: respuesta.resultado };
+  }
+  exigirOk(respuesta);
+  await encolarAlertas(transicion, {
+    encolar,
+    preliquidacionId: sede.preliquidacion_id,
+    sedeId: sede.id,
+    ocurrencia: respuesta.sede_version,
+    log,
+  });
+  return { ok: true, sede_version: respuesta.sede_version };
+}
+
+/** Plan de `carnes_preliq_congelar_sede` a partir del costeo de la sede y de su transición. */
+function armarPlanCongelar({ sede, transicion, montos, costeoFinal }) {
+  const { bloqueos, ...valores } = montos;
+  const { items = [], ...resumenCosteo } = costeoFinal;
+  const plan = {
+    desde: sede.estado,
+    hacia: transicion.estado,
+    ...valores,
+    costeo: resumenCosteo,
+    items: items.map((i) => ({ id: i.id, costo_ajustado: i.costo_ajustado, costo_total: i.costo_total })),
+    recepcion_costeado: efectosDe(transicion, "recepcion").some((e) => e.estado === "Costeado"),
+  };
+  const { motivo_bloqueo: motivo, detalle_bloqueo: detalle, intentos, error_tipo: errorTipo, motivo_pendiente: pendiente } =
+    transicion.campos;
+  if (motivo !== undefined) plan.motivo_bloqueo = motivo;
+  if (detalle !== undefined) plan.detalle_bloqueo = detalle;
+  const campos = {};
+  if (intentos !== undefined) campos.intentos = intentos;
+  if (errorTipo !== undefined) campos.error_tipo = errorTipo;
+  if (pendiente !== undefined) campos.motivo_pendiente = pendiente;
+  if (Object.keys(campos).length) plan.campos = campos;
+  return plan;
+}
+
+/** Evento y contexto de `transicionSede` para el costeo de una sede (bloqueado o correcto). */
+function eventoDeCosteo(sede, costeo, { origen, siesaActivo: siesaEncendido }) {
+  if (costeo.bloqueos.length) {
+    const [{ motivo, detalle }] = costeo.bloqueos;
+    return { evento: "costeo_bloqueado", ctx: { motivo, detalle, motivoBloqueo: sede.motivo_bloqueo } };
+  }
+  return {
+    evento: "costeo_ok",
+    ctx: {
+      origen,
+      siesaActivo: siesaEncendido,
+      motivoBloqueo: sede.motivo_bloqueo,
+      liberada: sede.liberada_at != null,
+      errorTipo: sede.error_tipo,
+      intentos: sede.intentos,
+      abandonado: false,
+      envioId: sede.envio_id,
+    },
+  };
+}
+
+/** `servicio_cero` antes de liquidar: se bloquean las sedes vinculadas (I1: sin repetir escrituras). */
+async function bloquearPorServicioCero(sedes, opciones) {
+  let escritas = 0;
+  for (const sede of sedes) {
+    const bloqueadaPorServicio = sede.estado === "bloqueada" && sede.motivo_bloqueo === "servicio_cero";
+    if (sede.estado !== "vinculada" && !bloqueadaPorServicio) continue;
+    const transicion = transicionSede(sede.estado, "costeo_bloqueado", {
+      motivo: "servicio_cero",
+      detalle: "El servicio de la preliquidación es cero: cargue el servicio para liquidar.",
+      motivoBloqueo: sede.motivo_bloqueo,
+    });
+    if (transicion.sinCambios) continue;
+    const r = await aplicarTransicion(sede, transicion, opciones);
+    if (r.ok) escritas += 1;
+  }
+  return escritas;
+}
+
+/** Liquida la cabecera una vez; relee y reintenta si cambió la versión (máx. 3). */
+async function liquidarCabecera(id, contexto) {
+  try {
+    return await conReintentoVersion(async (intento) => {
+      const ctx = intento === 0 ? contexto : await leerContexto(id);
+      const { cabecera } = ctx;
+      if (cabecera.liquidada_at) return { resultado: "ya_liquidada" };
+      const gasto = gastoDeCabecera(ctx);
+      if (gasto.bloqueo) return { resultado: "servicio_cero", ctx };
+      return llamarRpc("carnes_preliq_liquidar", {
+        p_id: id,
+        p_version: cabecera.version,
+        p_corte: corteBogota(cabecera.fecha_primer_ingreso).toISOString(),
+        p_plan: gasto.plan,
+      });
+    });
+  } catch (error) {
+    if (error?.codigo === "version_cambiada") return { resultado: "version_cambiada" };
+    throw error;
+  }
+}
+
+/**
+ * Una corrida sobre una preliquidación abierta: liquida (a partir del corte), corrige y
+ * reevalúa bloqueos, congela el costeo de las sedes que lo necesitan y SOLO entonces
+ * reclama y envía con el costeo vigente (T2). Idempotente: una segunda corrida sin cambios
+ * no escribe nada. Cada sede es independiente: la falla de una no detiene a las demás.
+ *
+ * @param {number|string} id
+ * @param {object} [opciones]
+ * @param {Date}    [opciones.ahora]
+ * @param {boolean} [opciones.dryRun] calcula el plan y NO escribe ni envía
+ * @param {number}  [opciones.corridaId] obligatorio si no se pasa `corrida` (R14)
+ * @param {{id: number, resumen?: {reevaluadas?: number[]}}} [opciones.corrida] se muta `resumen.reevaluadas`
+ * @param {string}  [opciones.origen] schedule|sweep|dispatch|inmediato|admin
+ * @param {Function} [opciones.hayPresupuesto] se consulta antes de cada envío; false = agotado
+ * @param {Function} [opciones.procesarSede] inyectable para pruebas
+ */
+export async function procesarPreliquidacion(id, opciones = {}) {
+  const {
+    ahora = new Date(),
+    dryRun = false,
+    origen = "schedule",
+    hayPresupuesto = () => true,
+    procesarSede: procesarUna = procesarSede,
+    por = null,
+    timeoutMs,
+    encolar = encolarAlerta,
+    log = console,
+  } = opciones;
+  const corrida = opciones.corrida ?? { id: opciones.corridaId };
+  if (corrida.id == null) throw new Error("procesarPreliquidacion requiere corridaId (R14: nunca NULL)");
+  corrida.resumen ??= {};
+  corrida.resumen.reevaluadas ??= [];
+  const siesaEncendido = opciones.siesaActivo ?? siesaActivo();
+  const planear = (ctx) =>
+    planearEnvios(ctx.sedes, { header: ctx.cabecera, origen, corrida, siesaActivo: siesaEncendido, ahora });
+  const escritura = { encolar, log };
+
+  const resumen = {
+    preliquidacion_id: id,
+    resultado: "ok",
+    dry_run: dryRun,
+    liquidada: false,
+    corregidas: 0,
+    reevaluadas: 0,
+    congeladas: 0,
+    bloqueadas: 0,
+    enviadas: 0,
+    simuladas: 0,
+    errores: 0,
+    omitidas: 0,
+    pendientes: 0,
+    agotado: false,
+  };
+
+  let contexto = await leerContexto(id);
+  if (contexto.cabecera.estado !== "abierta") return { ...resumen, resultado: "no_abierta" };
+
+  if (!contexto.cabecera.liquidada_at) {
+    if (!debeLiquidar({ preliq: contexto.cabecera, ahora })) return { ...resumen, resultado: "antes_del_corte" };
+    if (gastoDeCabecera(contexto).bloqueo) {
+      const escritas = dryRun ? 0 : await bloquearPorServicioCero(contexto.sedes, escritura);
+      return { ...resumen, resultado: "servicio_cero", bloqueadas: escritas };
+    }
+    if (dryRun) return { ...resumen, liquidaria: true, pendientes: contexto.sedes.length };
+
+    const liquidacion = await liquidarCabecera(id, contexto);
+    if (liquidacion.resultado === "servicio_cero") {
+      const escritas = await bloquearPorServicioCero((await leerContexto(id)).sedes, escritura);
+      return { ...resumen, resultado: "servicio_cero", bloqueadas: escritas };
+    }
+    if (!["ok", "ya_liquidada"].includes(liquidacion.resultado)) return { ...resumen, resultado: liquidacion.resultado };
+    resumen.liquidada = liquidacion.resultado === "ok";
+    contexto = await leerContexto(id);
+  }
+
+  if (dryRun) {
+    const plan = planear(contexto);
+    return {
+      ...resumen,
+      plan: {
+        por_corregir: plan.porCorregir.length,
+        por_reevaluar: plan.porReevaluar.length,
+        por_calcular: plan.porCalcular.length,
+        por_enviar: plan.porEnviar.length,
+        por_simular: plan.porSimular.length,
+      },
+      pendientes: plan.pendientes,
+    };
+  }
+
+  // 1. Corregir (servicio_cero ya liquidada) y reevaluar (armado/costeo inválido, una vez por corrida).
+  const plan1 = planear(contexto);
+  let cambio = false;
+  for (const sede of plan1.porCorregir) {
+    const transicion = transicionSede("bloqueada", "corregida", { motivoBloqueo: sede.motivo_bloqueo });
+    if ((await aplicarTransicion(sede, transicion, escritura)).ok) {
+      resumen.corregidas += 1;
+      cambio = true;
+    }
+  }
+  if (plan1.porReevaluar.length) {
+    // El costeo hipotético de las sedes bloqueadas como si estuvieran vinculadas: solo se
+    // escribe si ya no hay bloqueo de costeo (si sigue inválido no se toca ni se alerta).
+    const ids = new Set(plan1.porReevaluar.map((s) => s.id));
+    const hipotetico = await calcular({
+      ...contexto,
+      sedes: contexto.sedes.map((s) => (ids.has(s.id) ? { ...s, estado: "vinculada", motivo_bloqueo: null } : s)),
+    });
+    for (const sede of plan1.porReevaluar) {
+      corrida.resumen.reevaluadas.push(sede.id);
+      resumen.reevaluadas += 1;
+      const costeo = hipotetico.porSede.get(String(sede.id));
+      if (!costeo || costeo.bloqueos.length) continue;
+      const transicion = transicionSede("bloqueada", "corregida", { motivoBloqueo: sede.motivo_bloqueo });
+      if ((await aplicarTransicion(sede, transicion, escritura)).ok) cambio = true;
+    }
+  }
+  if (cambio) contexto = await leerContexto(id);
+
+  // 2. Congelar el costeo de las sedes que lo requieren.
+  const plan2 = planear(contexto);
+  if (plan2.porCalcular.length) {
+    const calculo = await calcular(contexto);
+    for (const original of plan2.porCalcular) {
+      let sede = original;
+      const costeo = calculo.porSede.get(String(sede.id));
+      if (!costeo) continue;
+      try {
+        if (sede.estado === "enviando") {
+          // M1: se libera el reclamo abandonado y se sigue como `calculada`.
+          const liberar = transicionSede("enviando", "costeo_ok", { abandonado: true, envioId: sede.envio_id });
+          const r = await aplicarTransicion(sede, liberar, escritura);
+          if (!r.ok) {
+            resumen.omitidas += 1;
+            continue;
+          }
+          sede = { ...sede, estado: "calculada", version: r.sede_version, claim_token: null, claimed_at: null };
+        }
+        const { evento, ctx } = eventoDeCosteo(sede, costeo, { origen, siesaActivo: siesaEncendido });
+        const transicion = transicionSede(sede.estado, evento, ctx);
+        if (transicion.sinCambios) continue;
+        const respuesta = await llamarRpc("carnes_preliq_congelar_sede", {
+          p_sede_id: sede.id,
+          p_sede_version: sede.version,
+          p_orden_version: contexto.cabecera.orden_version,
+          p_plan: armarPlanCongelar({ sede, transicion, montos: costeo, costeoFinal: calculo.detalle.get(String(sede.id)) }),
+        });
+        if (["version_cambiada", "no_liberada", "desde_invalido", "no_encontrada"].includes(respuesta?.resultado)) {
+          resumen.omitidas += 1;
+          continue;
+        }
+        exigirOk(respuesta);
+        resumen.congeladas += 1;
+        if (transicion.estado === "bloqueada") resumen.bloqueadas += 1;
+        await encolarAlertas(transicion, {
+          encolar,
+          preliquidacionId: sede.preliquidacion_id,
+          sedeId: sede.id,
+          ocurrencia: Number(sede.version) + 1,
+          log,
+        });
+      } catch (error) {
+        resumen.errores += 1;
+        log.error?.(`Costeo de la sede ${sede.id} falló: ${error?.message}`);
+      }
+    }
+    contexto = await leerContexto(id);
+  }
+
+  // 3. Reclamar y enviar SOLO con el costeo vigente (`costeoVigente`; el admin siempre pide recostear,
+  //    por eso no se filtra por `requiereCosteo`).
+  const plan3 = planear(contexto);
+  const vigentes = (s) => costeoVigente(s, contexto.cabecera);
+  const aProcesar = [
+    ...plan3.porSimular.filter(vigentes),
+    ...plan3.porEnviar.filter((i) => vigentes(i.sede)).map((i) => i.sede),
+  ];
+  for (const sede of aProcesar) {
+    if (!hayPresupuesto()) {
+      resumen.agotado = true;
+      break;
+    }
+    try {
+      const r = await procesarUna(sede, {
+        header: contexto.cabecera,
+        origen,
+        corridaId: corrida.id,
+        ahora,
+        siesaActivo: siesaEncendido,
+        por,
+        timeoutMs,
+        encolar,
+        log,
+      });
+      if (r?.resultado === "enviada") resumen.enviadas += 1;
+      else if (r?.resultado === "simulada") resumen.simuladas += 1;
+      else if (r?.resultado === "error_envio" || r?.resultado === "error") resumen.errores += 1;
+    } catch (error) {
+      resumen.errores += 1;
+      log.error?.(`Envío de la sede ${sede.id} falló: ${error?.message}`);
+    }
+  }
+
+  resumen.pendientes = planear(await leerContexto(id)).pendientes;
+  return resumen;
 }
