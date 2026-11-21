@@ -268,3 +268,60 @@ test("planearEnvios rechaza argumentos incompletos y orígenes desconocidos", ()
   assert.throws(() => planearEnvios([sede()], { header: HEADER, origen: "schedule", ahora: AHORA }), /corrida/);
   assert.throws(() => plan([sede()], { origen: "otro" }), /origen/);
 });
+
+// ═══ M1: ninguna sede queda varada cuando el costeo se vuelve obsoleto ═════
+
+test("[M1] error(transitorio, intentos<3) obsoleto va a porCalcular y luego se reclama (automático)", () => {
+  const e = obsoleta({ estado: "error", error_tipo: "transitorio", intentos: 1, ultima_corrida: 49 });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porCalcular), [e.id]);
+  assert.equal(r.porEnviar.length, 1);
+  assert.equal(r.porEnviar[0].sede.id, e.id);
+  assert.equal(r.porEnviar[0].requiereCosteo, true);
+  assert.equal(r.porEnviar[0].resetIntentos, false, "el recosteo automático no reinicia intentos");
+  assert.equal(r.pendientes, 1);
+});
+
+test("[M1] error(transitorio) obsoleto ya intentado en esta corrida no se recostea ni cuenta como pendiente", () => {
+  const e = obsoleta({ estado: "error", error_tipo: "transitorio", intentos: 1, ultima_corrida: 50 });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.equal(r.pendientes, 0);
+});
+
+test("[M1] error(transitorio) obsoleto con 3 intentos, o permanente, no se recostea en automático", () => {
+  const agotada = obsoleta({ estado: "error", error_tipo: "transitorio", intentos: 3, ultima_corrida: 49 });
+  const permanente = obsoleta({ estado: "error", error_tipo: "permanente", intentos: 1, ultima_corrida: 49 });
+  const r = plan([agotada, permanente]);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.equal(r.pendientes, 0);
+});
+
+test("[M1] enviando abandonado con costeo obsoleto se recostea y luego se reclama", () => {
+  const e = obsoleta({ estado: "enviando", envio_id: null, claimed_at: HACE_10_MIN, intentos: 1 });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porCalcular), [e.id]);
+  assert.equal(r.porEnviar[0].sede.id, e.id);
+  assert.equal(r.porEnviar[0].requiereCosteo, true);
+  assert.deepEqual(ids(r.enCurso), []);
+  assert.equal(r.pendientes, 1);
+});
+
+test("[M1] enviando reciente (no abandonado) con costeo obsoleto no se toca y no cuenta como pendiente", () => {
+  const reciente = new Date(AHORA.getTime() - 30_000).toISOString();
+  const e = obsoleta({ estado: "enviando", envio_id: null, claimed_at: reciente });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.deepEqual(ids(r.enCurso), [e.id]);
+  assert.equal(r.pendientes, 0);
+});
+
+test("[M1] enviando con envio_id y costeo obsoleto nunca se recostea (ya hay fila en SIESA)", () => {
+  const e = obsoleta({ estado: "enviando", envio_id: 9, claimed_at: HACE_10_MIN });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.enCurso), [e.id]);
+  assert.equal(r.pendientes, 0);
+});

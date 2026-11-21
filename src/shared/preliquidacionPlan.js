@@ -15,7 +15,7 @@
  *   bloqueadas, listasParaEnviar, enCurso   informativos
  *   pendientes      cantidad de sedes accionables AHORA por este origen y corrida
  */
-import { costeoVigente, puedeReclamar, transicionSede } from "./preliquidacionEstados.js";
+import { costeoVigente, enviandoAbandonado, puedeReclamar, transicionSede } from "./preliquidacionEstados.js";
 
 const ORIGENES = ["schedule", "sweep", "dispatch", "inmediato", "admin"];
 const ESTADOS_RECOSTEABLES_ADMIN = ["calculada", "lista_para_enviar", "error", "simulada"];
@@ -23,10 +23,12 @@ const ESTADOS_RECOSTEABLES_AUTOMATICO = ["calculada", "lista_para_enviar", "simu
 const ESTADOS_SOLO_ADMIN = ["lista_para_enviar", "error", "simulada"];
 const ESTADOS_RECLAMABLES = ["vinculada", "calculada", "simulada", "lista_para_enviar", "error", "enviando"];
 
+const LIMITE_INTENTOS_AUTOMATICOS = 3;
+
 const porId = (a, b) => a.id - b.id;
 
 /** Sede tal como quedaría tras un costeo exitoso, o null si el costeo no es posible desde su estado. */
-function proyectarTrasCosteo(sede, { header, origen }) {
+function proyectarTrasCosteo(sede, { header, origen, ahora, abandonoS }) {
   let destino;
   try {
     destino = transicionSede(sede.estado, "costeo_ok", {
@@ -36,6 +38,8 @@ function proyectarTrasCosteo(sede, { header, origen }) {
       liberada: sede.liberada_at != null,
       errorTipo: sede.error_tipo,
       intentos: sede.intentos,
+      abandonado: enviandoAbandonado(sede, ahora, abandonoS),
+      envioId: sede.envio_id,
     });
   } catch {
     return null;
@@ -49,13 +53,26 @@ function proyectarTrasCosteo(sede, { header, origen }) {
   };
 }
 
-function debeCostearse(sede, { header, esAdmin }) {
+function debeCostearse(sede, { header, esAdmin, corridaId, ahora, abandonoS }) {
   if (sede.estado === "vinculada") return header.liquidada_at != null;
   if (sede.estado === "bloqueada") {
     return sede.motivo_bloqueo === "excede_animales" && sede.liberada_at != null;
   }
   if (esAdmin && ESTADOS_RECOSTEABLES_ADMIN.includes(sede.estado)) return true;
-  return ESTADOS_RECOSTEABLES_AUTOMATICO.includes(sede.estado) && !costeoVigente(sede, header);
+  if (costeoVigente(sede, header)) return false;
+  if (ESTADOS_RECOSTEABLES_AUTOMATICO.includes(sede.estado)) return true;
+  // M1: sedes que de otro modo quedarían varadas cuando el costeo se vuelve obsoleto.
+  if (sede.estado === "error") return errorRecosteable(sede, corridaId);
+  return enviandoAbandonado(sede, ahora, abandonoS);
+}
+
+/** error transitorio con intentos pendientes y no intentado en esta corrida. */
+function errorRecosteable(sede, corridaId) {
+  return (
+    sede.error_tipo === "transitorio" &&
+    Number(sede.intentos ?? 0) < LIMITE_INTENTOS_AUTOMATICOS &&
+    !(sede.ultima_corrida != null && sede.ultima_corrida === corridaId)
+  );
 }
 
 /**
@@ -94,12 +111,12 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
       porReevaluar.push(sede);
     }
 
-    const recostear = debeCostearse(sede, { header, esAdmin });
+    const recostear = debeCostearse(sede, { header, esAdmin, corridaId: corrida.id, ahora, abandonoS });
     if (recostear) porCalcular.push(sede);
 
     // Reclamo: sobre el costeo vigente, o sobre el que resultará de congelar (T2).
     if (!ESTADOS_RECLAMABLES.includes(sede.estado)) continue;
-    const candidata = recostear ? proyectarTrasCosteo(sede, { header, origen }) : sede;
+    const candidata = recostear ? proyectarTrasCosteo(sede, { header, origen, ahora, abandonoS }) : sede;
     if (!candidata) continue;
     const decision = puedeReclamar(candidata, ctxReclamar);
     if (decision.ok) {

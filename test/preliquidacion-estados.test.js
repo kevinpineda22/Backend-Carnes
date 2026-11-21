@@ -539,3 +539,49 @@ test("mapearEnvio + transicionSede: el resultado de la fila alimenta la tabla si
   const { evento, ctx } = mapearEnvio({ estado: "ok", id: 9 });
   assert.equal(transicionSede("enviando", evento, ctx).estado, "enviada");
 });
+
+// ═══ M1: error transitorio / enviando abandonado con costeo obsoleto ═══════
+// Sin estas filas, un cambio de orden_version (otra sede vinculada después) dejaba
+// la sede sin forma de avanzar en las corridas automáticas.
+
+test("[M1] error(transitorio, intentos<3) + costeo_ok automático -> calculada CONSERVANDO intentos", () => {
+  for (const origen of ["schedule", "sweep", "dispatch", "inmediato"]) {
+    for (const intentos of [0, 1, 2]) {
+      const r = transicionSede("error", "costeo_ok", { origen, errorTipo: "transitorio", intentos });
+      assert.equal(r.estado, "calculada", `${origen}/${intentos}`);
+      assert.equal(r.campos.error_tipo, null, `${origen}/${intentos}`);
+      assert.ok(!("intentos" in r.campos), `intentos no debe reiniciarse (${origen}/${intentos})`);
+    }
+  }
+});
+
+test("[M1] error + costeo_ok automático sigue lanzando si es permanente o ya agotó los intentos", () => {
+  assert.throws(
+    () => transicionSede("error", "costeo_ok", { origen: "schedule", errorTipo: "permanente", intentos: 1 }),
+    /transición inválida/,
+  );
+  assert.throws(
+    () => transicionSede("error", "costeo_ok", { origen: "schedule", errorTipo: "transitorio", intentos: 3 }),
+    /transición inválida/,
+  );
+});
+
+test("[M1] error(transitorio) + costeo_ok del admin / recalcular SÍ reinicia intentos", () => {
+  for (const origen of ["admin", "recalcular"]) {
+    const r = transicionSede("error", "costeo_ok", { origen, errorTipo: "transitorio", intentos: 2 });
+    assert.equal(r.campos.intentos, 0, origen);
+  }
+});
+
+test("[M1] enviando abandonado (sin envio_id) + costeo_ok -> calculada, conserva intentos y libera el reclamo", () => {
+  const r = transicionSede("enviando", "costeo_ok", { abandonado: true, envioId: null, intentos: 2 });
+  assert.equal(r.estado, "calculada");
+  assert.equal(r.campos.claim_token, null);
+  assert.equal(r.campos.claimed_at, null);
+  assert.ok(!("intentos" in r.campos));
+});
+
+test("[M1] enviando no abandonado, o con envio_id, no se puede recostear", () => {
+  assert.throws(() => transicionSede("enviando", "costeo_ok", { abandonado: false, envioId: null }), /transición inválida/);
+  assert.throws(() => transicionSede("enviando", "costeo_ok", { abandonado: true, envioId: 9 }), /transición inválida/);
+});

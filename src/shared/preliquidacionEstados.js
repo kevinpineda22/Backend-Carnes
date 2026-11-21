@@ -92,10 +92,23 @@ const PARTE_A = {
         return resultado("calculada", {}, [efectoRecepcion("Costeado")]);
       case "calculada":
         return resultado("calculada");
-      case "error":
-        // Solo el admin o recalcular rescatan un error; las corridas automáticas no.
-        if (ctx.origen !== "admin" && ctx.origen !== "recalcular") return invalida(estado, "costeo_ok", "origen");
-        return resultado("calculada", { intentos: 0, error_tipo: null, motivo_pendiente: null });
+      case "error": {
+        // El admin o recalcular rescatan cualquier error y reinician intentos (R2).
+        if (ctx.origen === "admin" || ctx.origen === "recalcular") {
+          return resultado("calculada", { intentos: 0, error_tipo: null, motivo_pendiente: null });
+        }
+        // M1: una corrida automática solo recostea un error transitorio con intentos pendientes
+        // (su costeo pudo quedar obsoleto por otra vinculación) y CONSERVA los intentos: el
+        // límite de 3 sigue contando.
+        const reintentable = ctx.errorTipo === "transitorio" && Number(ctx.intentos ?? 0) < LIMITE_INTENTOS;
+        if (!reintentable) return invalida(estado, "costeo_ok", "origen");
+        return resultado("calculada", { error_tipo: null });
+      }
+      case "enviando":
+        // M1: un `enviando` abandonado (sin fila de SIESA) no está exento de la guarda de montos
+        // obsoletos: se recostea y se libera el reclamo. sql/010 sigue protegiendo el reenvío.
+        if (!ctx.abandonado || ctx.envioId != null) return invalida(estado, "costeo_ok", "no abandonado");
+        return resultado("calculada", { claim_token: null, claimed_at: null });
       case "lista_para_enviar":
         return resultado("lista_para_enviar");
       case "anulada":
@@ -364,6 +377,15 @@ const RECLAMABLE = (resetIntentos = false) => ({ ok: true, resetIntentos });
  * @param {{header: object, origen: string, corridaId: number, siesaActivo: boolean, ahora: Date, abandonoS?: number}} ctx
  * @returns {{ok: true, resetIntentos: boolean} | {ok: false, motivo: string}}
  */
+/**
+ * `enviando` abandonado: el proceso murió antes de existir una fila en SIESA
+ * (sin `envio_id`) y pasó el plazo de abandono desde el reclamo.
+ */
+export function enviandoAbandonado(sede, ahora, abandonoS = ABANDONO_ENVIANDO_S) {
+  if (sede.estado !== "enviando" || sede.envio_id != null || sede.claimed_at == null) return false;
+  return new Date(sede.claimed_at).getTime() < new Date(ahora).getTime() - abandonoS * 1000;
+}
+
 export function puedeReclamar(sede, ctx) {
   const { header, origen, corridaId, siesaActivo, ahora, abandonoS = ABANDONO_ENVIANDO_S } = ctx ?? {};
   if (!header) throw new Error("puedeReclamar requiere header");
@@ -393,11 +415,8 @@ function decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandono
       if (sede.ultima_corrida != null && sede.ultima_corrida === corridaId) return NO_RECLAMABLE("ya_intentada_en_corrida");
       return RECLAMABLE();
     }
-    case "enviando": {
-      if (sede.envio_id != null || sede.claimed_at == null) return NO_RECLAMABLE("estado_no_reclamable");
-      const limite = new Date(ahora).getTime() - abandonoS * 1000;
-      return new Date(sede.claimed_at).getTime() < limite ? RECLAMABLE() : NO_RECLAMABLE("estado_no_reclamable");
-    }
+    case "enviando":
+      return enviandoAbandonado(sede, ahora, abandonoS) ? RECLAMABLE() : NO_RECLAMABLE("estado_no_reclamable");
     default:
       return NO_RECLAMABLE("estado_no_reclamable");
   }
