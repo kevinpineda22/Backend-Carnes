@@ -200,6 +200,7 @@ test("GET /:id/previsualizar no exige el interruptor", async () => {
 // ─── PATCH ─────────────────────────────────────────────────────────────────
 
 test("PATCH /:id pasa solo los campos permitidos y el quién", async () => {
+  encendida();
   respuestas.actualizar = { resultado: "ok" };
   const r = await llamar("PATCH", "/3", { servicio: 800000, estado: "cerrada", liquidada_at: "x" });
   assert.equal(r.estado, 200);
@@ -210,6 +211,7 @@ test("PATCH /:id pasa solo los campos permitidos y el quién", async () => {
 });
 
 test("PATCH /:id sin ningún campo permitido es 400", async () => {
+  encendida();
   assert.equal((await llamar("PATCH", "/3", {})).estado, 400);
   assert.equal((await llamar("PATCH", "/3", { estado: "cerrada" })).estado, 400);
   assert.equal((await llamar("PATCH", "/3", { animales: 0 })).estado, 400);
@@ -217,6 +219,7 @@ test("PATCH /:id sin ningún campo permitido es 400", async () => {
 });
 
 test("PATCH /:id propaga 409 preliquidacion_congelada", async () => {
+  encendida();
   respuestas.actualizar = createError(409, "congelada", "preliquidacion_congelada");
   const r = await llamar("PATCH", "/3", { animales: 5 });
   assert.equal(r.estado, 409);
@@ -226,6 +229,7 @@ test("PATCH /:id propaga 409 preliquidacion_congelada", async () => {
 // ─── Gastos ────────────────────────────────────────────────────────────────
 
 test("PUT /:id/gastos valida las filas y las pasa al modelo", async () => {
+  encendida();
   respuestas.guardarGastos = { id: 3 };
   const filas = [{ concepto: "Flete", valor: 100, signo: 1 }, { concepto: "Descuento", valor: 5, signo: -1 }];
   const r = await llamar("PUT", "/3/gastos", { filas });
@@ -288,7 +292,8 @@ test("POST /:id/recepciones valida el cuerpo", async () => {
   assert.equal((await llamar("POST", "/3/recepciones", {})).estado, 400);
 });
 
-test("DELETE /:id/sedes/:sedeId desvincula aunque el interruptor esté apagado (ruta de salida)", async () => {
+test("DELETE /:id/sedes/:sedeId desvincula con el interruptor encendido", async () => {
+  encendida();
   respuestas.desvincularSede = { resultado: "ok" };
   const r = await llamar("DELETE", "/3/sedes/9");
   assert.equal(r.estado, 200);
@@ -296,6 +301,7 @@ test("DELETE /:id/sedes/:sedeId desvincula aunque el interruptor esté apagado (
 });
 
 test("DELETE /:id/sedes/:sedeId propaga 409 sede_enviada", async () => {
+  encendida();
   respuestas.desvincularSede = createError(409, "enviada", "sede_enviada");
   const r = await llamar("DELETE", "/3/sedes/9");
   assert.equal(r.estado, 409);
@@ -311,7 +317,8 @@ test("GET /:id/retomas lee las retomas de la preliquidación", async () => {
   assert.deepEqual(llamadas[0].args, [3]);
 });
 
-test("PUT /:id/retomas valida las filas y las guarda (con el interruptor apagado también)", async () => {
+test("PUT /:id/retomas valida las filas y las guarda", async () => {
+  encendida();
   respuestas.guardarRetomas = { total: 10 };
   const filas = [{ vicera_item_id: 5, kilos: 10, precio: 3000 }];
   const r = await llamar("PUT", "/3/retomas", { filas });
@@ -322,6 +329,7 @@ test("PUT /:id/retomas valida las filas y las guarda (con el interruptor apagado
 });
 
 test("PUT /:id/retomas propaga el 409 de una preliquidación congelada", async () => {
+  encendida();
   respuestas.guardarRetomas = createError(409, "congelada", "preliquidacion_congelada");
   const r = await llamar("PUT", "/3/retomas", { filas: [] });
   assert.equal(r.estado, 409);
@@ -339,6 +347,7 @@ test("GET /config/:especie va antes que /:id y no toca obtener", async () => {
 });
 
 test("PUT /config/:especie exige especie válida y servicio_por_animal numérico", async () => {
+  encendida();
   respuestas.guardarConfig = { especie: "res" };
   assert.equal((await llamar("PUT", "/config/vaca", { servicio_por_animal: 5 })).estado, 400);
   assert.equal((await llamar("PUT", "/config/res", {})).estado, 400);
@@ -349,12 +358,41 @@ test("PUT /config/:especie exige especie válida y servicio_por_animal numérico
 });
 
 test("PUT /config/:especie propaga el 422 del modelo cuando el servicio es 0", async () => {
+  encendida();
   respuestas.guardarConfig = createError(422, "cero", "servicio_invalido");
   const r = await llamar("PUT", "/config/res", { servicio_por_animal: 0 });
   assert.equal(r.estado, 422);
 });
 
-test("PUT /config/:especie funciona con el interruptor apagado (se configura ANTES de prenderlo)", async () => {
+test("apagado: cada ruta de escritura responde 409 preliquidacion_apagada antes de validar y sin llamar al modelo", async () => {
+  for (const [m, r, c] of [
+    ["POST", "/", { especie: "res", animales: 10 }],
+    ["PUT", "/config/res", { servicio_por_animal: 55000 }],
+    ["PATCH", "/3", { servicio: 800000 }],
+    ["PUT", "/3/gastos", { filas: [] }],
+    ["PUT", "/3/retomas", { filas: [] }],
+    ["POST", "/3/recepciones", { recepcion_ids: [10] }],
+    ["DELETE", "/3/sedes/9"],
+    ["PATCH", "/3", {}],
+    ["PUT", "/config/res", {}],
+  ]) {
+    const x = await llamar(m, r, c);
+    assert.equal(x.estado, 409, `${m} ${r}`);
+    assert.equal(x.json.codigo, "preliquidacion_apagada", `${m} ${r}`);
+  }
+  assert.equal(llamadas.length, 0);
+});
+
+test("apagado: las lecturas siguen disponibles", async () => {
+  respuestas.obtenerConfig = { especie: "res" };
+  respuestas.obtenerRetomas = { filas: [] };
+  for (const r of ["/", "/3", "/3/retomas", "/3/previsualizar", "/config/res"]) {
+    assert.equal((await llamar("GET", r)).estado, 200, `GET ${r}`);
+  }
+});
+
+test("PUT /config/:especie con el interruptor encendido guarda la configuración", async () => {
+  encendida();
   respuestas.guardarConfig = { especie: "cerdo" };
   const r = await llamar("PUT", "/config/cerdo", { servicio_por_animal: 40000 });
   assert.equal(r.estado, 200);

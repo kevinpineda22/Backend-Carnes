@@ -95,11 +95,39 @@ test("encendido el mismo POST sí llega a la base (el 409 es solo del interrupto
   assert.ok(accesosBase.includes("rpc:carnes_preliq_crear"));
 });
 
-test("apagado: se puede preparar el despliegue (configurar el servicio por animal) y desvincular", async () => {
-  const cfg = await llamar("PUT", "/config/res", { servicio_por_animal: 50000 });
-  assert.notEqual(cfg.json.codigo, "preliquidacion_apagada");
-  const des = await llamar("DELETE", "/3/sedes/9");
-  assert.notEqual(des.json.codigo, "preliquidacion_apagada");
+test("apagado: TODA escritura de /preliquidaciones responde 409 preliquidacion_apagada sin tocar la base", async () => {
+  const escrituras = [
+    ["POST", "/", { especie: "res", animales: 10, animal_en_pie: 1000000 }],
+    ["PUT", "/config/res", { servicio_por_animal: 50000 }],
+    ["PATCH", "/3", { servicio: 1000 }],
+    ["PUT", "/3/gastos", { filas: [] }],
+    ["PUT", "/3/retomas", { filas: [] }],
+    ["POST", "/3/recepciones", { recepcion_ids: [10] }],
+    ["DELETE", "/3/sedes/9"],
+    // El 409 va antes que la validación: un cuerpo inválido tampoco llega a ningún sitio.
+    ["PUT", "/config/res", {}],
+    ["PUT", "/3/gastos", { filas: "x" }],
+  ];
+  for (const [m, ruta, cuerpo] of escrituras) {
+    const r = await llamar(m, ruta, cuerpo);
+    assert.equal(r.estado, 409, `${m} ${ruta}`);
+    assert.equal(r.json.codigo, "preliquidacion_apagada", `${m} ${ruta}`);
+  }
+  assert.deepEqual(accesosBase, []);
+});
+
+test("apagado: las lecturas (GET) siguen funcionando", async () => {
+  for (const ruta of ["/", "/config/res", "/3", "/3/retomas", "/3/previsualizar"]) {
+    const r = await llamar("GET", ruta);
+    assert.notEqual(r.json.codigo, "preliquidacion_apagada", `GET ${ruta}`);
+  }
+});
+
+test("encendido: config y desvincular sí llegan a la base (el 409 es solo del interruptor)", async () => {
+  process.env.CARNES_PRELIQUIDACION = "on";
+  await llamar("PUT", "/config/res", { servicio_por_animal: 50000 });
+  await llamar("DELETE", "/3/sedes/9");
+  assert.ok(accesosBase.length > 0);
 });
 
 // ─── Los flujos legados no dependen del interruptor ────────────────────────

@@ -387,7 +387,7 @@ curl -s -w "\n%{http_code}\n" -X POST "$BASE/api/preliquidaciones/1/recepciones"
 # >> 409, "codigo":"preliquidacion_apagada"
 ```
 
-No ejecutar `PUT /config/:especie`, `PATCH`, `PUT .../gastos` ni `PUT .../retomas` como prueba (ver R1).
+Con el interruptor apagado, **toda** escritura de `/api/preliquidaciones` (`POST /`, `PUT /config/:especie`, `PATCH /:id`, `PUT /:id/gastos`, `PUT /:id/retomas`, `POST /:id/recepciones`, `DELETE /:id/sedes/:sedeId`) responde 409 `preliquidacion_apagada` antes de validar y de tocar la base (ver R1). Por eso 8.4 y 8.5 son seguras; un `PUT /config/res` de prueba también debe devolver 409 y no escribe nada. No usar un `PUT /config/:especie` real como prueba: el día que el interruptor esté encendido sí escribe.
 
 ### 8.6 Novillos obligatorio en `finalizar` (400 `NOVILLOS_INVALIDOS`)
 
@@ -450,7 +450,7 @@ SELECT count(*) FROM information_schema.columns
 Qué esperar del backend sin 038 (o después del rollback), si el código nuevo siguiera desplegado:
 
 - Rutas legadas funcionan: `COLUMNAS_RECEPCION` no incluye `preliquidacion_id` a propósito, y las guardas (`src/models/PreliquidacionGuardas.model.js:15-47`) tratan `42703`, `PGRST204` o "column ... does not exist" como "sin vínculo". Cubre `Recepcion.model.js:823, 1035, 1086` y `Liquidacion.model.js:848`.
-- Las rutas `/api/preliquidaciones` (lectura y config) devuelven 500 porque las tablas no existen. Con el interruptor apagado, `POST /` y `POST /:id/recepciones` siguen respondiendo 409 `preliquidacion_apagada` antes de tocar la base.
+- Las rutas `/api/preliquidaciones` (lectura y config) devuelven 500 porque las tablas no existen. Con el interruptor apagado, toda escritura (`POST /`, `PUT /config/:especie`, `PATCH`, gastos, retomas, `POST /:id/recepciones`, `DELETE .../sedes/:sedeId`) sigue respondiendo 409 `preliquidacion_apagada` antes de tocar la base.
 - La regla de novillos (400 `NOVILLOS_INVALIDOS`) **sigue activa**: no depende de 038. Por eso el rollback de código es el paso 2.
 
 Smoke posterior: repetir 8.1 y 8.2.
@@ -459,40 +459,30 @@ Smoke posterior: repetir 8.1 y 8.2.
 
 ## 10. Riesgos conocidos y pendientes
 
-### R1. Con `CARNES_AUTH=off`, `/api/preliquidaciones` es público y varios endpoints escriben aunque el interruptor esté apagado
+### R1. Con `CARNES_AUTH=off`, `/api/preliquidaciones` es público; la protección de las escrituras es el interruptor
 
 Evidencia:
 
 - `docs/PENDIENTES_SEGURIDAD.md:10`: `CARNES_AUTH` está desplegada en `off` ("La API sigue abierta").
 - `src/middleware/auth.js:93-104`: cualquier valor no reconocido (o vacío) es `off`.
-- `src/middleware/auth.js:366` (`autenticar`) y `:436` (`requireAdminCarnes`): con modo `off` ambos hacen `return next()` sin verificar nada. El router aplica `router.use(requireAdminCarnes)` en `src/routes/preliquidaciones.routes.js:10`, así que en `off` esa "guarda de admin" no hace nada.
-- El interruptor solo se evalúa en dos handlers: `exigirEncendida()` se llama únicamente en `crear` (`src/controllers/preliquidaciones.controller.js:41`) y `vincular` (`:88`). El propio controlador lo documenta (`:10-13`): "Todo lo demás (lectura, configuración, desvincular) sigue disponible".
+- `src/middleware/auth.js:366` (`autenticar`) y `:436` (`requireAdminCarnes`): con modo `off` ambos hacen `return next()` sin verificar nada. El router aplica `router.use(requireAdminCarnes)` en `src/routes/preliquidaciones.routes.js`, así que en `off` esa "guarda de admin" no hace nada.
 
-Endpoints que **escriben** con el interruptor apagado y sin autenticación:
+Estado actual (corregido): el router aplica a continuación `router.use(PreliquidacionesController.exigirEscrituraHabilitada)`. Con `CARNES_PRELIQUIDACION` apagado, **todo método distinto de GET** responde 409 `preliquidacion_apagada` antes de validar el cuerpo y de tocar la base. Cubre `POST /`, `PUT /config/:especie`, `PATCH /:id`, `PUT /:id/gastos`, `PUT /:id/retomas`, `POST /:id/recepciones` y `DELETE /:id/sedes/:sedeId`. Las lecturas (GET) siguen disponibles. Las pruebas están en `test/preliquidacion-flag-off.test.js` y `test/preliquidacion-routes.test.js`.
 
-| Endpoint | Efecto real el lunes (sin cabeceras creadas) |
-|---|---|
-| `PUT /api/preliquidaciones/config/:especie` (`routes:28-32`, `Preliquidacion.model.js:540-554`) | **Escribe de verdad**: cambia `servicio_por_animal` (> 0) de `res`/`cerdo`. Es el único con efecto inmediato. |
-| `PATCH /api/preliquidaciones/:id` (`routes:36`, `model:444`) | `leerCabecera` lanza 404 si el id no existe (`model:124-129`). Sin cabeceras, inofensivo. |
-| `PUT /:id/gastos` (`routes:38`, `model:497`) | 404 igual. |
-| `PUT /:id/retomas` (`routes:43`) | `exigirCerdo` falla si no existe la cabecera. |
-| `DELETE /:id/sedes/:sedeId` (`routes:46`, `model:333`) | 404 (`no_encontrada`). |
+Consecuencias para la operación:
 
-Como el interruptor impide crear cabeceras, el lunes la única escritura posible es la de configuración. Es de bajo impacto (con el interruptor apagado `crear` no la lee), pero cambia lo que mañana usará `carnes_preliq_crear` y rompe la premisa "config en 0 hasta decidirlo".
+- Mientras el interruptor esté apagado, nadie puede modificar `carnes_preliquidacion_config` por el backend, aunque `CARNES_AUTH` siga en `off`. Se mantiene la premisa "config en 0 hasta decidirlo".
+- **Configurar `servicio_por_animal` (`PUT /config/:especie`) exige el interruptor encendido.** Ya no es posible dejar la configuración lista antes de encenderlo; se hace justo después de encender, antes de crear la primera preliquidación (`crear` rechaza con 409 `config_servicio_cero` mientras el servicio sea 0).
+- Desvincular sedes también queda bloqueado con el interruptor apagado.
 
-Mitigación para el lunes (sin cambiar código):
+Lo que este cambio **no** resuelve: el interruptor no es autenticación. Al encenderlo, con `CARNES_AUTH=off` cualquiera con la URL podrá escribir. La solución real es `CARNES_AUTH=exigir`, que debe estar activo **antes** de encender `CARNES_PRELIQUIDACION`. No pasar `CARNES_AUTH` a `exigir` el lunes: `docs/PENDIENTES_SEGURIDAD.md:19` lo desaconseja hasta terminar la Fase 2 de RLS. Tampoco cubre el acceso directo a PostgREST (ver R2).
 
-1. Confirmar el valor real de `CARNES_AUTH` en Vercel. Si fuera `reportar` o `exigir`, el riesgo desaparece o se reduce (en `exigir`, 401/403).
-2. Si es `off`: aceptar el riesgo (la API legada completa tiene la misma exposición hoy) y **vigilar**: ejecutar la consulta de abajo después del despliegue y antes de cualquier uso real.
+Verificación opcional después del despliegue (solo lectura):
 
 ```sql
 SELECT especie, servicio_por_animal, updated_at FROM carnes_preliquidacion_config ORDER BY especie;
--- >> 0.00 y updated_at = hora de la migración. Si cambió, alguien llamó PUT /config.
--- Restablecer si hiciera falta:
--- UPDATE carnes_preliquidacion_config SET servicio_por_animal = 0 WHERE especie IN ('res','cerdo');
+-- >> 0.00 y updated_at = hora de la migración.
 ```
-
-3. No pasar `CARNES_AUTH` a `exigir` el lunes: `docs/PENDIENTES_SEGURIDAD.md:19` lo desaconseja hasta terminar la Fase 2 de RLS. Cerrar el router en `off` (por ejemplo, montar la ruta solo con el interruptor encendido o aplicar `exigirEncendida` a todos los handlers de escritura) requiere un cambio de código; queda como pendiente para S2, antes de encender el interruptor.
 
 ### R2. Las tablas y funciones nuevas no tienen RLS ni `REVOKE`
 
@@ -551,4 +541,4 @@ Si hay dudas, es más simple y seguro revertir con `sql/038_039_rollback.sql` (q
 - 039 no define `lock_timeout`; es aceptable porque `CREATE OR REPLACE FUNCTION` no bloquea tablas.
 - El rollback aborta si alguna sede está `anulada`; en S1 no existe el flujo que la produce.
 - Cron, envío a SIESA y correcciones (sql/040, sql/041) no existen todavía: no hay nada que apagar fuera del interruptor.
-- Antes de encender el interruptor: cargar `servicio_por_animal` > 0 por especie vía `PUT /config/:especie` (con `0`, `crear` devuelve `config_servicio_cero`), cerrar R1 y R2, y ensayar el flujo en un entorno no productivo.
+- Antes de encender el interruptor: cerrar R1 (`CARNES_AUTH=exigir`) y R2, y ensayar el flujo en un entorno no productivo. Después de encenderlo, y antes de crear la primera preliquidación, cargar `servicio_por_animal` > 0 por especie vía `PUT /config/:especie` (con el interruptor apagado ese PUT responde 409; con `0`, `crear` devuelve `config_servicio_cero`).

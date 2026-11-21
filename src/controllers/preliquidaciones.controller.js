@@ -8,9 +8,10 @@ import { preliquidacionHabilitada } from "../config/preliquidacion.js";
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
 
 /**
- * Con el interruptor apagado no se crean preliquidaciones ni se vincula nada nuevo.
- * Todo lo demás (lectura, configuración, desvincular) sigue disponible para poder
- * preparar el despliegue y para sacar lo ya vinculado.
+ * Con el interruptor apagado NINGUNA escritura de /preliquidaciones procede (crear,
+ * configurar, editar, gastos, retomas, vincular, desvincular). Solo quedan las lecturas.
+ * El router lo aplica a todo método que no sea GET (ver `exigirEscrituraHabilitada`);
+ * no depende de `CARNES_AUTH`, que hoy puede estar en `off`.
  */
 function exigirEncendida() {
   if (!preliquidacionHabilitada()) {
@@ -19,6 +20,17 @@ function exigirEncendida() {
       "La preliquidación de talleres está apagada (CARNES_PRELIQUIDACION).",
       "preliquidacion_apagada",
     );
+  }
+}
+
+/** Middleware: con el interruptor apagado corta toda escritura con 409, antes de validar y de tocar la base. */
+export function exigirEscrituraHabilitada(req, _res, next) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  try {
+    exigirEncendida();
+    next();
+  } catch (error) {
+    next(error);
   }
 }
 
@@ -38,7 +50,6 @@ export async function listar(req, res, next) {
 /** POST /api/preliquidaciones */
 export async function crear(req, res, next) {
   try {
-    exigirEncendida();
     const { especie, ...datos } = req.body;
     const data = await PreliquidacionModel.crear(especie, datos, { por: quien(req) });
     res.status(201).json({ ok: true, data });
@@ -85,7 +96,6 @@ export async function guardarGastos(req, res, next) {
  */
 export async function vincular(req, res, next) {
   try {
-    exigirEncendida();
     const resultados = [];
     let primerError = null;
     for (const recepcionId of req.body.recepcion_ids) {

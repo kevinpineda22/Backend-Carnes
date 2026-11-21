@@ -9,6 +9,10 @@ const router = Router();
 // Todo este router es del panel del admin (autorización: middleware/authCarnes.js).
 router.use(requireAdminCarnes);
 
+// Con el interruptor del módulo apagado toda escritura es 409 `preliquidacion_apagada`, antes de
+// validar y de tocar la base. No depende de CARNES_AUTH (hoy `off`: el guard de arriba no protege).
+router.use(PreliquidacionesController.exigirEscrituraHabilitada);
+
 /** Un id que no es un entero positivo es 400, no un 500 de Postgres. */
 function idEntero(nombre, destino) {
   return (req, _res, next, valor) => {
