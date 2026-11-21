@@ -121,6 +121,7 @@ DO $$
 DECLARE
   rec BIGINT;
   r   JSONB;
+  e   TEXT;
 BEGIN
   SELECT recepcion_id INTO rec FROM carnes_preliquidacion_sedes WHERE estado = 'vinculada' LIMIT 1;
   IF rec IS NULL THEN RAISE NOTICE 'Sin sede vinculada: se omite novillos'; RETURN; END IF;
@@ -137,6 +138,19 @@ BEGIN
   UPDATE carnes_preliquidacion_sedes SET estado = 'enviada' WHERE recepcion_id = rec;
   r := carnes_preliq_actualizar_novillos(rec, 3, 0, '{}'::jsonb);
   IF r->>'resultado' <> 'sede_no_editable' THEN RAISE EXCEPTION 'sede enviada debía ser sede_no_editable: %', r; END IF;
+  UPDATE carnes_preliquidacion_sedes SET estado = 'vinculada' WHERE recepcion_id = rec;
+
+  -- I3: calculada / error / simulada SÍ son editables; enviando / sin_confirmar / anulada no.
+  FOREACH e IN ARRAY ARRAY['calculada', 'error', 'simulada'] LOOP
+    UPDATE carnes_preliquidacion_sedes SET estado = e WHERE recepcion_id = rec;
+    r := carnes_preliq_actualizar_novillos(rec, 3, (SELECT orden_version FROM carnes_preliquidaciones WHERE id = (SELECT preliquidacion_id FROM carnes_preliquidacion_sedes WHERE recepcion_id = rec)), '{}'::jsonb);
+    IF r->>'resultado' = 'sede_no_editable' THEN RAISE EXCEPTION '% debía ser editable: %', e, r; END IF;
+  END LOOP;
+  FOREACH e IN ARRAY ARRAY['enviando', 'sin_confirmar', 'anulada'] LOOP
+    UPDATE carnes_preliquidacion_sedes SET estado = e WHERE recepcion_id = rec;
+    r := carnes_preliq_actualizar_novillos(rec, 3, 0, '{}'::jsonb);
+    IF r->>'resultado' <> 'sede_no_editable' THEN RAISE EXCEPTION '% debía ser sede_no_editable: %', e, r; END IF;
+  END LOOP;
   UPDATE carnes_preliquidacion_sedes SET estado = 'vinculada' WHERE recepcion_id = rec;
 
   r := carnes_preliq_actualizar_novillos(rec, 3, 999, '{}'::jsonb);

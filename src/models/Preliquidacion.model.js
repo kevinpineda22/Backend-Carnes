@@ -62,6 +62,7 @@ const ERRORES_RESULTADO = {
   no_vinculada: [409, "La recepción no está vinculada a una preliquidación."],
   sin_preliquidacion: [409, "No hay una preliquidación abierta para esta especie."],
   fuera_ventana: [422, "La fecha de ingreso queda fuera de la ventana de la preliquidación."],
+  excede_capacidad: [409, "Con esos animales la sede supera los de la preliquidación."],
   novillos_invalido: [422, "Los novillos o canales deben ser un entero mayor que cero."],
   invalido: [422, "Los datos enviados no son válidos."],
   datos_invalidos: [422, "Los datos enviados no son válidos."],
@@ -260,6 +261,9 @@ export function armarPlanNovillos({ cabecera, sedes, recepcionId, animales }) {
   const conCambio = sedes.map((s) => (String(s.recepcionId) === String(recepcionId) ? { ...s, animales } : s));
   const { sedesFijas, sedesVinculadas } = particionar(conCambio);
   const plan = planearVinculacion({ animales: Number(cabecera.animales), sedesFijas, sedesVinculadas });
+  // Una sede ya costeada (fija) consume siempre: si con los animales nuevos el lote
+  // se pasa, no hay a quién desbordar; se rechaza en vez de dejar capacidad negativa.
+  if (plan.restantes < 0) return { ok: false, resultado: "excede_capacidad" };
   return {
     ok: true,
     ordenVersion: cabecera.orden_version,

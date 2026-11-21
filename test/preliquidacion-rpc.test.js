@@ -120,9 +120,24 @@ test("M4: desvincular recibe p_plan y libera las sedes que ahora caben", () => {
   assert.match(f, /'enviando', 'enviada', 'sin_confirmar'/);
 });
 
-test("actualizar_novillos solo edita sedes vinculada / bloqueada / lista_para_enviar", () => {
+test("actualizar_novillos (I3) edita sedes aún no enviadas y rechaza las enviadas", () => {
   const f = cuerpoFuncion("carnes_preliq_actualizar_novillos");
-  assert.match(f, /'vinculada', 'bloqueada', 'lista_para_enviar'/);
+  const m = /v_sede\.estado\s+NOT\s+IN\s*\(([^)]*)\)/.exec(f);
+  assert.ok(m, "falta la lista de estados editables");
+  const editables = m[1].split(",").map((e) => e.trim().replace(/'/g, "")).sort();
+  assert.deepEqual(editables, ["bloqueada", "calculada", "error", "lista_para_enviar", "simulada", "vinculada"]);
+  for (const enviado of ["enviando", "enviada", "sin_confirmar", "anulada"]) {
+    assert.ok(!editables.includes(enviado), enviado + " no debe ser editable");
+  }
+  assert.match(f, /'sede_no_editable'/);
+});
+
+test("actualizar_novillos no toca costeo_animales: el desfase marca la sede para recostear (I3)", () => {
+  const f = cuerpoFuncion("carnes_preliq_actualizar_novillos");
+  assert.doesNotMatch(f, /costeo_animales/);
+  assert.doesNotMatch(f, /costeo_orden_version/);
+  assert.match(f, /SET animales\s*=/);
+  assert.match(f, /orden_version\s*=\s*orden_version\s*\+\s*1/);
 });
 
 test("las RPC convierten violaciones de CHECK en códigos, no en excepciones crudas", () => {

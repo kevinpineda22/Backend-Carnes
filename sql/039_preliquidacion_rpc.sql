@@ -435,8 +435,9 @@ $fn$ LANGUAGE plpgsql;
 -- carnes_preliq_actualizar_novillos(p_recepcion_id, p_novillos, p_orden_version, p_plan)
 --
 -- JS volvió a correr `planearVinculacion` con los animales nuevos; p_plan trae
--- `reordenar` / `excede` / `liberadas` / `restantes`. Solo se edita una sede en
--- vinculada, bloqueada o lista_para_enviar; en las demás -> sede_no_editable (409).
+-- `reordenar` / `excede` / `liberadas` / `restantes`. Solo se edita una sede que aún no se envió (vinculada, bloqueada, lista_para_enviar, calculada, error
+-- o simulada, I3); en las demás -> sede_no_editable (409). Los montos de calculada/error/
+-- simulada quedan desfasados por `costeo_animales` y se recostean.
 -- Los costos de una lista_para_enviar quedan desactualizados por `costeo_animales`.
 --
 -- Resultados: ok | excede | no_vinculada | sede_no_editable | invalido | version_cambiada
@@ -469,7 +470,7 @@ BEGIN
     RETURN jsonb_build_object('resultado', 'no_vinculada');
   END IF;
 
-  IF v_sede.estado NOT IN ('vinculada', 'bloqueada', 'lista_para_enviar') THEN
+  IF v_sede.estado NOT IN ('vinculada', 'bloqueada', 'lista_para_enviar', 'calculada', 'error', 'simulada') THEN
     RETURN jsonb_build_object('resultado', 'sede_no_editable', 'estado', v_sede.estado);
   END IF;
 

@@ -441,6 +441,47 @@ test("actualizarNovillos: una recepción sin preliquidación responde 409 no_vin
   assert.equal(rpcs.length, 0);
 });
 
+test("actualizarNovillos (I3): una sede calculada, en error o simulada llega a la RPC", async () => {
+  for (const estado of ["calculada", "error", "simulada", "lista_para_enviar", "bloqueada"]) {
+    rpcs = [];
+    tablas.carnes_preliquidacion_sedes = [sede({ id: 11, recepcion_id: 101, animales: 4, orden: 1, estado })];
+    tablas.carnes_recepciones = [recepcion({ id: 101, preliquidacion_id: 1 })];
+    respuestasRpc = [{ resultado: "ok" }];
+    const r = await Modelo.actualizarNovillos(101, 6);
+    assert.equal(r.resultado, "ok", estado);
+    assert.equal(rpcs.length, 1, estado);
+    assert.equal(rpcs[0].args.p_novillos, 6, estado);
+    // Una sede ya no vinculada conserva su orden: el plan no la reordena.
+    assert.deepEqual(rpcs[0].args.p_plan.reordenar, [], estado);
+    assert.equal(rpcs[0].args.p_plan.restantes, 4, estado);
+  }
+});
+
+test("actualizarNovillos (I3): los estados enviados responden 409 sede_no_editable (código de la RPC)", async () => {
+  for (const estado of ["enviando", "enviada", "sin_confirmar", "anulada"]) {
+    rpcs = [];
+    tablas.carnes_preliquidacion_sedes = [sede({ id: 11, recepcion_id: 101, animales: 4, estado })];
+    tablas.carnes_recepciones = [recepcion({ id: 101, preliquidacion_id: 1 })];
+    respuestasRpc = [{ resultado: "sede_no_editable", estado }];
+    await falla(() => Modelo.actualizarNovillos(101, 3), 409, "sede_no_editable");
+  }
+});
+
+test("actualizarNovillos (I3): una sede ya costeada que pasaría de la capacidad se rechaza sin llamar a la RPC", async () => {
+  // animales = 10; 101 (calculada, 4) y 102 (calculada, 5). Subir 101 a 6 daría 11 > 10.
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 4, orden: 1, estado: "calculada" }),
+    sede({ id: 12, recepcion_id: 102, animales: 5, orden: 2, estado: "calculada" }),
+  ];
+  tablas.carnes_recepciones = [recepcion({ id: 101, preliquidacion_id: 1 }), recepcion({ id: 102, preliquidacion_id: 1 })];
+  await falla(() => Modelo.actualizarNovillos(101, 6), 409, "excede_capacidad");
+  assert.equal(rpcs.length, 0);
+  // 5 sí cabe (5 + 5 = 10).
+  respuestasRpc = [{ resultado: "ok" }];
+  await Modelo.actualizarNovillos(101, 5);
+  assert.equal(rpcs.length, 1);
+});
+
 test("actualizarNovillos: sede_no_editable de la RPC sale como 409", async () => {
   tablas.carnes_preliquidacion_sedes = [sede({ id: 11, recepcion_id: 101, estado: "enviada" })];
   tablas.carnes_recepciones = [recepcion({ id: 101, preliquidacion_id: 1 })];
