@@ -1,0 +1,148 @@
+// Paridad con el interruptor apagado (A-S6, H1): con CARNES_PRELIQUIDACION apagado
+// nada crea ni vincula preliquidaciones (ni siquiera toca la base) y el código de los
+// flujos legados no depende del interruptor. Router, controlador, validadores y modelo
+// son los REALES; solo Supabase y el guard de admin son falsos. Sin red ni base real.
+import test, { mock, beforeEach, after } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import http from "node:http";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+const RAIZ = fileURLToPath(new URL("../src/", import.meta.url));
+const url = (p) => pathToFileURL(RAIZ + p).href;
+
+let accesosBase = [];
+const registrar = (tipo, nombre) => {
+  accesosBase.push(`${tipo}:${nombre}`);
+};
+const consultaVacia = () => {
+  const q = {
+    select: () => q, eq: () => q, in: () => q, order: () => q, limit: () => q,
+    update: () => q, insert: () => q, upsert: () => q, delete: () => q,
+    maybeSingle: async () => ({ data: null, error: null }),
+    then: (res, rej) => Promise.resolve({ data: [], error: null }).then(res, rej),
+  };
+  return q;
+};
+mock.module(url("config/supabase.js"), {
+  namedExports: {
+    supabase: {
+      from: (t) => { registrar("from", t); return consultaVacia(); },
+      rpc: async (n) => { registrar("rpc", n); return { data: { resultado: "ok" }, error: null }; },
+    },
+  },
+});
+mock.module(url("middleware/authCarnes.js"), {
+  namedExports: { requireAdminCarnes: (_q, _s, next) => next(), autenticar: (_q, _s, next) => next() },
+});
+
+const { default: express } = await import("express");
+const { default: router } = await import(url("routes/preliquidaciones.routes.js"));
+const { errorHandler } = await import(url("middleware/errorHandler.js"));
+
+const app = express();
+app.use(express.json());
+app.use("/preliquidaciones", router);
+app.use(errorHandler);
+const servidor = http.createServer(app);
+await new Promise((r) => servidor.listen(0, "127.0.0.1", r));
+const base = `http://127.0.0.1:${servidor.address().port}/preliquidaciones`;
+after(() => servidor.close());
+
+const llamar = async (metodo, ruta, cuerpo) => {
+  const r = await fetch(base + ruta, {
+    method: metodo,
+    headers: { "content-type": "application/json" },
+    body: cuerpo === undefined ? undefined : JSON.stringify(cuerpo),
+  });
+  return { estado: r.status, json: await r.json() };
+};
+
+const consolaError = console.error;
+beforeEach(() => {
+  accesosBase = [];
+  delete process.env.CARNES_PRELIQUIDACION;
+  console.error = () => {};
+});
+after(() => { console.error = consolaError; });
+
+test("apagado por defecto: crear responde 409 preliquidacion_apagada sin tocar la base", async () => {
+  const r = await llamar("POST", "/", { especie: "res", animales: 10, animal_en_pie: 1000000 });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_apagada");
+  assert.deepEqual(accesosBase, []);
+});
+
+test("apagado por defecto: vincular responde 409 sin tocar la base", async () => {
+  const r = await llamar("POST", "/3/recepciones", { recepcion_ids: [10, 11] });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_apagada");
+  assert.deepEqual(accesosBase, []);
+});
+
+test("cualquier valor que no sea afirmativo deja el módulo apagado", async () => {
+  for (const valor of ["", "off", "false", "0", "no"]) {
+    process.env.CARNES_PRELIQUIDACION = valor;
+    const r = await llamar("POST", "/", { especie: "res", animales: 3 });
+    assert.equal(r.estado, 409, `valor ${JSON.stringify(valor)}`);
+  }
+  assert.deepEqual(accesosBase, []);
+});
+
+test("encendido el mismo POST sí llega a la base (el 409 es solo del interruptor)", async () => {
+  process.env.CARNES_PRELIQUIDACION = "on";
+  await llamar("POST", "/", { especie: "res", animales: 3 });
+  assert.ok(accesosBase.includes("rpc:carnes_preliq_crear"));
+});
+
+test("apagado: se puede preparar el despliegue (configurar el servicio por animal) y desvincular", async () => {
+  const cfg = await llamar("PUT", "/config/res", { servicio_por_animal: 50000 });
+  assert.notEqual(cfg.json.codigo, "preliquidacion_apagada");
+  const des = await llamar("DELETE", "/3/sedes/9");
+  assert.notEqual(des.json.codigo, "preliquidacion_apagada");
+});
+
+// ─── Los flujos legados no dependen del interruptor ────────────────────────
+
+const leer = (ruta) => fs.readFileSync(new URL(`../src/${ruta}`, import.meta.url), "utf8");
+
+test("solo el controlador de /preliquidaciones lee el interruptor", () => {
+  const archivos = fs
+    .readdirSync(new URL("../src/", import.meta.url), { recursive: true })
+    .filter((f) => String(f).endsWith(".js"))
+    .map(String);
+  const quienes = archivos.filter((f) => /preliquidacionHabilitada|estadoPreliquidacion|CARNES_PRELIQUIDACION/.test(leer(f)));
+  assert.deepEqual(quienes.map((f) => f.replace(/\\/g, "/")).sort(), [
+    "config/preliquidacion.js",
+    "controllers/preliquidaciones.controller.js",
+  ]);
+});
+
+test("el flujo de envío a SIESA y los controladores legados no mencionan la preliquidación", () => {
+  for (const archivo of [
+    "services/siesa.service.js",
+    "models/SiesaEnvio.model.js",
+    "controllers/recepciones.controller.js",
+    "controllers/liquidaciones.controller.js",
+    "controllers/siesa.controller.js",
+    "routes/liquidaciones.routes.js",
+    "routes/recepciones.routes.js",
+    "routes/siesa.routes.js",
+  ]) {
+    assert.doesNotMatch(leer(archivo), /preliquidaci/i, archivo);
+  }
+});
+
+test("los modelos legados dependen del VÍNCULO, nunca del interruptor", () => {
+  for (const archivo of ["models/Recepcion.model.js", "models/Liquidacion.model.js"]) {
+    assert.doesNotMatch(leer(archivo), /preliquidacionHabilitada|estadoPreliquidacion|CARNES_PRELIQUIDACION/, archivo);
+  }
+});
+
+test("los scripts que escriben en SIESA real no se tocan", () => {
+  const raiz = fileURLToPath(new URL("../scripts/", import.meta.url));
+  for (const f of fs.readdirSync(raiz)) {
+    const texto = fs.readFileSync(raiz + f, "utf8");
+    assert.doesNotMatch(texto, /preliquidaci/i, f);
+  }
+});
