@@ -12,6 +12,8 @@ import {
 } from "../shared/estados.js";
 import { hoyBogota } from "../shared/fechaBogota.js";
 import { puedeEliminarRecepcion } from "../shared/eliminacionAdmin.js";
+import * as PreliquidacionModel from "./Preliquidacion.model.js";
+import { exigirSinPreliquidacion, preliquidacionIdDeRecepcion } from "./PreliquidacionGuardas.model.js";
 import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visceras.js";
 import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcionColumnas.js";
 import { armarRecibidor, idRecibidorListado, validarFirma } from "../shared/finalizarProveedor.js";
@@ -812,12 +814,19 @@ export async function editarItem(id, itemId, cambios, editadoPor) {
  */
 export async function editarNovillos(id, { novillos, editado_por }) {
   const recepcion = await obtener(id);
-  exigirCorregibleComoAdmin(recepcion);
-
   const nuevoValor = Number(novillos) || 0;
 
-  const { error } = await supabase.from(TABLE).update({ novillos: nuevoValor }).eq("id", id);
-  if (error) throw new Error(`Error al corregir los novillos: ${error.message}`);
+  // Una recepción de una preliquidación NO se corrige por aquí: sus novillos son los
+  // animales de la sede y cambian el reparto del lote. La RPC (con el plan de
+  // vinculación recalculado) decide si se puede y escribe `novillos` en la recepción
+  // y `animales` en la sede; una sede ya enviada responde 409 `sede_no_editable`.
+  if (await preliquidacionIdDeRecepcion(id)) {
+    await PreliquidacionModel.actualizarNovillos(id, nuevoValor);
+  } else {
+    exigirCorregibleComoAdmin(recepcion);
+    const { error } = await supabase.from(TABLE).update({ novillos: nuevoValor }).eq("id", id);
+    if (error) throw new Error(`Error al corregir los novillos: ${error.message}`);
+  }
 
   const itemsRecalculados = recalcularVicerasPorNovillo(recepcion.items, nuevoValor);
   const filas = itemsRecalculados
@@ -1023,6 +1032,7 @@ export async function eliminarRecepcionAdmin(id) {
   const { ok, motivo } = puedeEliminarRecepcion({
     estado: data.estado,
     liquidacion_id: data.liquidacion_id,
+    preliquidacion_id: await preliquidacionIdDeRecepcion(id),
     envios,
   });
   if (!ok) throw createError(409, motivo);
@@ -1068,6 +1078,13 @@ export async function cambiarEstado(id, hacia, extra = {}, db = supabase) {
 
   const { ok, motivo } = validarTransicion(recepcion.estado, hacia);
   if (!ok) throw createError(409, motivo);
+
+  // Reabrir (a Borrador) una recepción de una preliquidación la sacaría de un flujo que
+  // ya contó sus animales y, quizá, mandó su CEA: se desvincula antes. No existe una
+  // transición a Rechazado (ver TRANSICIONES), así que no hay otra salida que guardar.
+  if (hacia === ESTADOS.BORRADOR) {
+    await exigirSinPreliquidacion(id, "reabrirla", db);
+  }
 
   const { data, error } = await db
     .from(TABLE)
