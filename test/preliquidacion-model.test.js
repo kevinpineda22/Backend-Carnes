@@ -795,3 +795,19 @@ test("obtener: no escribe nada ni llama a la RPC", async () => {
   assert.equal(rpcs.length, 0);
   assert.equal(escrituras.length, 0);
 });
+
+// ─── M5: el payload expone siesa_activo para ocultar "Enviar" ──────────────
+
+test("[M5] obtener expone siesa_activo según CARNES_SIESA_ACTIVO (true y false)", async () => {
+  tablas.carnes_preliquidacion_sedes = [];
+  const previo = process.env.CARNES_SIESA_ACTIVO;
+  try {
+    process.env.CARNES_SIESA_ACTIVO = "true";
+    assert.equal((await Modelo.obtener(1)).siesa_activo, true);
+    process.env.CARNES_SIESA_ACTIVO = "false";
+    assert.equal((await Modelo.obtener(1)).siesa_activo, false);
+  } finally {
+    if (previo === undefined) delete process.env.CARNES_SIESA_ACTIVO;
+    else process.env.CARNES_SIESA_ACTIVO = previo;
+  }
+});

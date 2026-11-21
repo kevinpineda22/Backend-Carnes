@@ -371,7 +371,7 @@ const RECLAMABLE = (resetIntentos = false) => ({ ok: true, resetIntentos });
  * Conjunto automático: calculada; simulada con SIESA activo; error transitorio con
  * intentos < 3 de otra corrida (NULL = nunca reclamada); enviando abandonado sin envio_id.
  * Admin: el automático más lista_para_enviar, error de cualquier tipo/intentos y simulada,
- * con reinicio de intentos.
+ * con reinicio de intentos. Con SIESA apagado nada se reclama (`siesa_apagado`, M5).
  *
  * @param {object} sede
  * @param {{header: object, origen: string, corridaId: number, siesaActivo: boolean, ahora: Date, abandonoS?: number}} ctx
@@ -395,6 +395,9 @@ export function puedeReclamar(sede, ctx) {
 
   const decision = decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandonoS });
   if (!decision.ok) return decision;
+  // M5: sin SIESA no hay reclamo posible, ni siquiera del admin; el "Enviar" no tendría resultado.
+  // Va antes de la guarda de costeo: recostear no habilita un envío que no puede salir.
+  if (!siesaActivo) return NO_RECLAMABLE("siesa_apagado");
   if (!costeoVigente(sede, header)) return NO_RECLAMABLE("costeo_desactualizado");
   return decision;
 }
@@ -404,8 +407,7 @@ function decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandono
     case "calculada":
       return RECLAMABLE();
     case "simulada":
-      if (admin) return RECLAMABLE(true);
-      return siesaActivo ? RECLAMABLE() : NO_RECLAMABLE("siesa_apagado");
+      return RECLAMABLE(admin);
     case "lista_para_enviar":
       return admin ? RECLAMABLE(true) : NO_RECLAMABLE("requiere_admin");
     case "error": {

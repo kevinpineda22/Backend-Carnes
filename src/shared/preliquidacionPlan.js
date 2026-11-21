@@ -13,6 +13,7 @@
  *                   `requiereCosteo` = solo se reclaman después de congelar con éxito (T2)
  *   porSimular      con SIESA apagado, las que irían a `porEnviar` desde `calculada` (R10)
  *   bloqueadas, listasParaEnviar, enCurso   informativos
+ *   noReclamables   [{sede, motivo}] sedes que el admin pidió enviar y no pueden salir (M5: siesa_apagado)
  *   pendientes      cantidad de sedes accionables AHORA por este origen y corrida
  */
 import { costeoVigente, enviandoAbandonado, puedeReclamar, transicionSede } from "./preliquidacionEstados.js";
@@ -99,6 +100,7 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
   const bloqueadas = [];
   const listasParaEnviar = [];
   const enCurso = [];
+  const noReclamables = [];
 
   for (const sede of [...sedes].sort(porId)) {
     if (sede.estado === "bloqueada") bloqueadas.push(sede);
@@ -111,6 +113,12 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
       !reevaluadas.has(sede.id)
     ) {
       porReevaluar.push(sede);
+    }
+
+    // M5: con SIESA apagado el admin no obtiene un "Enviar" sin resultado: se informa el motivo.
+    if (esAdmin && !siesaActivo && ESTADOS_SOLO_ADMIN.includes(sede.estado)) {
+      noReclamables.push({ sede, motivo: "siesa_apagado" });
+      continue;
     }
 
     const recostear = debeCostearse(sede, { header, esAdmin, corridaId: corrida.id, ahora, abandonoS });
@@ -155,6 +163,7 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
     bloqueadas,
     listasParaEnviar,
     enCurso,
+    noReclamables,
     pendientes: accionables.size,
   };
 }

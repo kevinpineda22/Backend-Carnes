@@ -211,3 +211,38 @@ test("puedeReclamar exige header y corridaId para orígenes automáticos", () =>
   assert.throws(() => puedeReclamar(sede(), { origen: "schedule", ahora: AHORA, siesaActivo: true }), /header/);
   assert.throws(() => puedeReclamar(sede(), contexto({ corridaId: null })), /corridaId/);
 });
+
+// ═══ M5: el admin nunca recibe un "Enviar" sin resultado cuando SIESA está apagado ═══
+
+test("[M5] admin sobre simulada con SIESA apagado -> siesa_apagado; con SIESA activo es reclamable", () => {
+  const apagado = puedeReclamar(sede({ estado: "simulada" }), contexto({ origen: "admin", siesaActivo: false }));
+  assert.deepEqual(apagado, { ok: false, motivo: "siesa_apagado" });
+  const activo = puedeReclamar(sede({ estado: "simulada" }), contexto({ origen: "admin", siesaActivo: true }));
+  assert.deepEqual(activo, { ok: true, resetIntentos: true });
+});
+
+test("[M5] con SIESA apagado ningún estado reclamable se reclama, tampoco lista_para_enviar ni error del admin", () => {
+  const casos = [
+    sede({ estado: "lista_para_enviar" }),
+    sede({ estado: "error", error_tipo: "permanente", intentos: 2 }),
+    sede({ estado: "calculada" }),
+    sede({ estado: "enviando", envio_id: null, claimed_at: HACE_10_MIN }),
+  ];
+  for (const s of casos) {
+    for (const origen of ["admin", "schedule"]) {
+      const r = puedeReclamar(s, contexto({ origen, siesaActivo: false }));
+      if (origen === "schedule" && s.estado === "lista_para_enviar") {
+        assert.equal(r.motivo, "requiere_admin", `${s.estado}/${origen}`);
+      } else if (origen === "schedule" && s.estado === "error") {
+        assert.equal(r.motivo, "requiere_admin", `${s.estado}/${origen}`);
+      } else {
+        assert.deepEqual(r, { ok: false, motivo: "siesa_apagado" }, `${s.estado}/${origen}`);
+      }
+    }
+  }
+});
+
+test("[M5] con SIESA apagado la apagada gana sobre el costeo obsoleto (recostear no habilita el envío)", () => {
+  const r = puedeReclamar(sede({ estado: "simulada", costeo_orden_version: 1 }), contexto({ origen: "admin", siesaActivo: false }));
+  assert.equal(r.motivo, "siesa_apagado");
+});

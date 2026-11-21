@@ -9,6 +9,7 @@ import {
   montoSedes,
 } from "../shared/preliquidacionCosteo.js";
 import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFuentes.js";
+import { siesaActivo } from "../config/siesa.js";
 import { corteBogota } from "../shared/preliquidacionTiempo.js";
 import {
   elegirPreliquidacion,
@@ -707,7 +708,8 @@ export async function obtener(id) {
   });
 
   const { cabecera, gastos, saldos } = contexto;
-  const respuesta = { ...cabecera, gastos, saldos, sedes, calculo };
+  // `siesa_activo` permite al panel ocultar "Enviar" cuando SIESA está apagado (M5).
+  const respuesta = { ...cabecera, gastos, saldos, sedes, calculo, siesa_activo: siesaActivo() };
   if (calculoError) respuesta.calculo_error = calculoError;
   return respuesta;
 }

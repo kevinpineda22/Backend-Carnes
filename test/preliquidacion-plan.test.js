@@ -353,3 +353,35 @@ test("[M6] tampoco el admin la reclama antes de costearse: solo se costea", () =
   assert.deepEqual(ids(r.porCalcular), [l.id]);
   assert.deepEqual(ids(r.porEnviar), []);
 });
+
+// ═══ M5: con SIESA apagado el admin no obtiene un Enviar sin resultado ═════
+
+test("[M5] admin con SIESA apagado: lista_para_enviar / error / simulada van a noReclamables(siesa_apagado)", () => {
+  const l = sede({ estado: "lista_para_enviar" });
+  const e = sede({ estado: "error", error_tipo: "permanente", intentos: 1 });
+  const s = sede({ estado: "simulada" });
+  const r = plan([l, e, s], { origen: "admin", siesaActivo: false });
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.deepEqual(ids(r.porCalcular), []);
+  assert.deepEqual(ids(r.noReclamables), [l.id, e.id, s.id].sort((x, y) => x - y));
+  for (const item of r.noReclamables) assert.equal(item.motivo, "siesa_apagado");
+  assert.equal(r.pendientes, 0);
+});
+
+test("[M5] con SIESA activo el admin no tiene noReclamables", () => {
+  const r = plan([sede({ estado: "simulada" })], { origen: "admin", siesaActivo: true });
+  assert.deepEqual(r.noReclamables, []);
+  assert.equal(r.porEnviar.length, 1);
+});
+
+test("[M5] admin con SIESA apagado y una calculada: se simula como siempre", () => {
+  const c = sede();
+  const r = plan([c], { origen: "admin", siesaActivo: false });
+  assert.deepEqual(ids(r.porSimular), [c.id]);
+  assert.deepEqual(r.noReclamables, []);
+});
+
+test("[M5] automático con SIESA apagado no produce noReclamables (esas sedes ni se consideran)", () => {
+  const r = plan([sede({ estado: "simulada" }), sede({ estado: "lista_para_enviar" })], { siesaActivo: false });
+  assert.deepEqual(r.noReclamables, []);
+});
