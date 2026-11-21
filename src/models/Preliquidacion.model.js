@@ -381,16 +381,7 @@ export async function listar({ especie, estado } = {}) {
   return leerLista(T_PRELIQ, filtros);
 }
 
-/** Cabecera + gastos + saldos pendientes dirigidos a ella + sedes con su recepción. */
-export async function obtener(id) {
-  const cabecera = await leerCabecera(id);
-  const [gastos, saldos, sedes] = await Promise.all([
-    leerLista(T_GASTOS, { preliquidacion_id: id }, { orden: "orden" }),
-    leerLista(T_SALDOS, { destino_preliquidacion_id: id, estado: "pendiente" }),
-    leerSedesConRecepcion(id),
-  ]);
-  return { ...cabecera, gastos, saldos, sedes };
-}
+// `obtener` va más abajo, junto al cálculo que comparte con `previsualizar`.
 
 /** Crea la cabecera con `carnes_preliq_crear` y devuelve la preliquidación completa. */
 export async function crear(especie, datos = {}, { por = null } = {}) {
@@ -561,7 +552,7 @@ export async function guardarConfig(especie, { servicio_por_animal: servicio } =
   return obtenerConfig(especie);
 }
 
-// ─── Previsualización (no escribe) ─────────────────────────────────────────
+// ─── Cálculo (lectura de contexto + funciones puras; no escribe) ───────────
 
 const ES_PRODUCTO = (i) => i.tipo === "carne" || i.tipo === "adicional";
 const ESTADOS_CON_MONTO_FIJO = new Set(["enviando", "enviada", "sin_confirmar"]);
@@ -570,19 +561,27 @@ const ESTADOS_CON_MONTO_FIJO = new Set(["enviando", "enviada", "sin_confirmar"])
 const esDesborde = (s) => s.estado === "bloqueada" && s.motivo_bloqueo === "excede_animales" && !s.liberada_at;
 const noCosteable = (s) => s.estado === "bloqueada" && !(s.motivo_bloqueo === "excede_animales" && s.liberada_at);
 
-/**
- * Calcula —sin escribir nada— el gasto total, el monto de cada sede y su costeo.
- * Es la misma matemática pura que usará la liquidación real.
- */
-export async function previsualizar(id) {
+/** Todo lo que el cálculo necesita de la preliquidación, leído una sola vez. */
+async function leerContexto(id) {
   const cabecera = await leerCabecera(id);
-  const [gastos, saldos, sedesTodas, retomas] = await Promise.all([
+  const [gastos, saldos, sedes, retomas] = await Promise.all([
     leerLista(T_GASTOS, { preliquidacion_id: id }, { orden: "orden" }),
     leerLista(T_SALDOS, { destino_preliquidacion_id: id, estado: "pendiente" }),
     leerSedesConRecepcion(id),
     cabecera.especie === "cerdo" ? leerLista(T_RETOMAS, { preliquidacion_id: id }) : Promise.resolve([]),
   ]);
+  return { cabecera, gastos, saldos, sedes, retomas };
+}
 
+/**
+ * Gasto total, monto de cada sede y su costeo, con las funciones puras de
+ * `src/shared` (única implementación: el frontend NO recalcula nada). Solo lee los
+ * renglones de las sedes costeables.
+ *
+ * @returns {Promise<{gasto: object, resumen: object, porSede: Map<string, object>}>}
+ *   `porSede` va vacío cuando hay un bloqueo de cabecera (`servicio_cero`).
+ */
+async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }) {
   const gasto = gastoTotal({
     animalEnPie: cabecera.animal_en_pie,
     servicioPrecorte: cabecera.servicio_precorte,
@@ -592,16 +591,14 @@ export async function previsualizar(id) {
     saldos,
   });
 
-  const base = {
-    preliquidacion_id: cabecera.id,
-    especie: cabecera.especie,
+  const resumen = {
     servicio_aplicado: centavosATexto(gasto.servicioAplicadoCent),
     gasto_total: centavosATexto(gasto.gastoTotalCent),
     costo_por_animal: centavosATexto(gasto.costoPorAnimalCent),
     bloqueo: gasto.bloqueo ?? null,
-    sedes: [],
   };
-  if (gasto.bloqueo) return base;
+  const porSede = new Map();
+  if (gasto.bloqueo) return { gasto, resumen, porSede };
 
   const sedes = sedesTodas.filter((s) => !esDesborde(s)).sort((a, b) => a.orden - b.orden);
   const montos = montoSedes(
@@ -630,26 +627,83 @@ export async function previsualizar(id) {
       : [],
   );
 
-  base.sedes = costeables.map((s) => {
+  for (const s of costeables) {
     const itemsSede = items.filter((i) => String(i.recepcion_id) === String(s.recepcion_id));
-    const valorViceras = valorVicerasSede({ items: itemsSede }, cabecera.especie);
-    const valorRetomas = retomasPorSede.get(String(s.id)) ?? 0n;
     const costeo = costearSede({
       items: itemsSede.filter(ES_PRODUCTO),
       gastoSedeCent: montoPorSede.get(String(s.id)),
       especie: cabecera.especie,
-      valorVicerasCent: valorViceras,
-      valorRetomasCent: valorRetomas,
+      valorVicerasCent: valorVicerasSede({ items: itemsSede }, cabecera.especie),
+      valorRetomasCent: retomasPorSede.get(String(s.id)) ?? 0n,
     });
-    return {
+    porSede.set(String(s.id), { ...costeo.plan, bloqueos: costeo.bloqueos });
+  }
+  return { gasto, resumen, porSede };
+}
+
+/**
+ * Calcula —sin escribir nada— el gasto total, el monto de cada sede y su costeo.
+ * Es la misma matemática pura que usará la liquidación real.
+ */
+export async function previsualizar(id) {
+  const contexto = await leerContexto(id);
+  const { resumen, porSede } = await calcular(contexto);
+  const sedes = contexto.sedes
+    .filter((s) => porSede.has(String(s.id)))
+    .sort((a, b) => a.orden - b.orden)
+    .map((s) => ({
       sede_id: s.id,
       recepcion_id: s.recepcion_id,
       animales: Number(s.animales),
       orden: s.orden,
       estado: s.estado,
-      ...costeo.plan,
-      bloqueos: costeo.bloqueos,
-    };
+      ...porSede.get(String(s.id)),
+    }));
+  return { preliquidacion_id: contexto.cabecera.id, especie: contexto.cabecera.especie, ...resumen, sedes };
+}
+
+const CAMPOS_MONTO_SEDE = ["gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas"];
+
+/**
+ * Cabecera + gastos + saldos pendientes dirigidos a ella + sedes con su recepción,
+ * más el cálculo del backend por sede (`gasto_sede`, `utilidad`, `servicio_compra`,
+ * `valor_viceras`, `valor_retomas`, REQ-C3).
+ *
+ * - Sede con costeo congelado (`gasto_sede` guardado): se devuelven los montos
+ *   guardados (`fuente_calculo: "congelado"`); lo enviado no se recalcula.
+ * - Sede sin costeo: monto calculado ahora (`"previsualizado"`).
+ * - Con bloqueo de cabecera (`servicio_cero`) no hay montos nuevos.
+ *
+ * Si el cálculo falla (datos inválidos) la lectura NO se cae: `calculo` va en `null`
+ * y `calculo_error` explica por qué, para que el panel pueda abrir la preliquidación
+ * y corregirla.
+ */
+export async function obtener(id) {
+  const contexto = await leerContexto(id);
+
+  let calculo = null;
+  let calculoError;
+  let porSede = new Map();
+  try {
+    const r = await calcular(contexto);
+    calculo = r.resumen;
+    porSede = r.porSede;
+  } catch (error) {
+    calculoError = error.message;
+  }
+
+  const sedes = contexto.sedes.map((s) => {
+    if (s.gasto_sede != null) return { ...s, fuente_calculo: "congelado" };
+    const nuevo = porSede.get(String(s.id));
+    if (!nuevo) {
+      return { ...s, ...Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null])), fuente_calculo: null };
+    }
+    const { bloqueos, ...montos } = nuevo;
+    return { ...s, ...montos, bloqueos_calculo: bloqueos, fuente_calculo: "previsualizado" };
   });
-  return base;
+
+  const { cabecera, gastos, saldos } = contexto;
+  const respuesta = { ...cabecera, gastos, saldos, sedes, calculo };
+  if (calculoError) respuesta.calculo_error = calculoError;
+  return respuesta;
 }

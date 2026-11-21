@@ -624,3 +624,133 @@ test("guardarConfig: exige servicio_por_animal > 0", async () => {
   await falla(() => Modelo.guardarConfig("res", { servicio_por_animal: -5 }), 422);
   await falla(() => Modelo.guardarConfig("vaca", { servicio_por_animal: 5 }), 400);
 });
+
+// ─── obtener: utilidad por sede calculada en el backend (REQ-C3) ───────────
+
+const { gastoTotal, montoSedes, costearSede, centavosATexto } = await import(url("shared/preliquidacionCosteo.js"));
+const { valorVicerasSede, valorRetomasSedes } = await import(url("shared/preliquidacionFuentes.js"));
+
+const itemsCarne = (recepcionId, cantidad) => [
+  { id: recepcionId * 10 + 1, recepcion_id: recepcionId, tipo: "carne", cantidad: String(cantidad), costo_base: "10000", descripcion: "Lomo", orden: 1 },
+];
+
+test("obtener (res): gasto_sede, utilidad y servicio_compra salen de las funciones puras, con vísceras", async () => {
+  tablas.carnes_preliquidacion_gastos = [{ id: 1, preliquidacion_id: 1, concepto: "Flete", valor: "100000.00", signo: 1, orden: 0 }];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 4, orden: 1 }),
+    sede({ id: 12, recepcion_id: 102, animales: 6, orden: 2 }),
+  ];
+  tablas.carnes_recepciones = [recepcion({ id: 101 }), recepcion({ id: 102 })];
+  const vicera = (recepcionId, cantidad) => ({
+    id: recepcionId * 10 + 5, recepcion_id: recepcionId, tipo: "vicera", bloque: "bonificacion",
+    cantidad: String(cantidad), costo_base: "5000", descripcion: "Higado", orden: 2,
+  });
+  tablas.carnes_recepcion_items = [
+    ...itemsCarne(101, 100), vicera(101, 20),
+    ...itemsCarne(102, 150), vicera(102, 10),
+  ];
+
+  const r = await Modelo.obtener(1);
+
+  // Referencia: las mismas funciones puras, llamadas directo.
+  const g = gastoTotal({ animalEnPie: "1000000.00", servicioPrecorte: null, servicioPorAnimal: "50000.00", animales: 10, gastos: tablas.carnes_preliquidacion_gastos, saldos: [] });
+  const montos = montoSedes(
+    [{ sedeId: 11, animales: 4 }, { sedeId: 12, animales: 6 }],
+    { gastoTotalCent: g.gastoTotalCent, animales: 10 },
+  );
+  const esperada = (sedeId, recepcionId) => {
+    const items = tablas.carnes_recepcion_items.filter((i) => i.recepcion_id === recepcionId);
+    return costearSede({
+      items: items.filter((i) => i.tipo === "carne"),
+      gastoSedeCent: montos.find((m) => m.sedeId === sedeId).gastoSedeCent,
+      especie: "res",
+      valorVicerasCent: valorVicerasSede({ items }, "res"),
+    }).plan;
+  };
+
+  assert.equal(r.calculo.gasto_total, centavosATexto(g.gastoTotalCent));
+  for (const [sedeId, recepcionId] of [[11, 101], [12, 102]]) {
+    const s = r.sedes.find((x) => x.id === sedeId);
+    const e = esperada(sedeId, recepcionId);
+    assert.equal(s.gasto_sede, e.gasto_sede, `gasto_sede ${sedeId}`);
+    assert.equal(s.utilidad, e.utilidad, `utilidad ${sedeId}`);
+    assert.equal(s.servicio_compra, e.servicio_compra, `servicio_compra ${sedeId}`);
+    assert.equal(s.valor_viceras, e.valor_viceras);
+    assert.equal(s.fuente_calculo, "previsualizado");
+  }
+  // Las vísceras de res entran a la utilidad (no son cero).
+  assert.notEqual(r.sedes.find((x) => x.id === 11).valor_viceras, "0.00");
+});
+
+test("obtener (cerdo): la utilidad usa las retomas repartidas por animales, no vísceras", async () => {
+  tablas.carnes_preliquidaciones = [cabecera({ especie: "cerdo", animales: 10 })];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 4, orden: 1 }),
+    sede({ id: 12, recepcion_id: 102, animales: 6, orden: 2 }),
+  ];
+  tablas.carnes_recepciones = [recepcion({ id: 101, especie: "cerdo" }), recepcion({ id: 102, especie: "cerdo" })];
+  tablas.carnes_recepcion_items = [...itemsCarne(101, 100), ...itemsCarne(102, 150)];
+  tablas.carnes_preliquidacion_retomas = [{ id: 1, preliquidacion_id: 1, kilos: "10.000", precio: "3000.00" }];
+
+  const r = await Modelo.obtener(1);
+
+  const g = gastoTotal({ animalEnPie: "1000000.00", servicioPrecorte: null, servicioPorAnimal: "50000.00", animales: 10, gastos: [], saldos: [] });
+  const montos = montoSedes([{ sedeId: 11, animales: 4 }, { sedeId: 12, animales: 6 }], { gastoTotalCent: g.gastoTotalCent, animales: 10 });
+  const retomas = valorRetomasSedes(tablas.carnes_preliquidacion_retomas, [{ sedeId: 11, animales: 4 }, { sedeId: 12, animales: 6 }], 10);
+  for (const [sedeId, recepcionId] of [[11, 101], [12, 102]]) {
+    const e = costearSede({
+      items: itemsCarne(recepcionId, recepcionId === 101 ? 100 : 150),
+      gastoSedeCent: montos.find((m) => m.sedeId === sedeId).gastoSedeCent,
+      especie: "cerdo",
+      valorRetomasCent: retomas.find((x) => x.sedeId === sedeId).valorRetomasCent,
+    }).plan;
+    const s = r.sedes.find((x) => x.id === sedeId);
+    assert.equal(s.utilidad, e.utilidad);
+    assert.equal(s.servicio_compra, e.servicio_compra);
+    assert.equal(s.valor_viceras, "0.00");
+    assert.equal(s.valor_retomas, e.valor_retomas);
+  }
+});
+
+test("obtener: una sede con costeo congelado conserva sus montos guardados (no se recalculan)", async () => {
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 4, estado: "enviada", gasto_sede: "640000.00", utilidad: "12345.67", servicio_compra: "6172.84", valor_viceras: "0.00", valor_retomas: "0.00" }),
+  ];
+  tablas.carnes_recepciones = [recepcion({ id: 101 })];
+  tablas.carnes_recepcion_items = itemsCarne(101, 100);
+  const r = await Modelo.obtener(1);
+  const s = r.sedes[0];
+  assert.equal(s.gasto_sede, "640000.00");
+  assert.equal(s.utilidad, "12345.67");
+  assert.equal(s.servicio_compra, "6172.84");
+  assert.equal(s.fuente_calculo, "congelado");
+});
+
+test("obtener: con servicio_cero no hay montos por sede y se informa el bloqueo", async () => {
+  tablas.carnes_preliquidaciones[0].servicio_por_animal = "0";
+  tablas.carnes_preliquidacion_sedes = [sede()];
+  tablas.carnes_recepciones = [recepcion()];
+  const r = await Modelo.obtener(1);
+  assert.equal(r.calculo.bloqueo, "servicio_cero");
+  assert.equal(r.sedes[0].utilidad, null);
+  assert.equal(r.sedes[0].fuente_calculo, null);
+});
+
+test("obtener: un fallo del cálculo no tumba la lectura de la preliquidación", async () => {
+  tablas.carnes_preliquidaciones[0].animal_en_pie = "no-es-un-numero";
+  tablas.carnes_preliquidacion_sedes = [sede()];
+  tablas.carnes_recepciones = [recepcion()];
+  const r = await Modelo.obtener(1);
+  assert.equal(r.id, 1);
+  assert.equal(r.calculo, null);
+  assert.match(r.calculo_error, /\S/);
+});
+
+test("obtener: no escribe nada ni llama a la RPC", async () => {
+  tablas.carnes_preliquidacion_sedes = [sede()];
+  tablas.carnes_recepciones = [recepcion()];
+  tablas.carnes_recepcion_items = itemsCarne(101, 100);
+  await Modelo.obtener(1);
+  assert.equal(rpcs.length, 0);
+  assert.equal(escrituras.length, 0);
+});
