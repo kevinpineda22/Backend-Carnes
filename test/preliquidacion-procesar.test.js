@@ -405,3 +405,71 @@ test("leerSedeDeRecepcion devuelve la sede y su cabecera; null si la recepción 
   assert.equal(hallada.cabecera.id, 1);
   assert.equal(await Modelo.leerSedeDeRecepcion(999), null);
 });
+
+// ─── 2.18: efectos de procesarSede, detalle por sede y timeout dinámico ────
+
+test("efecto intentar_autocierre: se ejecuta UNA vez tras el lote; avisar_anulacion no se repite (ya lo envía SiesaEnvio)", async () => {
+  const cierres = [];
+  const conEfectos = async (s, ctx) => {
+    llamadas.push({ sede: s, ctx });
+    return { resultado: "enviada", efectos: [{ tipo: "intentar_autocierre" }, { tipo: "avisar_anulacion" }] };
+  };
+  const r = await procesar({
+    procesarSede: conEfectos,
+    intentarAutocierre: async (id) => (cierres.push(id), { cerrada: true, monto_no_asignado: "0.00" }),
+  });
+  assert.deepEqual(cierres, [1]);
+  assert.equal(r.cerrada, true);
+});
+
+test("sin efecto intentar_autocierre no se intenta cerrar", async () => {
+  const cierres = [];
+  const r = await procesar({ intentarAutocierre: async (id) => (cierres.push(id), { cerrada: true }) });
+  assert.deepEqual(cierres, []);
+  assert.equal(r.cerrada, false);
+});
+
+test("una falla del auto-cierre no tumba la corrida", async () => {
+  const conEfecto = async () => ({ resultado: "enviada", efectos: [{ tipo: "intentar_autocierre" }] });
+  const r = await procesar({
+    procesarSede: conEfecto,
+    intentarAutocierre: async () => { throw new Error("boom"); },
+    log: { warn() {}, error() {} },
+  });
+  assert.equal(r.resultado, "ok");
+  assert.equal(r.cerrada, false);
+});
+
+test("detalle por sede: resultado del recosteo y del envío", async () => {
+  const r = await procesar();
+  assert.deepEqual(
+    r.sedes.map((s) => [s.sede_id, s.recosteo, s.envio]).sort(),
+    [[11, "calculada", "enviada"], [12, "calculada", "enviada"]],
+  );
+});
+
+test("M5: admin con SIESA apagado informa siesa_apagado por sede en vez de un Enviar sin resultado", async () => {
+  tablas.carnes_preliquidaciones = [liquidada()];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, estado: "simulada", orden: 1, gasto_sede: "600000.00", costeo_orden_version: 5, costeo_animales: 4 }),
+    sede({ id: 12, recepcion_id: 102, estado: "lista_para_enviar", orden: 2, gasto_sede: "900000.00", costeo_orden_version: 5, costeo_animales: 6, animales: 6 }),
+  ];
+  const r = await procesar({ origen: "admin", siesaActivo: false });
+  assert.deepEqual(
+    r.sedes.map((s) => [s.sede_id, s.codigo]).sort(),
+    [[11, "siesa_apagado"], [12, "siesa_apagado"]],
+  );
+  assert.equal(r.enviadas, 0);
+});
+
+test("timeoutMs puede ser una función: se evalúa en cada envío", async () => {
+  let n = 0;
+  await procesar({ timeoutMs: () => 1000 + (n += 1) });
+  assert.deepEqual(llamadas.map((l) => l.ctx.timeoutMs), [1001, 1002]);
+});
+
+test("no_reclamable de procesarSede se refleja como codigo en el detalle", async () => {
+  const noReclama = async (s, ctx) => (llamadas.push({ sede: s, ctx }), { resultado: "no_reclamable", motivo: "inicial_pendiente" });
+  const r = await procesar({ procesarSede: noReclama });
+  assert.ok(r.sedes.every((s) => s.codigo === "inicial_pendiente"));
+});

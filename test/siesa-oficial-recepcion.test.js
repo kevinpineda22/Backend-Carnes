@@ -101,8 +101,18 @@ mock.module(url("services/notificaciones.service.js"), {
   },
 });
 
+// El auto-cierre de la preliquidación se prueba en test/preliquidacion-cierre-modelo.test.js: aquí solo
+// se verifica que el resolver lo pida cuando la sede pasa a enviada.
+let cierresPedidos = [];
+mock.module(url("models/PreliquidacionCierre.model.js"), {
+  namedExports: {
+    intentarAutocierre: async (id) => { cierresPedidos.push(id); return { cerrada: false, motivo: "falso" }; },
+    cerrarPreliquidacion: async () => ({ resultado: "ok" }),
+  },
+});
+
 const M = await import(url("models/SiesaEnvio.model.js"));
-const nuevo = () => { reiniciar(); llamadas = []; guion = []; correosAnulacion = []; correosError = []; rpcLlamadas = []; rpcRespuesta = { resultado: "ok" }; };
+const nuevo = () => { reiniciar(); llamadas = []; guion = []; correosAnulacion = []; correosError = []; rpcLlamadas = []; cierresPedidos = []; rpcRespuesta = { resultado: "ok" }; };
 const oficiales = () => db.carnes_siesa_envios.filter((f) => f.tipo === "oficial");
 
 // ─── enviarOficialRecepcion ────────────────────────────────────────────────
@@ -227,6 +237,20 @@ test("resolver ok: la sede que referencia el envío pasa a enviada por el CAS de
   assert.equal(args.p_campos.recepcion_estado, "Enviado_SIESA");
   assert.equal(args.p_campos.requiere_correccion, false);
   assert.equal("estado" in args.p_campos, false, "el estado va en p_hacia, no en p_campos");
+});
+
+test("resolver ok: pide el auto-cierre de la preliquidación de la sede; no_llego no lo pide", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(envioSinConfirmar());
+  db.carnes_preliquidacion_sedes = [sedeConEnvio()];
+  await M.resolver(50, { resultado: "ok", por: "admin" });
+  assert.deepEqual(cierresPedidos, [9]);
+
+  nuevo();
+  db.carnes_siesa_envios.push(envioSinConfirmar());
+  db.carnes_preliquidacion_sedes = [sedeConEnvio()];
+  await M.resolver(50, { resultado: "no_llego", por: "admin" });
+  assert.deepEqual(cierresPedidos, []);
 });
 
 test("resolver no_llego: la sede queda en error permanente (solo el admin la reenvía)", async () => {

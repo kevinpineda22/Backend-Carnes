@@ -12,6 +12,7 @@ import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFue
 import { randomUUID } from "node:crypto";
 import { siesaActivo } from "../config/siesa.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
+import { intentarAutocierre as intentarAutocierreDefecto } from "./PreliquidacionCierre.model.js";
 import { costeoVigente, mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
 import { planearEnvios } from "../shared/preliquidacionPlan.js";
 import { corteBogota, debeLiquidar } from "../shared/preliquidacionTiempo.js";
@@ -1072,6 +1073,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     origen = "schedule",
     hayPresupuesto = () => true,
     soloSedeId = null,
+    intentarAutocierre = intentarAutocierreDefecto,
     procesarSede: procesarUna = procesarSede,
     por = null,
     timeoutMs,
@@ -1106,6 +1108,15 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     omitidas: 0,
     pendientes: 0,
     agotado: false,
+    cerrada: false,
+    // Detalle por sede: `recosteo` (estado tras congelar), `envio` (resultado de procesarSede) y
+    // `codigo` cuando no se pudo enviar (siesa_apagado, inicial_pendiente...).
+    sedes: [],
+  };
+  const detalleSede = (sedeId) => {
+    let d = resumen.sedes.find((x) => x.sede_id === sedeId);
+    if (!d) resumen.sedes.push((d = { sede_id: sedeId }));
+    return d;
   };
 
   let contexto = await leerContexto(id);
@@ -1203,10 +1214,12 @@ export async function procesarPreliquidacion(id, opciones = {}) {
         });
         if (["version_cambiada", "no_liberada", "desde_invalido", "no_encontrada"].includes(respuesta?.resultado)) {
           resumen.omitidas += 1;
+          detalleSede(sede.id).recosteo = respuesta.resultado;
           continue;
         }
         exigirOk(respuesta);
         resumen.congeladas += 1;
+        detalleSede(sede.id).recosteo = transicion.estado;
         if (transicion.estado === "bloqueada") resumen.bloqueadas += 1;
         await encolarAlertas(transicion, {
           encolar,
@@ -1231,6 +1244,9 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     ...plan3.porSimular.filter(vigentes),
     ...plan3.porEnviar.filter((i) => vigentes(i.sede)).map((i) => i.sede),
   ].filter(esDeLaSede);
+  // M5: lo que el admin pidió enviar y no puede salir (SIESA apagado) se informa por sede.
+  for (const { sede, motivo } of plan3.noReclamables ?? []) detalleSede(sede.id).codigo = motivo;
+  let pedirCierre = false;
   for (const sede of aProcesar) {
     if (!hayPresupuesto()) {
       resumen.agotado = true;
@@ -1244,10 +1260,15 @@ export async function procesarPreliquidacion(id, opciones = {}) {
         ahora,
         siesaActivo: siesaEncendido,
         por,
-        timeoutMs,
+        timeoutMs: typeof timeoutMs === "function" ? timeoutMs() : timeoutMs,
         encolar,
         log,
       });
+      const detalle = detalleSede(sede.id);
+      detalle.envio = r?.resultado;
+      if (r?.resultado === "no_reclamable") detalle.codigo = r.motivo;
+      // `avisar_anulacion` NO se repite aquí: enviarOficialRecepcion/resolver ya mandan el correo.
+      if (r?.efectos?.some((e) => e.tipo === "intentar_autocierre")) pedirCierre = true;
       if (r?.resultado === "enviada") resumen.enviadas += 1;
       else if (r?.resultado === "simulada") resumen.simuladas += 1;
       else if (r?.resultado === "error_envio" || r?.resultado === "error") resumen.errores += 1;
@@ -1255,7 +1276,17 @@ export async function procesarPreliquidacion(id, opciones = {}) {
       else if (r?.resultado === "inicial_pendiente") resumen.inicial_pendiente += 1;
     } catch (error) {
       resumen.errores += 1;
+      detalleSede(sede.id).envio = "error";
       log.error?.(`Envío de la sede ${sede.id} falló: ${error?.message}`);
+    }
+  }
+
+  // D3/I5: tras un envío exitoso se evalúa el cierre automático (una vez por lote; nunca lanza).
+  if (pedirCierre) {
+    try {
+      resumen.cerrada = (await intentarAutocierre(id, { log }))?.cerrada === true;
+    } catch (error) {
+      log.error?.(`Auto-cierre de la preliquidación ${id} falló: ${error?.message}`);
     }
   }
 

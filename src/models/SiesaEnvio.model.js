@@ -60,6 +60,7 @@ import {
   TIPO_ENVIO,
 } from "../shared/siesaEntrada.js";
 import { transicionSede } from "../shared/preliquidacionEstados.js";
+import { intentarAutocierre } from "./PreliquidacionCierre.model.js";
 import {
   planearDocumentosPorFecha,
   referenciasEnConflicto,
@@ -1628,7 +1629,7 @@ async function sincronizarSedeDePreliquidacion(envio, evento) {
       });
       if (errorRpc) throw errorRpc;
       if (res?.resultado === "version_cambiada") continue;
-      return { resultado: res?.resultado ?? null, transicion };
+      return { resultado: res?.resultado ?? null, transicion, preliquidacionId: sede.preliquidacion_id };
     }
     console.error(`🟠 SIESA envío #${envio.id}: la sede de preliquidación cambió de versión ${REINTENTOS_SINCRONIZAR_SEDE} veces; queda para la próxima corrida.`);
     return null;
@@ -1736,7 +1737,11 @@ export async function resolver(id, { resultado, por } = {}) {
 
   // Preliquidación: la sede que referencia este envío sigue lo que la persona confirmó.
   if (data.recepcion_id && data.tipo === TIPO_ENVIO.OFICIAL) {
-    await sincronizarSedeDePreliquidacion(data, data.estado === "ok" ? "resuelto_ok" : "resuelto_error");
+    const sincronizada = await sincronizarSedeDePreliquidacion(data, data.estado === "ok" ? "resuelto_ok" : "resuelto_error");
+    // La sede pasó a enviada: puede completar la preliquidación (D3). No lanza.
+    if (sincronizada?.resultado === "ok" && sincronizada.transicion?.efectos?.some((e) => e.tipo === "intentar_autocierre")) {
+      await intentarAutocierre(sincronizada.preliquidacionId);
+    }
   }
 
   // Recepción de PROVEEDOR: si lo que se confirmó es la entrada, la recepción pasa
