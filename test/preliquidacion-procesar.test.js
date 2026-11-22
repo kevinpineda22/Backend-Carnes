@@ -473,3 +473,28 @@ test("no_reclamable de procesarSede se refleja como codigo en el detalle", async
   const r = await procesar({ procesarSede: noReclama });
   assert.ok(r.sedes.every((s) => s.codigo === "inicial_pendiente"));
 });
+
+// ─── 2.19: escenarios de la spec sin cubrir antes ──────────────────────────
+
+test("D-S2: servicio real cargado ANTES del corte (servicio_precorte) se usa; el tardío no", async () => {
+  tablas.carnes_preliquidaciones = [cabecera({ servicio_precorte: "700000.00" })];
+  await procesar();
+  assert.equal(rpcDe("carnes_preliq_liquidar")[0].args.p_plan.gasto_total, "1700000.00");
+
+  rpcs = [];
+  // Cargado a las 21:40: `servicio` queda guardado pero NO es precorte, así que la corrida usa el predeterminado.
+  tablas.carnes_preliquidaciones = [cabecera({ servicio: "700000.00", servicio_at: "2026-11-24T02:40:00.000Z", servicio_precorte: null })];
+  await procesar();
+  assert.equal(rpcDe("carnes_preliq_liquidar")[0].args.p_plan.gasto_total, "1500000.00");
+});
+
+test("D-S11 (OPEN-4): una sede corregida que quedó en lista_para_enviar NO se envía sola; la envía el admin", async () => {
+  tablas.carnes_preliquidaciones = [liquidada()];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, estado: "lista_para_enviar", gasto_sede: "600000.00", costeo_orden_version: 5, costeo_animales: 4 }),
+  ];
+  const r = await procesar({ origen: "schedule" });
+  assert.equal(llamadas.length, 0);
+  assert.equal(r.enviadas, 0);
+  assert.equal(r.pendientes, 0, "una lista_para_enviar no cuenta como pendiente automático");
+});

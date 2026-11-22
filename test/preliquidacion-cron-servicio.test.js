@@ -81,6 +81,7 @@ test("procesa cada preliquidación abierta y arma el contrato de respuesta", asy
   assert.deepEqual(r.procesadas[0], {
     id: 1,
     especie: "res",
+    resultado: "ok",
     liquidada: true,
     sedes: { enviadas: 2, simuladas: 0, bloqueadas: 1, errores: 0, sin_confirmar: 0, inicial_pendiente: 0 },
   });
@@ -201,4 +202,15 @@ test("validarCuerpoCron: valores por defecto y rechazos", () => {
   assert.equal(validarCuerpoCron({ dry_run: "si" }).ok, false);
   assert.equal(validarCuerpoCron({ corrida_id: -3 }).ok, false);
   assert.equal(validarCuerpoCron([]).ok, false);
+});
+
+test("D-S3: un dispatch antes del corte no procesa el día y la respuesta indica que no es elegible", async () => {
+  const { deps } = armar({
+    abiertas: [{ id: 1, especie: "res" }],
+    resumenes: { 1: { preliquidacion_id: 1, resultado: "antes_del_corte", liquidada: false, enviadas: 0, pendientes: 0 } },
+  });
+  const r = await ejecutarCron({ origen: "dispatch" }, deps);
+  assert.equal(r.procesadas[0].resultado, "antes_del_corte");
+  assert.equal(r.procesadas[0].sedes.enviadas, 0);
+  assert.equal(r.pendientes, 0);
 });

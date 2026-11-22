@@ -148,6 +148,7 @@ export async function ejecutarCron(entrada, dependencias = {}) {
         procesadas.push({
           id: preliq.id,
           especie: preliq.especie,
+          resultado: resumen?.resultado ?? "ok",
           liquidada: resumen?.liquidada === true,
           sedes: contadoresSedes(resumen),
         });
