@@ -925,6 +925,14 @@ export async function procesarSede(sede, contexto = {}) {
   };
 }
 
+/** La sede de una recepción con su cabecera, o `null` si la recepción no está vinculada. */
+export async function leerSedeDeRecepcion(recepcionId) {
+  const { data, error } = await supabase.from(T_SEDES).select("*").eq("recepcion_id", recepcionId).maybeSingle();
+  if (error) throw new Error(`Error al leer la sede: ${error.message}`);
+  if (!data) return null;
+  return { sede: data, cabecera: await leerCabecera(data.preliquidacion_id) };
+}
+
 // ─── Corrida sobre una preliquidación ──────────────────────────────────────
 
 /**
@@ -1063,6 +1071,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     dryRun = false,
     origen = "schedule",
     hayPresupuesto = () => true,
+    soloSedeId = null,
     procesarSede: procesarUna = procesarSede,
     por = null,
     timeoutMs,
@@ -1074,6 +1083,8 @@ export async function procesarPreliquidacion(id, opciones = {}) {
   corrida.resumen ??= {};
   corrida.resumen.reevaluadas ??= [];
   const siesaEncendido = opciones.siesaActivo ?? siesaActivo();
+  // Camino inmediato: solo se congela y envía la sede indicada (la liquidación sigue siendo de la cabecera).
+  const esDeLaSede = (s) => soloSedeId == null || String(s.id) === String(soloSedeId);
   const planear = (ctx) =>
     planearEnvios(ctx.sedes, { header: ctx.cabecera, origen, corrida, siesaActivo: siesaEncendido, ahora });
   const escritura = { encolar, log };
@@ -1166,7 +1177,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
   const plan2 = planear(contexto);
   if (plan2.porCalcular.length) {
     const calculo = await calcular(contexto);
-    for (const original of plan2.porCalcular) {
+    for (const original of plan2.porCalcular.filter(esDeLaSede)) {
       let sede = original;
       const costeo = calculo.porSede.get(String(sede.id));
       if (!costeo) continue;
@@ -1219,7 +1230,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
   const aProcesar = [
     ...plan3.porSimular.filter(vigentes),
     ...plan3.porEnviar.filter((i) => vigentes(i.sede)).map((i) => i.sede),
-  ];
+  ].filter(esDeLaSede);
   for (const sede of aProcesar) {
     if (!hayPresupuesto()) {
       resumen.agotado = true;

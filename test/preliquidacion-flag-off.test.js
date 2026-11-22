@@ -149,7 +149,6 @@ test("solo el controlador de /preliquidaciones lee el interruptor", () => {
 test("el flujo de envío a SIESA y los controladores legados no mencionan la preliquidación", () => {
   for (const archivo of [
     "services/siesa.service.js",
-    "controllers/recepciones.controller.js",
     "controllers/liquidaciones.controller.js",
     "controllers/siesa.controller.js",
     "routes/liquidaciones.routes.js",
@@ -187,4 +186,15 @@ test("los scripts que escriben en SIESA real no se tocan", () => {
     const texto = fs.readFileSync(raiz + f, "utf8");
     assert.doesNotMatch(texto, /preliquidaci/i, f);
   }
+});
+
+test("recepciones.controller solo conoce la preliquidación por el gancho alFinalizar (inerte con el interruptor apagado)", () => {
+  const texto = leer("controllers/recepciones.controller.js");
+  const lineas = texto
+    .split(/\r?\n/)
+    .filter((l) => !l.trim().startsWith("//"))
+    .filter((l) => /preliquidaci/i.test(l));
+  const permitida = /preliquidacionInmediato|preliquidacionAlFinalizar|Preliquidaci[oó]n de talleres|\bpreliquidacion\b/;
+  for (const l of lineas) assert.match(l, permitida, l);
+  assert.ok(lineas.length <= 8, "el controlador no debe acumular lógica de preliquidación");
 });

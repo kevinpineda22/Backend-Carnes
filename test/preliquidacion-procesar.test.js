@@ -381,3 +381,27 @@ test("el resumen cuenta sin_confirmar e inicial_pendiente para el contrato del c
   assert.equal(r.inicial_pendiente, 1);
   assert.equal(r.enviadas, 0);
 });
+
+// ─── Camino inmediato (2.16): una sola sede ────────────────────────────────
+
+test("soloSedeId: liquida y congela/envía únicamente esa sede", async () => {
+  const r = await procesar({ soloSedeId: 12 });
+  assert.equal(r.resultado, "ok");
+  assert.equal(rpcDe("carnes_preliq_congelar_sede").length, 1);
+  assert.equal(rpcDe("carnes_preliq_congelar_sede")[0].args.p_sede_id, 12);
+  assert.deepEqual(llamadas.map((l) => l.sede.id), [12]);
+  assert.equal(r.enviadas, 1);
+});
+
+test("sin soloSedeId se siguen procesando todas las sedes (comportamiento previo)", async () => {
+  await procesar();
+  assert.equal(rpcDe("carnes_preliq_congelar_sede").length, 2);
+  assert.deepEqual(llamadas.map((l) => l.sede.id).sort(), [11, 12]);
+});
+
+test("leerSedeDeRecepcion devuelve la sede y su cabecera; null si la recepción no está vinculada", async () => {
+  const hallada = await Modelo.leerSedeDeRecepcion(102);
+  assert.equal(hallada.sede.id, 12);
+  assert.equal(hallada.cabecera.id, 1);
+  assert.equal(await Modelo.leerSedeDeRecepcion(999), null);
+});
