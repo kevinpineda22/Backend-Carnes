@@ -3,6 +3,7 @@ import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
+import { revisarCorridasPerdidas } from "../models/PreliquidacionVigilancia.model.js";
 
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
@@ -43,6 +44,21 @@ export function exigirEscrituraHabilitada(req, _res, next) {
   }
 }
 
+/**
+ * Ids de las preliquidaciones con la corrida programada perdida (R7). Con el interruptor
+ * apagado no revisa nada; una falla de la revisión nunca rompe la lectura.
+ */
+async function idsConCorridaPerdida(preliquidaciones) {
+  if (motivoApagado()) return new Set();
+  try {
+    const { perdidas } = await revisarCorridasPerdidas({ preliquidaciones });
+    return new Set(perdidas.map(String));
+  } catch (error) {
+    console.error("Revisión de corridas perdidas falló:", error?.message);
+    return new Set();
+  }
+}
+
 /** GET /api/preliquidaciones */
 export async function listar(req, res, next) {
   try {
@@ -50,7 +66,9 @@ export async function listar(req, res, next) {
     const filtros = {};
     if (especie) filtros.especie = especie;
     if (estado) filtros.estado = estado;
-    res.json({ ok: true, data: await PreliquidacionModel.listar(filtros) });
+    const data = await PreliquidacionModel.listar(filtros);
+    const perdidas = await idsConCorridaPerdida(data);
+    res.json({ ok: true, data: data.map((p) => ({ ...p, corrida_perdida: perdidas.has(String(p.id)) })) });
   } catch (error) {
     next(error);
   }
@@ -70,7 +88,9 @@ export async function crear(req, res, next) {
 /** GET /api/preliquidaciones/:id */
 export async function obtener(req, res, next) {
   try {
-    res.json({ ok: true, data: await PreliquidacionModel.obtener(req.idPreliquidacion) });
+    const data = await PreliquidacionModel.obtener(req.idPreliquidacion);
+    const perdidas = await idsConCorridaPerdida([data]);
+    res.json({ ok: true, data: { ...data, corrida_perdida: perdidas.has(String(data.id)) } });
   } catch (error) {
     next(error);
   }

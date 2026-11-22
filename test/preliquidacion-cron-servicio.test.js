@@ -30,6 +30,7 @@ function armar({ apagado = null, abiertas = [], resumenes = {}, relojMs = [0], f
     registrarProgreso: reg("registrarProgreso", corrida),
     terminarCorrida: reg("terminarCorrida", corrida),
     escanearVentanas: reg("escanearVentanas", { avisadas: 0 }),
+    revisarCorridasPerdidas: reg("revisarCorridasPerdidas", { perdidas: [] }),
     listarAbiertas: reg("listarAbiertas", abiertas),
     procesar: reg("procesar", (id) => resumenes[id] ?? { preliquidacion_id: id, resultado: "ok", enviadas: 0, pendientes: 0 }),
     despacharAlertas: reg("despacharAlertas", { ok: true }),
@@ -135,6 +136,17 @@ test("escanea ventanas vencidas y despacha el backlog de alertas", async () => {
   await ejecutarCron({ origen: "schedule" }, deps);
   assert.equal(por(llamadas, "escanearVentanas").length, 1);
   assert.equal(por(llamadas, "despacharAlertas").length, 1);
+});
+
+test("revisa corridas perdidas antes de procesar (no en dry_run) y su falla no detiene la corrida", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], fallos: { revisarCorridasPerdidas: new Error("boom") } });
+  const r = await ejecutarCron({ origen: "sweep" }, deps);
+  assert.equal(r.ok, true);
+  assert.equal(por(llamadas, "revisarCorridasPerdidas").length, 1);
+  assert.equal(por(llamadas, "procesar").length, 1);
+  const seco = armar({ abiertas: [] });
+  await ejecutarCron({ origen: "dispatch", dryRun: true }, seco.deps);
+  assert.equal(por(seco.llamadas, "revisarCorridasPerdidas").length, 0);
 });
 
 test("si el escaneo de ventanas falla, el resto de la corrida sigue", async () => {

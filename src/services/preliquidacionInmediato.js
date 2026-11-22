@@ -2,6 +2,7 @@ import { motivoApagado } from "../config/preliquidacion.js";
 import { siesaActivo } from "../config/siesa.js";
 import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as Corridas from "../models/PreliquidacionCorrida.model.js";
+import * as Vigilancia from "../models/PreliquidacionVigilancia.model.js";
 import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
 import { debeLiquidar } from "../shared/preliquidacionTiempo.js";
 import { TIMEOUT_OFICIAL_MS } from "./siesa.service.js";
@@ -46,6 +47,7 @@ function dependenciasPorDefecto() {
     vincular: (id) => PreliquidacionModel.vincularRecepcion(id),
     leerSedeDeRecepcion: PreliquidacionModel.leerSedeDeRecepcion,
     encolar: encolarAlerta,
+    revisarCorridasPerdidas: Vigilancia.revisarCorridasPerdidas,
     abrirCorrida: Corridas.abrirCorrida,
     registrarProgreso: Corridas.registrarProgreso,
     terminarCorrida: Corridas.terminarCorrida,
@@ -90,6 +92,13 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
   try {
     if (deps.motivoApagado()) return null;
     if (!ESPECIES.includes(recepcion?.especie)) return null;
+
+    // Corrida perdida (R7): también se revisa aquí, independiente del cron. Nunca bloquea al recibidor.
+    try {
+      await deps.revisarCorridasPerdidas({ ahora });
+    } catch (error) {
+      log.error?.(`Revisión de corridas perdidas falló: ${error?.message}`);
+    }
 
     // 1. Vincular. Los motivos de negocio se alertan; ya_vinculada sigue con la sede existente.
     let vinculo = { resultado: "vinculada" };

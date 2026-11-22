@@ -42,6 +42,18 @@ mock.module(url("models/Preliquidacion.model.js"), {
   },
 });
 
+let perdidasFalsas = [];
+mock.module(url("models/PreliquidacionVigilancia.model.js"), {
+  namedExports: {
+    revisarCorridasPerdidas: async (o) => {
+      llamadas.push({ nombre: "revisarCorridasPerdidas", args: [o] });
+      if (respuestas.revisarCorridasPerdidas instanceof Error) throw respuestas.revisarCorridasPerdidas;
+      return { perdidas: perdidasFalsas };
+    },
+    escanearVentanas: async () => ({ vencidas: [], avisadas: [] }),
+  },
+});
+
 mock.module(url("models/PreliquidacionRetomas.model.js"), {
   namedExports: {
     obtenerRetomas: falso("obtenerRetomas"),
@@ -92,6 +104,38 @@ beforeEach(() => {
 after(() => { console.error = silenciar; });
 
 const encendida = () => { process.env.CARNES_PRELIQUIDACION = "on"; };
+
+// ─── Corrida perdida en las lecturas (R7) ──────────────────────────────────
+
+test("R7: GET / y GET /:id exponen corrida_perdida cuando el interruptor está encendido", async () => {
+  encendida();
+  perdidasFalsas = [2];
+  respuestas.listar = [{ id: 1, estado: "abierta" }, { id: 2, estado: "abierta" }];
+  const lista = await llamar("GET", "/");
+  assert.deepEqual(lista.json.data.map((p) => p.corrida_perdida), [false, true]);
+  respuestas.obtener = { id: 2, estado: "abierta" };
+  const una = await llamar("GET", "/2");
+  assert.equal(una.json.data.corrida_perdida, true);
+  respuestas.obtener = { id: 1, estado: "abierta" };
+  assert.equal((await llamar("GET", "/1")).json.data.corrida_perdida, false);
+  perdidasFalsas = [];
+});
+
+test("R7: con el interruptor apagado las lecturas no revisan nada (A-S6) y corrida_perdida es false", async () => {
+  respuestas.obtener = { id: 2, estado: "abierta" };
+  const r = await llamar("GET", "/2");
+  assert.equal(r.json.data.corrida_perdida, false);
+  assert.equal(llamadas.filter((l) => l.nombre === "revisarCorridasPerdidas").length, 0);
+});
+
+test("R7: si la revisión falla la lectura responde igual, con corrida_perdida false", async () => {
+  encendida();
+  respuestas.revisarCorridasPerdidas = new Error("base caída");
+  respuestas.obtener = { id: 3, estado: "abierta" };
+  const r = await llamar("GET", "/3");
+  assert.equal(r.estado, 200);
+  assert.equal(r.json.data.corrida_perdida, false);
+});
 
 // ─── Interruptor ───────────────────────────────────────────────────────────
 
@@ -177,7 +221,7 @@ test("GET / lista con los filtros de la query (también apagado)", async () => {
   respuestas.listar = [{ id: 1 }];
   const r = await llamar("GET", "/?especie=res&estado=abierta");
   assert.equal(r.estado, 200);
-  assert.deepEqual(r.json.data, [{ id: 1 }]);
+  assert.deepEqual(r.json.data, [{ id: 1, corrida_perdida: false }]);
   assert.deepEqual(llamadas[0].args[0], { especie: "res", estado: "abierta" });
 });
 
@@ -386,6 +430,7 @@ test("apagado: cada ruta de escritura responde 409 preliquidacion_apagada antes 
 test("apagado: las lecturas siguen disponibles", async () => {
   respuestas.obtenerConfig = { especie: "res" };
   respuestas.obtenerRetomas = { filas: [] };
+  respuestas.listar = [];
   for (const r of ["/", "/3", "/3/retomas", "/3/previsualizar", "/config/res"]) {
     assert.equal((await llamar("GET", r)).estado, 200, `GET ${r}`);
   }

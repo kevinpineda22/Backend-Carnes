@@ -26,7 +26,7 @@ function armar({
   waitUntil,
   procesar,
 } = {}) {
-  const registro = { alertas: [], procesar: [], terminar: [], waitUntil: 0, registradoAntesDeResponder: null };
+  const registro = { perdidas: 0, alertas: [], procesar: [], terminar: [], waitUntil: 0, registradoAntesDeResponder: null };
   const deps = {
     motivoApagado: () => apagado,
     siesaActivo: () => siesaEncendido,
@@ -34,6 +34,7 @@ function armar({
     vincular: async (id) => vincular(id),
     leerSedeDeRecepcion: async () => ({ sede, cabecera }),
     encolar: async (a) => (registro.alertas.push(a), { ok: true }),
+    revisarCorridasPerdidas: async () => (registro.perdidas += 1, { perdidas: [] }),
     abrirCorrida: async (o) => ({ id: 500, origen: o.origen, preliquidacion_ids: [], resumen: { reevaluadas: [] } }),
     registrarProgreso: async () => {},
     terminarCorrida: async (c, o) => registro.terminar.push(o),
@@ -61,6 +62,19 @@ test("A-S6: con el interruptor apagado no hace nada y no agrega nada a la respue
   assert.equal(r, null);
   assert.equal(registro.waitUntil, 0);
   assert.equal(registro.alertas.length, 0);
+});
+
+test("R7: revisa corridas perdidas al finalizar, y si la revisión falla la vinculación sigue", async () => {
+  const { deps, registro } = armar();
+  await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, deps);
+  assert.equal(registro.perdidas, 1);
+  const fallida = armar();
+  fallida.deps.revisarCorridasPerdidas = async () => { throw new Error("boom"); };
+  const r = await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, fallida.deps);
+  assert.equal(r.envio, "programado");
+  const apagada = armar({ apagado: "flag_apagado" });
+  await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, apagada.deps);
+  assert.equal(apagada.registro.perdidas, 0, "con el interruptor apagado no revisa nada");
 });
 
 test("la compuerta de auth también lo deja inerte", async () => {

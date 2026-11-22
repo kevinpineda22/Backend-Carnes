@@ -1,11 +1,13 @@
 import { supabase } from "../config/supabase.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
-import { ventanaVencida } from "../shared/preliquidacionTiempo.js";
+import { corridaPerdida, ventanaVencida } from "../shared/preliquidacionTiempo.js";
 
 /**
  * Vigilancia de la preliquidación: señales que no dependen de que haya sedes por enviar.
  *
  *  - `escanearVentanas`: alerta única de ventana vencida con animales sin asignar (A4).
+ *  - `revisarCorridasPerdidas`: la corrida programada no corrió (R7); la usan el cron, el
+ *    cierre de recepciones y las lecturas del panel, para no depender solo de GitHub.
  *
  * Las lecturas y escrituras son inyectables para probar sin base.
  */
@@ -17,6 +19,20 @@ async function leerAbiertasDb({ especie } = {}) {
   if (especie) q = q.eq("especie", especie);
   const { data, error } = await q.order("id");
   if (error) throw new Error(`Error al leer las preliquidaciones abiertas: ${error.message}`);
+  return data || [];
+}
+
+const T_CORRIDAS = "carnes_preliquidacion_corridas";
+const MARGEN_CORRIDA_MS = 60 * 60 * 1000;
+
+async function leerCorridasDb({ desde }) {
+  const { data, error } = await supabase
+    .from(T_CORRIDAS)
+    .select("id, estado, dry_run, preliquidacion_ids, terminada_at")
+    .eq("estado", "ok")
+    .eq("dry_run", false)
+    .gte("terminada_at", desde.toISOString());
+  if (error) throw new Error(`Error al leer las corridas: ${error.message}`);
   return data || [];
 }
 
@@ -72,4 +88,45 @@ export async function escanearVentanas({
     }
   }
   return { vencidas, avisadas };
+}
+
+/**
+ * Detecta las preliquidaciones cuya corrida programada se perdió (`corridaPerdida`, pura) y
+ * encola `corrida_perdida` (clave `(evento, id, 0, 0)`: una vez por preliquidación; el puerto
+ * deduplica). Solo consulta las corridas recientes si hay alguna candidata.
+ *
+ * @param {object} [p]
+ * @param {Array}  [p.preliquidaciones] ya leídas (lecturas GET); si no, lee las abiertas
+ * @returns {Promise<{perdidas: number[]}>}
+ */
+export async function revisarCorridasPerdidas({
+  ahora = new Date(),
+  especie,
+  preliquidaciones,
+  encolar = encolarAlerta,
+  leerAbiertas = leerAbiertasDb,
+  leerCorridas = leerCorridasDb,
+  log = console,
+} = {}) {
+  const base = preliquidaciones ?? (await leerAbiertas(especie ? { especie } : {}));
+  const abiertas = base.filter((p) => p.estado === "abierta");
+  // Sin corridas, `corridaPerdida` solo es verdadera para las candidatas (debe liquidar y pasó el margen).
+  const candidatas = abiertas.filter((preliq) => corridaPerdida({ preliq, corridas: [], ahora }));
+  if (!candidatas.length) return { perdidas: [] };
+
+  const corridas = await leerCorridas({ desde: new Date(ahora.getTime() - MARGEN_CORRIDA_MS) });
+  const perdidas = [];
+  for (const preliq of candidatas) {
+    if (!corridaPerdida({ preliq, corridas, ahora })) continue;
+    perdidas.push(preliq.id);
+    try {
+      await encolar(
+        { evento: "corrida_perdida", preliquidacionId: preliq.id, sedeId: 0, ocurrencia: 0, detalle: { especie: preliq.especie } },
+        { log },
+      );
+    } catch (error) {
+      log.error?.(`Alerta de corrida perdida de la preliquidación ${preliq.id} falló: ${error?.message}`);
+    }
+  }
+  return { perdidas };
 }

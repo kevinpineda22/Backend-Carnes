@@ -61,6 +61,7 @@ function dependenciasPorDefecto() {
     registrarProgreso: Corridas.registrarProgreso,
     terminarCorrida: Corridas.terminarCorrida,
     escanearVentanas: Vigilancia.escanearVentanas,
+    revisarCorridasPerdidas: Vigilancia.revisarCorridasPerdidas,
     listarAbiertas: PreliquidacionModel.listar,
     procesar: PreliquidacionModel.procesarPreliquidacion,
     despacharAlertas,
@@ -110,6 +111,15 @@ export async function ejecutarCron(entrada, dependencias = {}) {
         await deps.escanearVentanas({ ahora, especie });
       } catch (error) {
         log.error?.(`Cron preliquidación: el barrido de ventanas falló: ${error?.message}`);
+      }
+    }
+
+    // La corrida programada de un corte anterior que no corrió: alerta deduplicada (R7).
+    if (!dryRun) {
+      try {
+        await deps.revisarCorridasPerdidas({ ahora, especie });
+      } catch (error) {
+        log.error?.(`Cron preliquidación: la revisión de corridas perdidas falló: ${error?.message}`);
       }
     }
 
