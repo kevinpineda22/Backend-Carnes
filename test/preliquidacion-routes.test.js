@@ -39,6 +39,9 @@ mock.module(url("models/Preliquidacion.model.js"), {
     previsualizar: falso("previsualizar"),
     obtenerConfig: falso("obtenerConfig"),
     guardarConfig: falso("guardarConfig"),
+    procesarAdmin: falso("procesarAdmin"),
+    procesarSedeAdmin: falso("procesarSedeAdmin"),
+    cerrar: falso("cerrar"),
   },
 });
 
@@ -104,6 +107,74 @@ beforeEach(() => {
 after(() => { console.error = silenciar; });
 
 const encendida = () => { process.env.CARNES_PRELIQUIDACION = "on"; };
+
+// ─── Procesar / cerrar del admin (2.18) ────────────────────────────────────
+
+const ACCIONES_ADMIN = [
+  ["/5/procesar", "procesarAdmin", 5],
+  ["/sedes/3/procesar", "procesarSedeAdmin", 3],
+  ["/5/cerrar", "cerrar", 5],
+];
+
+test("procesar/cerrar con el interruptor encendido responden y pasan el id y quién lo pide", async () => {
+  encendida();
+  for (const [ruta, nombre, id] of ACCIONES_ADMIN) {
+    llamadas = [];
+    respuestas[nombre] = { resultado: "ok" };
+    const r = await llamar("POST", ruta);
+    assert.equal(r.estado, 200, ruta);
+    assert.deepEqual(r.json, { ok: true, data: { resultado: "ok" } });
+    assert.equal(llamadas[0].nombre, nombre);
+    assert.equal(llamadas[0].args[0], id);
+  }
+});
+
+test("drenaje: con el interruptor APAGADO procesar y cerrar siguen funcionando (lo ya vinculado se puede terminar)", async () => {
+  for (const [ruta, nombre] of ACCIONES_ADMIN) {
+    llamadas = [];
+    const r = await llamar("POST", ruta);
+    assert.equal(r.estado, 200, ruta);
+    assert.equal(llamadas[0].nombre, nombre);
+  }
+});
+
+test("drenaje: el resto de escrituras sigue en 409 con el interruptor apagado", async () => {
+  for (const [metodo, ruta, cuerpo] of [["POST", "/", {}], ["POST", "/5/recepciones", {}], ["PATCH", "/5", {}], ["DELETE", "/5/sedes/2"]]) {
+    const r = await llamar(metodo, ruta, cuerpo);
+    assert.equal(r.estado, 409, `${metodo} ${ruta}`);
+  }
+});
+
+test("C3: en producción sin CARNES_AUTH=exigir procesar/cerrar responden 503 auth_requerida aunque el interruptor esté encendido", async () => {
+  encendida();
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    for (const [ruta] of ACCIONES_ADMIN) {
+      const r = await llamar("POST", ruta);
+      assert.equal(r.estado, 503, ruta);
+      assert.equal(r.json.codigo, "auth_requerida");
+    }
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
+});
+
+test("procesar/cerrar: ids inválidos son 400 y el guard de admin los protege", async () => {
+  encendida();
+  assert.equal((await llamar("POST", "/abc/procesar")).estado, 400);
+  assert.equal((await llamar("POST", "/sedes/abc/procesar")).estado, 400);
+  guardPasa = false;
+  for (const [ruta] of ACCIONES_ADMIN) assert.equal((await llamar("POST", ruta)).estado, 403, ruta);
+});
+
+test("procesar/cerrar propagan los errores de negocio del modelo", async () => {
+  encendida();
+  respuestas.cerrar = createError(409, "no se puede", "no_cerrable");
+  const r = await llamar("POST", "/5/cerrar");
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "no_cerrable");
+});
 
 // ─── Corrida perdida en las lecturas (R7) ──────────────────────────────────
 

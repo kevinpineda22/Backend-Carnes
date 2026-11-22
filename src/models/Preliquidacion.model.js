@@ -12,7 +12,10 @@ import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFue
 import { randomUUID } from "node:crypto";
 import { siesaActivo } from "../config/siesa.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
-import { intentarAutocierre as intentarAutocierreDefecto } from "./PreliquidacionCierre.model.js";
+import { cerrarPreliquidacion, intentarAutocierre as intentarAutocierreDefecto } from "./PreliquidacionCierre.model.js";
+import { abrirCorrida, registrarProgreso, terminarCorrida } from "./PreliquidacionCorrida.model.js";
+import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
+import { TIMEOUT_OFICIAL_MS } from "../services/siesa.service.js";
 import { costeoVigente, mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
 import { planearEnvios } from "../shared/preliquidacionPlan.js";
 import { corteBogota, debeLiquidar } from "../shared/preliquidacionTiempo.js";
@@ -81,6 +84,8 @@ const ERRORES_RESULTADO = {
   siesa_apagado: [409, "El envío a SIESA está apagado."],
   no_abierta: [409, "La preliquidación no está abierta."],
   no_liquidada: [409, "La preliquidación aún no se ha liquidado."],
+  no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
+  monto_invalido: [422, "El monto no asignado no es válido."],
   no_encontrada: [404, "No se encontró el registro."],
   sin_recepcion: [404, "Recepción no encontrada."],
 };
@@ -1220,6 +1225,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
         exigirOk(respuesta);
         resumen.congeladas += 1;
         detalleSede(sede.id).recosteo = transicion.estado;
+        if (transicion.campos?.motivo_bloqueo) detalleSede(sede.id).motivo_bloqueo = transicion.campos.motivo_bloqueo;
         if (transicion.estado === "bloqueada") resumen.bloqueadas += 1;
         await encolarAlertas(transicion, {
           encolar,
@@ -1292,4 +1298,86 @@ export async function procesarPreliquidacion(id, opciones = {}) {
 
   resumen.pendientes = planear(await leerContexto(id)).pendientes;
   return resumen;
+}
+
+// ─── Endpoints del admin: procesar y cerrar ────────────────────────────────
+
+/** Tiempo que queda para un envío dentro de la función serverless (null = ya no alcanza). */
+function presupuestoAdmin(inicio) {
+  return () => esperaParaEnvio(Date.now() - inicio, { maxEsperaMs: TIMEOUT_OFICIAL_MS, minimoMs: ESPERA_MINIMA_CIERRE_MS });
+}
+
+/**
+ * Ejecuta una corrida de origen `admin` sobre una preliquidación abierta. La corrida queda
+ * registrada (R14) y termina `ok` o `error`. `opciones.solo` limita el envío a una sede.
+ */
+async function correrComoAdmin(preliquidacionId, { soloSedeId = null, por = null, ahora = new Date(), ...inyectables } = {}) {
+  const abrir = inyectables.abrirCorrida ?? abrirCorrida;
+  const progreso = inyectables.registrarProgreso ?? registrarProgreso;
+  const terminar = inyectables.terminarCorrida ?? terminarCorrida;
+  const procesar = inyectables.procesar ?? procesarPreliquidacion;
+  const log = inyectables.log ?? console;
+
+  const corrida = await abrir({ origen: "admin", ahora });
+  const restante = presupuestoAdmin(Date.now());
+  let resumen;
+  try {
+    resumen = await procesar(preliquidacionId, {
+      ahora,
+      origen: "admin",
+      corrida,
+      por,
+      soloSedeId,
+      hayPresupuesto: () => restante() !== null,
+      timeoutMs: () => restante() ?? ESPERA_MINIMA_CIERRE_MS,
+      log,
+    });
+    await progreso(corrida, { preliquidacionId, resultado: resumen });
+  } catch (error) {
+    await terminar(corrida, { error, ahora: new Date() }).catch(() => {});
+    throw error;
+  }
+  await terminar(corrida, { ahora: new Date() });
+  return { ...resumen, corrida_id: corrida.id };
+}
+
+/** El admin pide que se liquide y se envíe lo pendiente de la preliquidación (POST /:id/procesar). */
+export async function procesarAdmin(id, opciones = {}) {
+  const cabecera = await leerCabecera(id);
+  if (cabecera.estado !== "abierta") throw resultadoAError({ resultado: "no_abierta" });
+  return correrComoAdmin(id, opciones);
+}
+
+/**
+ * El admin envía UNA sede (POST /sedes/:sedeId/procesar): primero se recostea (congelar) y luego
+ * se reclama con el costeo vigente (T2). Responde `{recosteo, envio}`; con SIESA apagado no hay
+ * "Enviar" sin resultado: la sede responde 409 `siesa_apagado` (M5).
+ */
+export async function procesarSedeAdmin(sedeId, opciones = {}) {
+  const { data: sede, error } = await supabase.from(T_SEDES).select("*").eq("id", sedeId).maybeSingle();
+  if (error) throw new Error(`Error al leer la sede: ${error.message}`);
+  if (!sede) throw resultadoAError({ resultado: "no_encontrada" });
+  const cabecera = await leerCabecera(sede.preliquidacion_id);
+  if (cabecera.estado !== "abierta") throw resultadoAError({ resultado: "no_abierta" });
+
+  const resumen = await correrComoAdmin(cabecera.id, { ...opciones, soloSedeId: sede.id });
+  const detalle = resumen.sedes?.find((s) => String(s.sede_id) === String(sede.id)) ?? {};
+  if (detalle.codigo === "siesa_apagado") throw resultadoAError({ resultado: "siesa_apagado" });
+
+  const respuesta = {
+    resultado: resumen.resultado,
+    recosteo: detalle.recosteo ?? null,
+    envio: detalle.envio ?? null,
+    corrida_id: resumen.corrida_id,
+    cerrada: resumen.cerrada === true,
+  };
+  if (detalle.codigo) respuesta.codigo = detalle.codigo;
+  if (detalle.motivo_bloqueo) respuesta.motivo_bloqueo = detalle.motivo_bloqueo;
+  return respuesta;
+}
+
+/** Cierre manual (POST /:id/cerrar). Lanza el error HTTP que corresponda al resultado de negocio. */
+export async function cerrar(id, opciones = {}) {
+  const cerrarFn = opciones.cerrarPreliquidacion ?? cerrarPreliquidacion;
+  return exigirOk(await cerrarFn(id, opciones));
 }

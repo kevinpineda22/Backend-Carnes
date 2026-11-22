@@ -49,6 +49,11 @@ router.put("/:id/retomas", validators.guardarRetomas, PreliquidacionesController
 router.post("/:id/recepciones", validators.vincularRecepciones, PreliquidacionesController.vincular);
 router.delete("/:id/sedes/:sedeId", PreliquidacionesController.desvincular);
 
+// Procesar y cerrar: acciones del admin. Siguen disponibles con el interruptor apagado (drenaje).
+router.post("/sedes/:sedeId/procesar", PreliquidacionesController.procesarSede);
+router.post("/:id/procesar", PreliquidacionesController.procesar);
+router.post("/:id/cerrar", PreliquidacionesController.cerrar);
+
 // Previsualizar es GET porque no escribe nada.
 router.get("/:id/previsualizar", PreliquidacionesController.previsualizar);
 

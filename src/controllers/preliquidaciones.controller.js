@@ -14,7 +14,7 @@ const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
  * El router lo aplica a todo método que no sea GET (ver `exigirEscrituraHabilitada`);
  * no depende de `CARNES_AUTH`, que hoy puede estar en `off`.
  */
-function exigirEncendida() {
+function exigirEncendida({ drenaje = false } = {}) {
   const motivo = motivoApagado();
   if (motivo === "auth_requerida") {
     avisarAuthRequerida();
@@ -24,7 +24,8 @@ function exigirEncendida() {
       "auth_requerida",
     );
   }
-  if (motivo) {
+  // Drenaje: con el interruptor apagado el admin puede terminar lo que ya está vinculado.
+  if (motivo && !(drenaje && motivo === "flag_apagado")) {
     throw createError(
       409,
       "La preliquidación de talleres está apagada (CARNES_PRELIQUIDACION).",
@@ -33,11 +34,18 @@ function exigirEncendida() {
   }
 }
 
+/**
+ * Rutas que siguen disponibles con el interruptor apagado (drenaje): procesar y cerrar lo ya
+ * vinculado. La compuerta de auth (503) las alcanza igual: producción sin CARNES_AUTH=exigir
+ * no deja operar ninguna.
+ */
+const RUTAS_DRENAJE = [/^\/\d+\/procesar\/?$/, /^\/sedes\/\d+\/procesar\/?$/, /^\/\d+\/cerrar\/?$/];
+
 /** Middleware: con el interruptor apagado corta toda escritura con 409, antes de validar y de tocar la base. */
 export function exigirEscrituraHabilitada(req, _res, next) {
   if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
   try {
-    exigirEncendida();
+    exigirEncendida({ drenaje: req.method === "POST" && RUTAS_DRENAJE.some((re) => re.test(req.path)) });
     next();
   } catch (error) {
     next(error);
@@ -199,6 +207,33 @@ export async function obtenerConfig(req, res, next) {
 export async function guardarConfig(req, res, next) {
   try {
     res.json({ ok: true, data: await PreliquidacionModel.guardarConfig(req.params.especie, req.body) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** POST /api/preliquidaciones/:id/procesar — liquida y envía lo pendiente (origen admin). */
+export async function procesar(req, res, next) {
+  try {
+    res.json({ ok: true, data: await PreliquidacionModel.procesarAdmin(req.idPreliquidacion, { por: quien(req) }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** POST /api/preliquidaciones/sedes/:sedeId/procesar — recostea y envía UNA sede. */
+export async function procesarSede(req, res, next) {
+  try {
+    res.json({ ok: true, data: await PreliquidacionModel.procesarSedeAdmin(req.idSede, { por: quien(req) }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** POST /api/preliquidaciones/:id/cerrar — cierre manual. */
+export async function cerrar(req, res, next) {
+  try {
+    res.json({ ok: true, data: await PreliquidacionModel.cerrar(req.idPreliquidacion) });
   } catch (error) {
     next(error);
   }
