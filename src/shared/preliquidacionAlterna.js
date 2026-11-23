@@ -96,3 +96,14 @@ export function requiereAlternaTardia({ servicio, servicioAt, servicioAplicado, 
   if (new Date(servicioAt).getTime() <= corteBogota(fechaPrimerIngreso).getTime()) return false;
   return aCentavos(servicio) !== aCentavos(servicioAplicado);
 }
+
+/**
+ * Servicio tardío (cargado después del corte, con la preliquidación liquidada) que quedó IGUAL al
+ * aplicado: no hay alterna por diferencia, pero pudo quedar un saldo vigente de un servicio tardío
+ * anterior por corregir. La corrida lo revisa (idempotente) para no dejar un monto viejo vigente.
+ */
+export function requiereCorreccionSaldoTardio({ servicio, servicioAt, servicioAplicado, fechaPrimerIngreso, liquidadaAt }) {
+  if (!liquidadaAt || servicio == null || servicioAt == null || servicioAplicado == null || !fechaPrimerIngreso) return false;
+  if (new Date(servicioAt).getTime() <= corteBogota(fechaPrimerIngreso).getTime()) return false;
+  return aCentavos(servicio) === aCentavos(servicioAplicado);
+}

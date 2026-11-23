@@ -1,6 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
-import { compararAlterna, requiereAlternaTardia } from "../shared/preliquidacionAlterna.js";
+import { compararAlterna, requiereAlternaTardia, requiereCorreccionSaldoTardio } from "../shared/preliquidacionAlterna.js";
 import { planearSaldo } from "../shared/preliquidacionSaldo.js";
 
 /**
@@ -206,15 +206,18 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
 export async function registrarAlternaTardia(cabecera, opciones = {}) {
   const { log = console } = opciones;
   try {
-    const pendiente = requiereAlternaTardia({
+    const datos = {
       servicio: cabecera.servicio,
       servicioAt: cabecera.servicio_at,
       servicioAplicado: cabecera.servicio_aplicado,
       fechaPrimerIngreso: cabecera.fecha_primer_ingreso,
       liquidadaAt: cabecera.liquidada_at,
-    });
-    if (!pendiente) return null;
-    return await registrarAlterna(cabecera.id, opciones);
+    };
+    if (requiereAlternaTardia(datos)) return await registrarAlterna(cabecera.id, opciones);
+    // Diferencia 0: puede quedar un saldo vigente sin corregir si el registro del PATCH falló.
+    if (!requiereCorreccionSaldoTardio(datos)) return null;
+    const r = await registrarAlterna(cabecera.id, opciones);
+    return r?.resultado === "sin_diferencia" || r?.resultado === "ya_registrada" ? null : r;
   } catch (error) {
     log.error?.(`La alterna tardía de la preliquidación ${cabecera?.id} falló: ${error?.message}`);
     return { resultado: "error", error: error?.message };

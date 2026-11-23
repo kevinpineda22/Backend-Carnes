@@ -280,6 +280,31 @@ test("registrarAlternaTardia nunca lanza y no hace nada si no hay alterna pendie
   assert.equal(r.resultado, "error");
 });
 
+test("corrida: servicio tardío igual al aplicado con un saldo vigente sin corregir -> reintenta la corrección del saldo", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
+  const saldos = [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }];
+  const { deps, reg } = armar({ cab, saldos });
+  const r = await Alterna.registrarAlternaTardia(cab, deps);
+  assert.equal(r.resultado, "ok");
+  assert.equal(reg.rpcs.length, 1);
+  assert.equal(reg.rpcs[0].args.p_saldo_plan.accion, "actualizar_pendiente");
+  assert.equal(reg.rpcs[0].args.p_saldo_plan.descartar, true);
+});
+
+test("corrida: servicio tardío igual al aplicado sin saldo que corregir -> null y sin RPC", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
+  const { deps, reg } = armar({ cab, saldos: [{ id: 9, valor: "0.00", estado: "pendiente" }] });
+  assert.equal(await Alterna.registrarAlternaTardia(cab, deps), null);
+  assert.equal(reg.rpcs.length, 0);
+});
+
+test("corrida: servicio igual al aplicado cargado antes del corte no consulta saldos", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2129 });
+  const { deps, reg } = armar({ cab });
+  assert.equal(await Alterna.registrarAlternaTardia(cab, deps), null);
+  assert.equal(reg.lecturas, 0);
+});
+
 test("el módulo de la alterna no conoce SIESA (nada se envía por un servicio tardío)", () => {
   for (const archivo of ["models/PreliquidacionAlterna.model.js", "shared/preliquidacionAlterna.js"]) {
     const fuente = readFileSync(new URL(`../src/${archivo}`, import.meta.url), "utf8");
