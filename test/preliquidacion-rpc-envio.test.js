@@ -193,6 +193,16 @@ test("M2: transicionar_sede, cerrar_envio y reclamar_sede conservan el aviso req
   }
 });
 
+test("M2 (carrera): cerrar_envio no pisa un aviso levantado durante el envío (compare-and-set sobre correccion_orden_version)", () => {
+  const cuerpo = cuerpoFuncion("carnes_preliq_cerrar_envio");
+  assert.match(cuerpo, /p_plan \? 'correccion_orden_version_esperada'/);
+  assert.match(cuerpo, /v_sede\.correccion_orden_version IS DISTINCT FROM NULLIF\(p_plan->>'correccion_orden_version_esperada', ''\)::INTEGER/);
+  assert.match(cuerpo, /v_campos \? 'requiere_correccion' AND NOT v_conserva/);
+  assert.match(cuerpo, /v_campos \? 'correccion_orden_version' AND NOT v_conserva/);
+  const manual = readFileSync(join(RAIZ, "test", "sql", "040_rpc_envio.sql"), "utf8");
+  assert.match(manual, /correccion_orden_version_esperada/, "el script manual ejercita la carrera");
+});
+
 test("sin fórmulas de negocio en plpgsql (R8)", () => {
   const prohibido = [
     /\bround\s*\(/i,

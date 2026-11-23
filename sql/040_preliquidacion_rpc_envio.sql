@@ -176,7 +176,14 @@ $fn$ LANGUAGE plpgsql;
 --
 -- p_plan: {hacia, campos?: {envio_id?, error_tipo?, intentos?, motivo_pendiente?,
 --          motivo_bloqueo?, detalle_bloqueo?, liberada_at?, requiere_correccion?,
---          correccion_orden_version?}, recepcion_estado?: 'Costeado'|'Enviado_SIESA'}
+--          correccion_orden_version?}, recepcion_estado?: 'Costeado'|'Enviado_SIESA',
+--          correccion_orden_version_esperada?: la `correccion_orden_version` que JS leyó de la sede}
+--
+-- M2 (carrera con "recalcular no enviadas"): mientras el CEA viaja, un recálculo puede levantar
+-- `requiere_correccion` en esta misma sede (está `enviando`). JS calculó el cierre con lo que leyó
+-- ANTES; si la `correccion_orden_version` guardada ya no es la que JS vio (compare-and-set sobre el
+-- campo, sin fórmula de negocio), NO se escriben requiere_correccion ni correccion_orden_version:
+-- el aviso nuevo se conserva y exige la anulación y el reenvío con los montos nuevos.
 --
 -- Al salir de `enviando` se liberan claim_token y claimed_at; en `enviando -> enviando`
 -- (envío repetido en vuelo) se conservan. La recepción pasa a Enviado_SIESA en `enviada`.
@@ -195,6 +202,7 @@ DECLARE
   v_rec      TEXT;
   v_nueva    INTEGER;
   v_requiere BOOLEAN;
+  v_conserva BOOLEAN;
 BEGIN
   v_hacia := p_plan->>'hacia';
   v_campos := COALESCE(p_plan->'campos', '{}'::jsonb);
@@ -218,6 +226,10 @@ BEGIN
 
   v_nueva := v_sede.version + 1;
 
+  -- M2: el aviso cambió mientras viajaba el envío -> no se pisa.
+  v_conserva := (p_plan ? 'correccion_orden_version_esperada')
+    AND v_sede.correccion_orden_version IS DISTINCT FROM NULLIF(p_plan->>'correccion_orden_version_esperada', '')::INTEGER;
+
   UPDATE carnes_preliquidacion_sedes
      SET estado = v_hacia,
          claim_token = CASE WHEN v_hacia = 'enviando' THEN claim_token ELSE NULL END,
@@ -229,8 +241,8 @@ BEGIN
          motivo_bloqueo = CASE WHEN v_campos ? 'motivo_bloqueo' THEN NULLIF(v_campos->>'motivo_bloqueo', '') ELSE motivo_bloqueo END,
          detalle_bloqueo = CASE WHEN v_campos ? 'detalle_bloqueo' THEN NULLIF(v_campos->>'detalle_bloqueo', '') ELSE detalle_bloqueo END,
          liberada_at = CASE WHEN v_campos ? 'liberada_at' THEN NULLIF(v_campos->>'liberada_at', '')::TIMESTAMPTZ ELSE liberada_at END,
-         requiere_correccion = CASE WHEN v_campos ? 'requiere_correccion' THEN (v_campos->>'requiere_correccion')::BOOLEAN ELSE requiere_correccion END,
-         correccion_orden_version = CASE WHEN v_campos ? 'correccion_orden_version' THEN (v_campos->>'correccion_orden_version')::INTEGER ELSE correccion_orden_version END,
+         requiere_correccion = CASE WHEN v_campos ? 'requiere_correccion' AND NOT v_conserva THEN (v_campos->>'requiere_correccion')::BOOLEAN ELSE requiere_correccion END,
+         correccion_orden_version = CASE WHEN v_campos ? 'correccion_orden_version' AND NOT v_conserva THEN (v_campos->>'correccion_orden_version')::INTEGER ELSE correccion_orden_version END,
          version = v_nueva
    WHERE id = p_sede_id;
 

@@ -122,8 +122,18 @@ BEGIN
   r := carnes_preliq_cerrar_envio(sede, tok, '{"hacia":"enviada","recepcion_estado":"Aprobado"}'::jsonb);
   IF r->>'resultado' <> 'recepcion_estado_invalido' THEN RAISE EXCEPTION 'recepcion_estado_invalido: %', r; END IF;
 
-  r := carnes_preliq_cerrar_envio(sede, tok, '{"hacia":"enviada","campos":{"requiere_correccion":false},"recepcion_estado":"Enviado_SIESA"}'::jsonb);
+  -- M2 (carrera): un "recalcular no enviadas" levantó el aviso MIENTRAS viajaba el envío. JS calculó el
+  -- cierre con lo que vio antes (sin aviso, esperada = NULL): la RPC no debe pisar el aviso nuevo.
+  UPDATE carnes_preliquidacion_sedes SET requiere_correccion = true, correccion_orden_version = 9 WHERE id = sede;
+  r := carnes_preliq_cerrar_envio(
+    sede, tok,
+    '{"hacia":"enviada","campos":{"requiere_correccion":false},"recepcion_estado":"Enviado_SIESA","correccion_orden_version_esperada":null}'::jsonb
+  );
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'cerrar_envio debía ser ok: %', r; END IF;
+  IF NOT (SELECT requiere_correccion FROM carnes_preliquidacion_sedes WHERE id = sede)
+     OR (SELECT correccion_orden_version FROM carnes_preliquidacion_sedes WHERE id = sede) <> 9 THEN
+    RAISE EXCEPTION 'M2: cerrar_envio pisó un aviso levantado durante el envío';
+  END IF;
   IF (SELECT claim_token FROM carnes_preliquidacion_sedes WHERE id = sede) IS NOT NULL THEN
     RAISE EXCEPTION 'cerrar_envio debía liberar claim_token';
   END IF;

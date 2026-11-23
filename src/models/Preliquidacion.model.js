@@ -814,9 +814,10 @@ export async function obtener(id) {
 const efectosDe = (transicion, tipo) => transicion.efectos.filter((e) => e.tipo === tipo);
 
 /** El `plan` de `carnes_preliq_cerrar_envio`: el parche de `transicionSede` sin `estado`, más la recepción. */
-function armarPlanCierre(transicion) {
+function armarPlanCierre(transicion, { correccionOrdenVersion = null } = {}) {
   const { estado, ...campos } = transicion.campos;
-  const plan = { hacia: estado, campos };
+  // M2: lo que JS vio del aviso. Si un recálculo lo cambió mientras viajaba el envío, la RPC no lo pisa.
+  const plan = { hacia: estado, campos, correccion_orden_version_esperada: correccionOrdenVersion ?? null };
   const recepcion = efectosDe(transicion, "recepcion")[0];
   if (recepcion) plan.recepcion_estado = recepcion.estado;
   return plan;
@@ -957,7 +958,7 @@ export async function procesarSede(sede, contexto = {}) {
   const cierre = await llamarRpc("carnes_preliq_cerrar_envio", {
     p_sede_id: sede.id,
     p_token: token,
-    p_plan: armarPlanCierre(transicion),
+    p_plan: armarPlanCierre(transicion, { correccionOrdenVersion: sede.correccion_orden_version }),
   });
   if (cierre?.resultado === "token_invalido" || cierre?.resultado === "no_encontrada") {
     return { resultado: cierre.resultado };
