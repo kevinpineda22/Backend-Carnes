@@ -246,3 +246,12 @@ test("[M5] con SIESA apagado la apagada gana sobre el costeo obsoleto (recostear
   const r = puedeReclamar(sede({ estado: "simulada", costeo_orden_version: 1 }), contexto({ origen: "admin", siesaActivo: false }));
   assert.equal(r.motivo, "siesa_apagado");
 });
+
+test("JD S2: enviando abandonado con intentos agotados no se reclama en automático; el admin sí", () => {
+  const s = sede({ estado: "enviando", envio_id: null, claimed_at: HACE_10_MIN, intentos: 3 });
+  const auto = puedeReclamar(s, contexto());
+  assert.equal(auto.ok, false);
+  assert.equal(auto.motivo, "reintentos_agotados");
+  assert.equal(puedeReclamar(s, contexto({ origen: "admin" })).ok, true);
+  assert.equal(puedeReclamar({ ...s, intentos: 2 }, contexto()).ok, true);
+});

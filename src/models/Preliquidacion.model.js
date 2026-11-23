@@ -1171,6 +1171,14 @@ export async function procesarPreliquidacion(id, opciones = {}) {
       cambio = true;
     }
   }
+  // Un `enviando` abandonado sin intentos automáticos restantes pasa a `error` y se avisa.
+  for (const sede of plan1.porAgotar.filter(esDeLaSede)) {
+    const transicion = transicionSede("enviando", "abandono_agotado");
+    if ((await aplicarTransicion(sede, transicion, escritura)).ok) {
+      detalleSede(sede.id).envio = "reintentos_agotados";
+      cambio = true;
+    }
+  }
   if (plan1.porReevaluar.length) {
     // El costeo hipotético de las sedes bloqueadas como si estuvieran vinculadas: solo se
     // escribe si ya no hay bloqueo de costeo (si sigue inválido no se toca ni se alerta).

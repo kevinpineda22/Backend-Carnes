@@ -8,6 +8,7 @@
  * Buckets (todos arreglos de filas de sede, salvo `porEnviar` y `pendientes`):
  *   porCorregir     bloqueada(servicio_cero) con la preliquidación ya liquidada -> evento `corregida`
  *   porReevaluar    bloqueada(costeo_invalido; armado_invalido solo con origen admin) aún no reevaluada en esta corrida
+ *   porAgotar       enviando abandonado con intentos agotados (origen automático) -> evento `abandono_agotado`
  *   porCalcular     sedes que requieren congelar (costeo) antes de cualquier envío
  *   porEnviar       [{sede, resetIntentos, requiereCosteo}] sedes reclamables (puedeReclamar);
  *                   `requiereCosteo` = solo se reclaman después de congelar con éxito (T2)
@@ -95,6 +96,7 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
   const porCorregir = [];
   const porReevaluar = [];
   const porCalcular = [];
+  const porAgotar = [];
   const porEnviar = [];
   const porSimular = [];
   const bloqueadas = [];
@@ -113,6 +115,16 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
     const motivosReevaluables = esAdmin ? ["armado_invalido", "costeo_invalido"] : ["costeo_invalido"];
     if (sede.estado === "bloqueada" && motivosReevaluables.includes(sede.motivo_bloqueo) && !reevaluadas.has(sede.id)) {
       porReevaluar.push(sede);
+    }
+
+    // Un `enviando` abandonado sin intentos automáticos restantes se mueve a `error` en vez de reclamarse.
+    if (
+      !esAdmin &&
+      enviandoAbandonado(sede, ahora, abandonoS) &&
+      Number(sede.intentos ?? 0) >= LIMITE_INTENTOS_AUTOMATICOS
+    ) {
+      porAgotar.push(sede);
+      continue;
     }
 
     // M5: con SIESA apagado el admin no obtiene un "Enviar" sin resultado: se informa el motivo.
@@ -145,6 +157,7 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
   const marcar = (lista) => lista.forEach((s) => accionables.set(s.id, s));
   marcar(porCorregir);
   marcar(porReevaluar);
+  marcar(porAgotar);
   marcar(porCalcular);
   marcar(porSimular);
   for (const { sede } of porEnviar) {
@@ -158,6 +171,7 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
     porCorregir,
     porReevaluar,
     porCalcular,
+    porAgotar,
     porEnviar,
     porSimular,
     bloqueadas,

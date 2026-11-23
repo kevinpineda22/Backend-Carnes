@@ -722,3 +722,14 @@ test("I1: el no-op solo aplica a servicio_cero sobre servicio_cero", () => {
   assert.equal(desdeVinculada.sinCambios, undefined);
   assert.ok(hay(desdeVinculada.efectos, { tipo: "alerta", evento: "servicio_cero" }));
 });
+
+test("JD S2: enviando + abandono_agotado -> error transitorio con reintentos_agotados, libera el reclamo y alerta", () => {
+  const r = transicionSede("enviando", "abandono_agotado", { intentos: 3, envioId: null });
+  assert.equal(r.estado, "error");
+  assert.equal(r.campos.error_tipo, "transitorio");
+  assert.equal(r.campos.motivo_pendiente, "reintentos_agotados");
+  assert.equal(r.campos.claim_token, null);
+  assert.equal(r.campos.claimed_at, null);
+  assert.ok(hay(r.efectos, { tipo: "alerta", evento: "reintentos_agotados" }));
+  assert.throws(() => transicionSede("calculada", "abandono_agotado", {}), /transición inválida/);
+});

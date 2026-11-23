@@ -407,3 +407,16 @@ test("I1: bloqueada(servicio_cero) sin liquidar no entra a ningún bucket accion
   assert.equal(r.pendientes, 0);
   assert.deepEqual(ids(r.bloqueadas), [cero.id]);
 });
+
+test("JD S2: porAgotar = enviando abandonado con intentos agotados en origen automático (nunca en porEnviar)", () => {
+  const e = sede({ estado: "enviando", envio_id: null, claimed_at: HACE_10_MIN, intentos: 3 });
+  const r = plan([e]);
+  assert.deepEqual(ids(r.porAgotar), [e.id]);
+  assert.deepEqual(ids(r.porEnviar), []);
+  assert.equal(r.pendientes, 1);
+  const admin = plan([e], { origen: "admin" });
+  assert.deepEqual(ids(admin.porAgotar), []);
+  assert.deepEqual(ids(admin.porEnviar), [e.id]);
+  const ok = sede({ estado: "enviando", envio_id: null, claimed_at: HACE_10_MIN, intentos: 2 });
+  assert.deepEqual(ids(plan([ok]).porAgotar), []);
+});

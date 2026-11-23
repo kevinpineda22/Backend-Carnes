@@ -538,3 +538,24 @@ test("JD S2: registrarProgreso real no corrompe `reevaluadas` y la siguiente pre
   await procesar({ corrida });
   assert.deepEqual(corrida.resumen.reevaluadas, [11, 13]);
 });
+
+test("JD S2: un enviando abandonado con intentos agotados pasa a error con reintentos_agotados y alerta, sin reclamar ni enviar", async () => {
+  tablas.carnes_preliquidaciones = [liquidada({ orden_version: 6 })];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({
+      id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "enviando", envio_id: null, intentos: 3,
+      claimed_at: "2026-11-24T00:00:00.000Z", claim_token: "tok", gasto_sede: "1", costeo_orden_version: 6, costeo_animales: 10,
+    }),
+  ];
+  const alertas = [];
+  await procesar({ encolar: async (a) => alertas.push(a) });
+  const t = rpcDe("carnes_preliq_transicionar_sede");
+  assert.equal(t.length, 1);
+  assert.equal(t[0].args.p_desde, "enviando");
+  assert.equal(t[0].args.p_hacia, "error");
+  assert.equal(t[0].args.p_campos.motivo_pendiente, "reintentos_agotados");
+  assert.equal(t[0].args.p_campos.claim_token, null);
+  assert.deepEqual(alertas.map((a) => a.evento), ["reintentos_agotados"]);
+  assert.equal(rpcDe("carnes_preliq_reclamar_sede").length, 0);
+  assert.equal(llamadas.length, 0);
+});

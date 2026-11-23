@@ -265,6 +265,17 @@ const PARTE_B = {
     return aEnviada(ctx, { avisarAnulacion: false });
   },
 
+  // Un `enviando` abandonado que ya agotó los intentos automáticos no se vuelve a reclamar:
+  // pasa a `error` (reintentos_agotados), se libera el reclamo y se avisa al admin una vez.
+  abandono_agotado(estado) {
+    if (estado !== "enviando") return invalida(estado, "abandono_agotado");
+    return resultado(
+      "error",
+      { error_tipo: "transitorio", motivo_pendiente: "reintentos_agotados", claim_token: null, claimed_at: null },
+      [efectoAlerta("reintentos_agotados")],
+    );
+  },
+
   envio_repetido_enviando(estado, ctx) {
     if (estado !== "enviando") return invalida(estado, "envio_repetido_enviando");
     // Otra instancia tiene el envío en vuelo: queda `enviando` con su envio_id, que ya no se reclama.
@@ -450,7 +461,10 @@ function decidirPorEstado(sede, { admin, corridaId, siesaActivo, ahora, abandono
       return RECLAMABLE();
     }
     case "enviando":
-      return enviandoAbandonado(sede, ahora, abandonoS) ? RECLAMABLE() : NO_RECLAMABLE("estado_no_reclamable");
+      if (!enviandoAbandonado(sede, ahora, abandonoS)) return NO_RECLAMABLE("estado_no_reclamable");
+      // El tope de intentos también rige al reclamar un abandonado (el admin lo reinicia).
+      if (!admin && Number(sede.intentos ?? 0) >= LIMITE_INTENTOS) return NO_RECLAMABLE("reintentos_agotados");
+      return RECLAMABLE();
     default:
       return NO_RECLAMABLE("estado_no_reclamable");
   }
