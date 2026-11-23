@@ -214,3 +214,27 @@ test("D-S3: un dispatch antes del corte no procesa el día y la respuesta indica
   assert.equal(r.procesadas[0].sedes.enviadas, 0);
   assert.equal(r.pendientes, 0);
 });
+
+// ─── JD S2: el envío del cron respeta el límite de la función de Vercel ─────
+
+test("el envío del cron recibe timeoutMs acotado por el límite de la función y sin presupuesto no arranca", async () => {
+  let ahoraMs = 0;
+  const { deps } = armar({ abiertas: [{ id: 1, especie: "res" }] });
+  deps.presupuestoMs = 400_000; // aísla el tope de Vercel del presupuesto propio del cron
+  deps.ahoraMs = () => ahoraMs;
+  let opciones;
+  deps.procesar = async (id, o) => {
+    opciones = o;
+    return { preliquidacion_id: id, resultado: "ok", enviadas: 0, pendientes: 0 };
+  };
+  await ejecutarCron({ origen: "schedule" }, deps);
+  assert.equal(typeof opciones.timeoutMs, "function");
+  ahoraMs = 0;
+  assert.equal(opciones.timeoutMs(), 240_000);
+  ahoraMs = 100_000;
+  assert.equal(opciones.timeoutMs(), 185_000);
+  assert.equal(opciones.hayPresupuesto(), true);
+  ahoraMs = 260_000; // quedan 25 s < mínimo de 30 s: no se arranca un envío que no puede terminar
+  assert.equal(opciones.hayPresupuesto(), false);
+  assert.equal(opciones.timeoutMs(), 30_000);
+});

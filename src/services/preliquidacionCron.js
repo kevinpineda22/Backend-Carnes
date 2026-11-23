@@ -3,6 +3,8 @@ import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as Corridas from "../models/PreliquidacionCorrida.model.js";
 import * as Vigilancia from "../models/PreliquidacionVigilancia.model.js";
 import { despacharAlertas } from "./preliquidacionAlertas.js";
+import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
+import { TIMEOUT_OFICIAL_MS } from "./siesa.service.js";
 
 /**
  * Orquestador del cron de la preliquidación (`POST /api/cron/preliquidaciones`).
@@ -96,7 +98,10 @@ export async function ejecutarCron(entrada, dependencias = {}) {
 
   const ahora = deps.ahora();
   const inicio = deps.ahoraMs();
-  const hayPresupuesto = () => deps.ahoraMs() - inicio < deps.presupuestoMs;
+  // Tiempo que queda para un envío dentro de la función serverless (null = ya no alcanza).
+  const restante = () =>
+    esperaParaEnvio(deps.ahoraMs() - inicio, { maxEsperaMs: TIMEOUT_OFICIAL_MS, minimoMs: ESPERA_MINIMA_CIERRE_MS });
+  const hayPresupuesto = () => deps.ahoraMs() - inicio < deps.presupuestoMs && restante() !== null;
   const corrida = await deps.abrirCorrida({ corridaId, origen, ghRunId, dryRun, ahora });
 
   const procesadas = [];
@@ -141,6 +146,7 @@ export async function ejecutarCron(entrada, dependencias = {}) {
           origen,
           corrida,
           hayPresupuesto,
+          timeoutMs: () => restante() ?? ESPERA_MINIMA_CIERRE_MS,
         });
         await deps.registrarProgreso(corrida, { preliquidacionId: preliq.id, resultado: resumen });
         pendientes += resumen?.pendientes ?? 0;
