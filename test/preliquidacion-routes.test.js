@@ -42,6 +42,7 @@ mock.module(url("models/Preliquidacion.model.js"), {
     procesarAdmin: falso("procesarAdmin"),
     procesarSedeAdmin: falso("procesarSedeAdmin"),
     cerrar: falso("cerrar"),
+    recalcular: falso("recalcular"),
   },
 });
 
@@ -512,4 +513,70 @@ test("PUT /config/:especie con el interruptor encendido guarda la configuración
   respuestas.guardarConfig = { especie: "cerdo" };
   const r = await llamar("PUT", "/config/cerdo", { servicio_por_animal: 40000 });
   assert.equal(r.estado, 200);
+});
+
+// ─── Recalcular no enviadas (3.5) ──────────────────────────────────────────
+
+test("POST /:id/recalcular pasa id, cambios, motivo y quién lo pide al modelo", async () => {
+  encendida();
+  respuestas.recalcular = { resultado: "ok", recosteo: [] };
+  const r = await llamar("POST", "/5/recalcular", { cambios: { animal_en_pie: 2000000 }, motivo: "ajuste de precio" });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { resultado: "ok", recosteo: [] } });
+  assert.equal(llamadas[0].nombre, "recalcular");
+  assert.equal(llamadas[0].args[0], 5);
+  assert.deepEqual(llamadas[0].args[1], { cambios: { animal_en_pie: 2000000 }, motivo: "ajuste de precio" });
+});
+
+test("recalcular sin cuerpo es un recosteo puro: cambios vacíos", async () => {
+  encendida();
+  const r = await llamar("POST", "/5/recalcular", {});
+  assert.equal(r.estado, 200);
+  assert.deepEqual(llamadas[0].args[1].cambios, {});
+});
+
+test("recalcular es una escritura: apagado responde 409 preliquidacion_apagada (no es drenaje) y no llega al modelo", async () => {
+  const r = await llamar("POST", "/5/recalcular", {});
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_apagada");
+  assert.deepEqual(llamadas, []);
+});
+
+test("recalcular: en producción sin CARNES_AUTH=exigir es 503 auth_requerida", async () => {
+  encendida();
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    const r = await llamar("POST", "/5/recalcular", {});
+    assert.equal(r.estado, 503);
+    assert.equal(r.json.codigo, "auth_requerida");
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
+});
+
+test("recalcular: id inválido 400, guard de admin 403 y cuerpo inválido 400 sin llegar al modelo", async () => {
+  encendida();
+  assert.equal((await llamar("POST", "/abc/recalcular", {})).estado, 400);
+  for (const cuerpo of [
+    { cambios: { liquidada_at: "2020-01-01" } },
+    { cambios: { animales: 0 } },
+    { cambios: { animal_en_pie: -5 } },
+    { cambios: { gastos: [{ concepto: "", valor: 1, signo: 1 }] } },
+    { cambios: { gastos: [{ concepto: "x", valor: 1, signo: 2 }] } },
+    { motivo: "x".repeat(501) },
+  ]) {
+    assert.equal((await llamar("POST", "/5/recalcular", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.deepEqual(llamadas, []);
+  guardPasa = false;
+  assert.equal((await llamar("POST", "/5/recalcular", {})).estado, 403);
+});
+
+test("recalcular propaga los errores de negocio del modelo", async () => {
+  encendida();
+  respuestas.recalcular = createError(409, "no liquidada", "no_liquidada");
+  const r = await llamar("POST", "/5/recalcular", {});
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo ?? r.json.error?.codigo ?? "no_liquidada", "no_liquidada");
 });

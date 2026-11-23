@@ -91,6 +91,11 @@ const ERRORES_RESULTADO = {
   siesa_apagado: [409, "El envío a SIESA está apagado."],
   no_abierta: [409, "La preliquidación no está abierta."],
   no_liquidada: [409, "La preliquidación aún no se ha liquidado."],
+  cambios_invalidos: [422, "Alguno de los campos a cambiar no se puede modificar al recalcular."],
+  motivo_requerido: [422, "Indique el motivo del cambio."],
+  animales_insuficientes: [409, "Los animales no alcanzan para las sedes que ya se enviaron a SIESA."],
+  servicio_cero: [422, "Con ese cambio el servicio de la preliquidación quedaría en cero."],
+  retomas_solo_cerdo: [422, "Las retomas solo aplican a la preliquidación de cerdo."],
   no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
   monto_invalido: [422, "El monto no asignado no es válido."],
   no_encontrada: [404, "No se encontró el registro."],
@@ -1420,4 +1425,233 @@ export async function procesarSedeAdmin(sedeId, opciones = {}) {
 export async function cerrar(id, opciones = {}) {
   const cerrarFn = opciones.cerrarPreliquidacion ?? cerrarPreliquidacion;
   return exigirOk(await cerrarFn(id, opciones));
+}
+
+// ─── Recalcular no enviadas ────────────────────────────────────────────────
+
+const CAMPOS_RECALCULAR = ["animales", "animal_en_pie", "servicio_por_animal", "tercero_id", "gastos", "retomas"];
+const CAMPOS_QUE_CAMBIAN_EL_GASTO = ["animales", "animal_en_pie", "servicio_por_animal", "gastos"];
+const ESTADOS_ENVIADOS = ["enviando", "enviada", "sin_confirmar"];
+const ESTADOS_RECOSTEABLES = new Set(["vinculada", "calculada", "error", "lista_para_enviar", "anulada", "simulada", "bloqueada"]);
+const MOTIVOS_RECOSTEO_HIPOTETICO = new Set(["servicio_cero", "armado_invalido", "costeo_invalido", "utilidad_negativa"]);
+
+const dineroValido = (v) => {
+  try {
+    return aCentavos(v) >= 0n;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Plan de `carnes_preliq_recalcular_no_enviadas`. Puro.
+ *
+ * Valida los cambios, recalcula el gasto con `gastoTotal` (única fórmula; incluye los saldos ya
+ * aplicados, que forman parte del gasto congelado) y vuelve a planear la vinculación con los
+ * animales nuevos: un desborde que ahora cabe se libera. Con `cambios` vacío es un recosteo puro:
+ * no recalcula el gasto y solo la `orden_version` sube en la base.
+ *
+ * @param {{cabecera: object, sedes: Array<object>, gastos?: Array<object>, saldosAplicados?: Array<object>,
+ *   cambios?: object}} p `sedes` en la forma de `aSedePlan`
+ * @returns {{ok: true, plan: object, cambios: object} | {ok: false, resultado: string}}
+ */
+export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplicados = [], cambios = {} }) {
+  if (Object.keys(cambios).some((k) => !CAMPOS_RECALCULAR.includes(k))) return { ok: false, resultado: "cambios_invalidos" };
+
+  const aplicar = {};
+  if (cambios.animales !== undefined) {
+    const animales = Number(cambios.animales);
+    if (!esEnteroPositivo(animales)) return { ok: false, resultado: "datos_invalidos" };
+    aplicar.animales = animales;
+  }
+  for (const campo of ["animal_en_pie", "servicio_por_animal"]) {
+    if (cambios[campo] === undefined) continue;
+    if (!dineroValido(cambios[campo])) return { ok: false, resultado: "datos_invalidos" };
+    aplicar[campo] = cambios[campo];
+  }
+  if (cambios.tercero_id !== undefined) {
+    if (typeof cambios.tercero_id !== "string" || !cambios.tercero_id.trim()) return { ok: false, resultado: "datos_invalidos" };
+    aplicar.tercero_id = cambios.tercero_id.trim();
+  }
+  if (cambios.gastos !== undefined) {
+    const filas = Array.isArray(cambios.gastos) ? cambios.gastos : null;
+    const valido =
+      filas &&
+      filas.every(
+        (g) => g && typeof g.concepto === "string" && g.concepto.trim() && [1, -1].includes(Number(g.signo ?? 1)) && dineroValido(g.valor),
+      );
+    if (!valido) return { ok: false, resultado: "datos_invalidos" };
+    aplicar.gastos = filas.map((g) => ({ concepto: g.concepto.trim(), valor: g.valor, signo: Number(g.signo ?? 1) }));
+  }
+  if (cambios.retomas !== undefined) {
+    if (cabecera.especie !== "cerdo") return { ok: false, resultado: "retomas_solo_cerdo" };
+    const filas = Array.isArray(cambios.retomas) ? cambios.retomas : null;
+    const valido =
+      filas &&
+      filas.every(
+        (r) =>
+          r &&
+          typeof r.nombre === "string" &&
+          r.nombre.trim() &&
+          Number.isFinite(Number(r.kilos ?? 0)) &&
+          Number(r.kilos ?? 0) >= 0 &&
+          dineroValido(r.precio ?? 0) &&
+          dineroValido(r.precio_catalogo ?? 0),
+      );
+    if (!valido) return { ok: false, resultado: "datos_invalidos" };
+    aplicar.retomas = filas.map((r) => ({
+      vicera_item_id: r.vicera_item_id ?? null,
+      nombre: r.nombre.trim(),
+      unidad: r.unidad || "KL",
+      kilos: Number(r.kilos ?? 0),
+      precio: r.precio ?? 0,
+      precio_catalogo: r.precio_catalogo ?? 0,
+    }));
+  }
+
+  const animales = aplicar.animales ?? Number(cabecera.animales);
+  const consumidasPorEnviadas = sedes.filter((s) => ESTADOS_ENVIADOS.includes(s.estado)).reduce((suma, s) => suma + s.animales, 0);
+  if (animales < consumidasPorEnviadas) return { ok: false, resultado: "animales_insuficientes" };
+
+  const { sedesFijas, sedesVinculadas } = particionar(sedes);
+  const vinculacion = planearVinculacion({ animales, sedesFijas, sedesVinculadas });
+  // Las sedes ya costeadas (fijas) consumen siempre: si no caben no hay a quién desbordar.
+  if (vinculacion.restantes < 0) return { ok: false, resultado: "excede_capacidad" };
+
+  const plan = {
+    orden_version: cabecera.orden_version,
+    reordenar: reordenarCambiadas(vinculacion.orden, sedesVinculadas),
+    excede: vinculacion.excede,
+    liberadas: vinculacion.liberadas,
+    restantes: vinculacion.restantes,
+  };
+
+  if (CAMPOS_QUE_CAMBIAN_EL_GASTO.some((k) => cambios[k] !== undefined)) {
+    const gasto = gastoTotal({
+      animalEnPie: aplicar.animal_en_pie ?? cabecera.animal_en_pie,
+      servicioPrecorte: cabecera.servicio_precorte,
+      servicioPorAnimal: aplicar.servicio_por_animal ?? cabecera.servicio_por_animal,
+      animales,
+      gastos: aplicar.gastos ?? gastos,
+      saldos: saldosAplicados.map((s) => ({ ...s, estado: "pendiente" })),
+    });
+    if (gasto.bloqueo) return { ok: false, resultado: "servicio_cero" };
+    const { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal } = gasto.plan;
+    Object.assign(plan, { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal });
+  }
+
+  return { ok: true, plan, cambios: aplicar };
+}
+
+/** Recostea UNA sede sin enviar (sin tocar SIESA). Una falla de la sede se informa, no se propaga. */
+async function recostearParaRecalcular(sede, { calculo, contexto, siesaEncendido, encolar, log }) {
+  const costeo = calculo.porSede.get(String(sede.id));
+  if (!costeo) return { sede_id: sede.id, recosteo: "sin_costeo" };
+  try {
+    const { evento, ctx } = eventoDeCosteo(sede, costeo, { origen: "recalcular", siesaActivo: siesaEncendido });
+    const transicion = transicionSede(sede.estado, evento, ctx);
+    if (transicion.sinCambios) return { sede_id: sede.id, recosteo: "sin_cambios" };
+    const respuesta = await llamarRpc("carnes_preliq_congelar_sede", {
+      p_sede_id: sede.id,
+      p_sede_version: sede.version,
+      p_orden_version: contexto.cabecera.orden_version,
+      p_plan: armarPlanCongelar({ sede, transicion, montos: costeo, costeoFinal: calculo.detalle.get(String(sede.id)) }),
+    });
+    if (["version_cambiada", "no_liberada", "desde_invalido", "no_encontrada"].includes(respuesta?.resultado)) {
+      return { sede_id: sede.id, recosteo: respuesta.resultado };
+    }
+    exigirOk(respuesta);
+    await encolarAlertas(transicion, {
+      encolar,
+      preliquidacionId: sede.preliquidacion_id,
+      sedeId: sede.id,
+      ocurrencia: Number(sede.version) + 1,
+      log,
+    });
+    const detalle = { sede_id: sede.id, recosteo: transicion.estado };
+    if (transicion.campos?.motivo_bloqueo) detalle.motivo_bloqueo = transicion.campos.motivo_bloqueo;
+    return detalle;
+  } catch (error) {
+    log.error?.(`El recosteo de la sede ${sede.id} falló: ${error?.message}`);
+    return { sede_id: sede.id, recosteo: "error" };
+  }
+}
+
+/**
+ * "Recalcular no enviadas" (`POST /:id/recalcular`). Aplica `cambios` a la cabecera ya liquidada
+ * (`{}` = recosteo puro), vuelve a planear la vinculación, marca las sedes ya enviadas con
+ * `requiere_correccion` y recostea cada sede sin enviar con los destinos de la tabla de
+ * transiciones (`costeo_ok`, origen `recalcular`). NO envía nada a SIESA: lo que queda en
+ * `lista_para_enviar` sale por el botón del admin.
+ *
+ * @param {number|string} id
+ * @param {{cambios?: object, motivo?: string|null}} [entrada]
+ * @param {{por?: string|null, siesaActivo?: boolean, encolar?: Function, log?: object}} [opciones]
+ */
+export async function recalcular(id, { cambios = {}, motivo = null } = {}, opciones = {}) {
+  const { por = null, encolar = encolarAlerta, log = console } = opciones;
+  const siesaEncendido = opciones.siesaActivo ?? siesaActivo();
+
+  const respuesta = await conReintentoVersion(async () => {
+    const contexto = await leerContexto(id);
+    const { cabecera } = contexto;
+    if (cabecera.estado !== "abierta") return { resultado: "no_abierta" };
+    if (!cabecera.liquidada_at) return { resultado: "no_liquidada" };
+    const saldosAplicados = await leerLista(T_SALDOS, { destino_preliquidacion_id: id, estado: "aplicado" });
+    const armado = armarPlanRecalcular({
+      cabecera,
+      sedes: contexto.sedes.map(aSedePlan),
+      gastos: contexto.gastos,
+      saldosAplicados,
+      cambios,
+    });
+    if (!armado.ok) return { resultado: armado.resultado };
+    return llamarRpc("carnes_preliq_recalcular_no_enviadas", {
+      p_id: id,
+      p_version: cabecera.version,
+      p_cambios: armado.cambios,
+      p_plan: armado.plan,
+      p_por: por,
+      p_motivo: motivo,
+    });
+  });
+  exigirOk(respuesta);
+
+  // Con la cabecera ya cambiada: se relee todo y se recostea cada sede sin enviar.
+  const contexto = await leerContexto(id);
+  const hipoteticas = new Set(
+    contexto.sedes.filter((s) => s.estado === "bloqueada" && !esDesborde(s) && MOTIVOS_RECOSTEO_HIPOTETICO.has(s.motivo_bloqueo)).map((s) => s.id),
+  );
+  const calculo = await calcular({
+    ...contexto,
+    sedes: contexto.sedes.map((s) => (hipoteticas.has(s.id) ? { ...s, estado: "vinculada", motivo_bloqueo: null } : s)),
+  });
+  const recosteo = [];
+  for (const sede of contexto.sedes.filter((s) => ESTADOS_RECOSTEABLES.has(s.estado) && !esDesborde(s))) {
+    recosteo.push(await recostearParaRecalcular(sede, { calculo, contexto, siesaEncendido, encolar, log }));
+  }
+
+  // Las sedes ya enviadas conservan sus montos: se avisa que necesitan corrección.
+  for (const marcada of respuesta.sedes_marcadas ?? []) {
+    try {
+      await encolar({
+        evento: "requiere_correccion",
+        preliquidacionId: id,
+        sedeId: marcada.sede_id,
+        ocurrencia: marcada.sede_version,
+        detalle: { por, motivo },
+      });
+    } catch (error) {
+      log.warn?.(`No se pudo encolar la alerta requiere_correccion de la sede ${marcada.sede_id}: ${error?.message}`);
+    }
+  }
+
+  return {
+    resultado: "ok",
+    version: respuesta.version,
+    orden_version: respuesta.orden_version,
+    sedes_marcadas: respuesta.sedes_marcadas ?? [],
+    recosteo,
+    preliquidacion: await obtener(id),
+  };
 }

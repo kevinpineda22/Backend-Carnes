@@ -1156,6 +1156,46 @@ export const validators = {
     }),
   ),
 
+  // Recalcular no enviadas: `cambios` vacío = recosteo puro. Solo los campos que se pueden cambiar
+  // con la preliquidación ya liquidada; cualquier otro (p. ej. liquidada_at) se rechaza.
+  recalcularPreliquidacion: validar(
+    z.object({
+      cambios: z
+        .object({
+          animales: preliqAnimales.optional(),
+          animal_en_pie: preliqDinero.optional(),
+          servicio_por_animal: preliqDinero.optional(),
+          tercero_id: z.string().trim().min(1).max(30).optional(),
+          gastos: z
+            .array(
+              z.object({
+                concepto: z.string().trim().min(1, "El gasto necesita un concepto.").max(120),
+                valor: preliqDinero,
+                signo: z.union([z.literal(1), z.literal(-1)], {
+                  errorMap: () => ({ message: "El signo debe ser 1 o -1." }),
+                }),
+              }),
+            )
+            .optional(),
+          retomas: z
+            .array(
+              z.object({
+                vicera_item_id: z.coerce.number().int().positive().nullable().optional(),
+                nombre: z.string().trim().min(1, "La retoma necesita un nombre.").max(80),
+                unidad: z.string().trim().min(1).max(5).optional(),
+                kilos: z.coerce.number({ invalid_type_error: "Los kilos deben ser un número." }).min(0, "Los kilos no pueden ser negativos."),
+                precio: preliqDinero,
+                precio_catalogo: preliqDinero.optional(),
+              }),
+            )
+            .optional(),
+        })
+        .strict("Hay campos que no se pueden cambiar al recalcular.")
+        .default({}),
+      motivo: z.string().trim().max(500, "El motivo no puede pasar de 500 caracteres.").optional(),
+    }),
+  ),
+
   guardarConfigPreliquidacion: validar(
     z.object({ servicio_por_animal: preliqDinero }),
   ),

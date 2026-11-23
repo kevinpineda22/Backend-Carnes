@@ -230,6 +230,17 @@ export async function procesarSede(req, res, next) {
   }
 }
 
+/** POST /api/preliquidaciones/:id/recalcular — cambios tras liquidar y recosteo de las sedes sin enviar. */
+export async function recalcular(req, res, next) {
+  try {
+    const { cambios = {}, motivo = null } = req.body ?? {};
+    const data = await PreliquidacionModel.recalcular(req.idPreliquidacion, { cambios, motivo }, { por: quien(req) });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** POST /api/preliquidaciones/:id/cerrar — cierre manual. */
 export async function cerrar(req, res, next) {
   try {
