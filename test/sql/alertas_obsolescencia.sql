@@ -15,7 +15,8 @@
 --   * reclamar_sede       ídem, y conserva requiere_correccion mientras la sede lo siga requiriendo.
 --   * cerrar_envio        ídem.
 --   * liquidar            borra corrida_perdida y servicio_cero sin enviar de la preliquidación.
---   * cerrar              borra TODAS las alertas sin enviar de la preliquidación (la enviada se conserva).
+--   * cerrar              borra las alertas de ESTADO pendiente sin enviar ni reclamadas (en vuelo, inicial, ventana,
+--                         corrida perdida, servicio cero); conserva las accionables (error, sin confirmar, corrección...).
 --   * anular              borra todas las sin enviar de la preliquidación y de sus sedes.
 --
 -- Necesita una recepción de res sin vincular con novillos enteros > 0. Los pasos de reclamar y
@@ -167,14 +168,28 @@ BEGIN
   IF pg_temp.existe('servicio_cero', pre_liq, 0, 1) THEN RAISE EXCEPTION 'liquidar no borró servicio_cero'; END IF;
   IF NOT pg_temp.existe('ventana_vencida', pre_liq, 0, 0) THEN RAISE EXCEPTION 'liquidar borró una alerta que no le corresponde'; END IF;
 
-  -- ── cerrar: borra TODAS las alertas sin enviar de la preliquidación; la enviada se conserva ──
+  -- ── cerrar: borra solo las de estado pendiente sin reclamar; conserva enviadas, accionables y reclamadas ──
   PERFORM pg_temp.sembrar('cerrada', pre_liq, 0, 0, true);
   PERFORM pg_temp.sembrar('envio_error', pre_liq, 77, 3, false);
+  PERFORM pg_temp.sembrar('requiere_correccion', pre_liq, 77, 3, false);
+  PERFORM pg_temp.sembrar('envio_en_vuelo', pre_liq, 78, 1, false);
+  PERFORM pg_temp.sembrar('inicial_pendiente', pre_liq, 78, 2, false);
+  PERFORM pg_temp.sembrar('corrida_perdida', pre_liq, 0, 0, false);
+  PERFORM pg_temp.sembrar('servicio_cero', pre_liq, 0, 9, false);
+  PERFORM pg_temp.sembrar('ventana_vencida', pre_liq, 0, 5, false);
+  UPDATE carnes_preliquidacion_alertas SET reclamada_at = now()
+   WHERE evento = 'ventana_vencida' AND preliquidacion_id = pre_liq AND ocurrencia = 5;  -- reclamada: no se toca
   SELECT orden_version INTO ov FROM carnes_preliquidaciones WHERE id = pre_liq;
   r := carnes_preliq_cerrar(pre_liq, ov, 0);
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'cerrar debía ser ok: %', r; END IF;
   IF pg_temp.existe('ventana_vencida', pre_liq, 0, 0) THEN RAISE EXCEPTION 'cerrar no borró ventana_vencida sin enviar'; END IF;
-  IF pg_temp.existe('envio_error', pre_liq, 77, 3) THEN RAISE EXCEPTION 'cerrar no borró envio_error sin enviar'; END IF;
+  IF NOT pg_temp.existe('envio_error', pre_liq, 77, 3) THEN RAISE EXCEPTION 'cerrar borró envio_error (accionable)'; END IF;
+  IF NOT pg_temp.existe('requiere_correccion', pre_liq, 77, 3) THEN RAISE EXCEPTION 'cerrar borró requiere_correccion (accionable)'; END IF;
+  IF pg_temp.existe('envio_en_vuelo', pre_liq, 78, 1) THEN RAISE EXCEPTION 'cerrar no borró envio_en_vuelo'; END IF;
+  IF pg_temp.existe('inicial_pendiente', pre_liq, 78, 2) THEN RAISE EXCEPTION 'cerrar no borró inicial_pendiente'; END IF;
+  IF pg_temp.existe('corrida_perdida', pre_liq, 0, 0) THEN RAISE EXCEPTION 'cerrar no borró corrida_perdida'; END IF;
+  IF pg_temp.existe('servicio_cero', pre_liq, 0, 9) THEN RAISE EXCEPTION 'cerrar no borró servicio_cero'; END IF;
+  IF NOT pg_temp.existe('ventana_vencida', pre_liq, 0, 5) THEN RAISE EXCEPTION 'cerrar borró una alerta reclamada'; END IF;
   IF NOT pg_temp.existe('cerrada', pre_liq, 0, 0) THEN RAISE EXCEPTION 'cerrar borró una alerta ya enviada'; END IF;
 
   -- Un cierre RECHAZADO no puede borrar nada (la guarda va antes del borrado).

@@ -28,6 +28,10 @@
 --
 -- SECURITY INVOKER (por defecto). Idempotente: CREATE OR REPLACE. Todo o nada.
 --
+-- Nota (editado en el lugar): carnes_preliq_cerrar se modificó dentro de este archivo (el borrado de alertas al
+-- cerrar ahora es acotado). Si la base ya tiene una 040 anterior, vuelva a aplicar este archivo COMPLETO (es
+-- idempotente: CREATE OR REPLACE); no basta con copiar solo la función.
+--
 -- Nota: sql/041 exige esta versión de 040 (carnes_preliq_cerrar_envio con el CAS
 -- `correccion_orden_version_esperada`) y aborta si la base tiene una 040 anterior. Si ya se
 -- corrió una 040 sin ese CAS, vuelva a correr este archivo completo (es idempotente) antes de 041.
@@ -352,10 +356,14 @@ BEGIN
          version = version + 1
    WHERE id = p_id;
 
-  -- Cerrada ya no hay nada que avisar de lo pendiente: las alertas sin enviar quedan obsoletas.
+  -- Cerrada, los avisos de ESTADO pendiente (en vuelo, inicial, ventana, corrida perdida, servicio cero) quedan
+  -- obsoletos. Las accionables (envio_error, sin_confirmar, reintentos_agotados, requiere_correccion,
+  -- servicio_tardio...) NO se borran: el admin aún debe verlas. Tampoco una fila reclamada por el despacho.
   -- La alerta `cerrada` la encola JS DESPUÉS de este cierre, así que no se la lleva este borrado.
   DELETE FROM carnes_preliquidacion_alertas
-   WHERE preliquidacion_id = p_id AND enviado_ok = false;
+   WHERE preliquidacion_id = p_id AND enviado_ok = false
+     AND reclamada_at IS NULL
+     AND evento IN ('envio_en_vuelo', 'inicial_pendiente', 'ventana_vencida', 'corrida_perdida', 'servicio_cero');
 
   RETURN jsonb_build_object('resultado', 'ok', 'monto_no_asignado', p_monto_no_asignado);
 END;
