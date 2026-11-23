@@ -105,6 +105,13 @@ BEGIN
   END IF;
 END $$;
 
+-- 3a0. Funciones de sql/041 (alterna, saldos y correcciones), si esa migración se aplicó. Lo
+--      normal es correr antes sql/041_rollback.sql. Con IF EXISTS es inocuo si 041 no se aplicó.
+DROP FUNCTION IF EXISTS carnes_preliq_saldo_mover(BIGINT, BIGINT, TEXT);
+DROP FUNCTION IF EXISTS carnes_preliq_saldo_descartar(BIGINT, TEXT);
+DROP FUNCTION IF EXISTS carnes_preliq_saldo_editar(BIGINT, NUMERIC, TEXT);
+DROP FUNCTION IF EXISTS carnes_preliq_registrar_alterna(BIGINT, NUMERIC, TIMESTAMPTZ, JSONB, NUMERIC, JSONB);
+
 -- 3a. Funciones de sql/040 (envío a SIESA), si esa migración se aplicó. Sin dependencias
 --     declaradas, quedarían huérfanas al borrar las tablas. Con IF EXISTS es inocuo si 040 no
 --     se aplicó. Lo normal es correr antes sql/040_rollback.sql.

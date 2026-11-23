@@ -57,7 +57,11 @@ const funciones039 = firmasFunciones(s039);
 const funciones040 = firmasFunciones(s040);
 // 040 redefine carnes_preliq_transicionar_sede (ya cubierta por el DROP de 039): no cuenta dos veces.
 const funciones040Nuevas = funciones040.filter((f) => !funciones039.some((g) => g.nombre === f.nombre));
-const funciones = [...funciones039, ...funciones040Nuevas];
+const s041 = leer("041_preliquidacion_rpc_correcciones.sql");
+const rollback041 = leer("041_rollback.sql");
+// 041 solo agrega funciones nuevas (no redefine las de 039/040).
+const funciones041 = firmasFunciones(s041);
+const funciones = [...funciones039, ...funciones040Nuevas, ...funciones041];
 
 /** `DROP FUNCTION IF EXISTS nombre(tipos)` del rollback. */
 const dropsFunciones = [...rollback.matchAll(/DROP FUNCTION IF EXISTS (\w+)\s*\(([^)]*)\)/g)].map((m) => ({
@@ -230,6 +234,38 @@ function cuerpoTransicionar(sql) {
 test("040_rollback restaura carnes_preliq_transicionar_sede idéntica a la de 039", () => {
   assert.equal(cuerpoTransicionar(rollback040), cuerpoTransicionar(s039));
   assert.notEqual(cuerpoTransicionar(s040), cuerpoTransicionar(s039), "040 sí debe cambiarla");
+});
+
+// ─── sql/041_rollback.sql ──────────────────────────────────────────────────
+
+test("041 solo crea funciones nuevas: ninguna redefine una de 039/040", () => {
+  const previas = [...funciones039, ...funciones040].map((f) => f.nombre);
+  assert.ok(funciones041.length >= 4, `funciones de 041: ${funciones041.length}`);
+  for (const f of funciones041) assert.ok(!previas.includes(f.nombre), `${f.nombre} ya existe en 039/040`);
+});
+
+test("041_rollback: una transacción con lock_timeout, DROP IF EXISTS de cada función y sin CASCADE", () => {
+  assert.match(rollback041, /BEGIN;\s*SET LOCAL lock_timeout = '5s';/);
+  assert.equal([...rollback041.matchAll(/^\s*COMMIT;/gm)].length, 1);
+  assert.doesNotMatch(rollback041, /\bCASCADE\b/i);
+  const drops = [...rollback041.matchAll(/DROP FUNCTION IF EXISTS (\w+)\s*\(([^)]*)\)/g)].map((m) => ({
+    nombre: m[1],
+    tipos: m[2].split(",").map((t) => normalizar(t)),
+  }));
+  assert.equal(drops.length, funciones041.length);
+  for (const f of funciones041) {
+    const d = drops.find((x) => x.nombre === f.nombre);
+    assert.ok(d, `041_rollback sin DROP de ${f.nombre}`);
+    assert.deepEqual(d.tipos, f.tipos, `firma de ${f.nombre}`);
+  }
+  assert.doesNotMatch(rollback041, /DROP TABLE|DROP COLUMN|DROP CONSTRAINT|\bDELETE\b|\bTRUNCATE\b/i, "041 no toca tablas ni datos");
+});
+
+test("041_rollback va antes que 040_rollback y 038/039 y el encabezado lo documenta", () => {
+  const crudo = readFileSync(join(RAIZ, "041_rollback.sql"), "utf8");
+  assert.match(crudo, /sql\/040_rollback\.sql/);
+  assert.match(crudo, /sql\/038_039_rollback\.sql/);
+  assert.match(crudo, /ESTE archivo primero/i);
 });
 
 test("040_rollback va antes de revertir 038/039 y el encabezado lo documenta", () => {
