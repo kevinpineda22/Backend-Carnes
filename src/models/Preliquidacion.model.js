@@ -12,6 +12,13 @@ import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFue
 import { randomUUID } from "node:crypto";
 import { siesaActivo } from "../config/siesa.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
+import {
+  AVISO_SERVICIO_DESBLOQUEO,
+  AVISO_SERVICIO_TARDIO,
+  AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR,
+  registrarAlterna,
+  registrarAlternaTardia,
+} from "./PreliquidacionAlterna.model.js";
 import { cerrarPreliquidacion, intentarAutocierre as intentarAutocierreDefecto } from "./PreliquidacionCierre.model.js";
 import { abrirCorrida, registrarProgreso, terminarCorrida } from "./PreliquidacionCorrida.model.js";
 import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
@@ -459,7 +466,7 @@ export async function actualizarCabeceraConVersion(id, cambios, { alLeer } = {})
  * - Antes de congelar: servicio (RPC, con corte y desbloqueo) y los campos de cabecera.
  * - Congelada: SOLO `servicio` (siempre tardío); lo demás es 409 `preliquidacion_congelada`.
  */
-export async function actualizar(id, cambios = {}, { por = null } = {}) {
+export async function actualizar(id, cambios = {}, { por = null, encolar = encolarAlerta, log = console } = {}) {
   const cabecera = await leerCabecera(id);
   const camposCabecera = Object.fromEntries(
     CAMPOS_ANTES_DE_CONGELAR.filter((c) => cambios[c] !== undefined).map((c) => [c, cambios[c]]),
@@ -508,7 +515,27 @@ export async function actualizar(id, cambios = {}, { por = null } = {}) {
     });
   }
 
-  return { ...respuesta, preliquidacion: await leerCabecera(id) };
+  // Servicio tardío (REQ-E1): se acepta con aviso y NUNCA se envía nada a SIESA. Con la preliquidación
+  // ya liquidada se genera la alterna informativa y el saldo; si aún no se liquida, la alterna la
+  // genera `procesarPreliquidacion` justo después de liquidar (R6).
+  let alterna = null;
+  let aviso = null;
+  if (respuesta.resultado === "tardio") {
+    if (respuesta.congelada) {
+      aviso = AVISO_SERVICIO_TARDIO;
+      try {
+        const r = await registrarAlterna(id, { por, encolar, log });
+        if (r.resultado === "ok") alterna = r.alterna;
+      } catch (error) {
+        // El servicio ya quedó guardado: la próxima corrida reintenta la alterna.
+        log.error?.(`No se pudo registrar la alterna de la preliquidación ${id}: ${error?.message}`);
+      }
+    } else {
+      aviso = respuesta.desbloqueo ? AVISO_SERVICIO_DESBLOQUEO : AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR;
+    }
+  }
+
+  return { ...respuesta, preliquidacion: await leerCabecera(id), alterna, aviso };
 }
 
 /** Reemplaza los gastos manuales (solo antes de congelar) y sube la versión al final. */
@@ -1250,6 +1277,10 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     }
     contexto = await leerContexto(id);
   }
+
+  // R6: el servicio cargado tarde pero antes de liquidar (o cuyo registro falló) genera su alterna
+  // informativa ahora que las sedes ya tienen montos congelados. Idempotente; nunca lanza ni envía.
+  await registrarAlternaTardia(contexto.cabecera, { por, encolar, log });
 
   // 3. Reclamar y enviar SOLO con el costeo vigente (`costeoVigente`; el admin siempre pide recostear,
   //    por eso no se filtra por `requiereCosteo`).

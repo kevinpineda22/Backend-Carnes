@@ -15,6 +15,7 @@
  */
 
 import { aCentavos, centavosATexto, montoSedes } from "./preliquidacionCosteo.js";
+import { corteBogota } from "./preliquidacionTiempo.js";
 
 /**
  * @param {object} p
@@ -80,4 +81,18 @@ export function compararAlterna({ sedesCalculadas, servicioReal, servicioAplicad
       })),
     },
   };
+}
+
+/**
+ * ¿Hay una alterna tardía por registrar? (R6)
+ *
+ * Sí cuando la preliquidación ya se liquidó, hay un servicio cargado DESPUÉS del corte de la
+ * fecha de primer ingreso (por dato, nunca por la hora de la corrida) y ese servicio es
+ * distinto del aplicado. Un servicio cargado antes del corte fue el real de la liquidación, y el
+ * que desbloqueó `servicio_cero` quedó como precorte (aplicado = servicio): ninguno genera alterna.
+ */
+export function requiereAlternaTardia({ servicio, servicioAt, servicioAplicado, fechaPrimerIngreso, liquidadaAt }) {
+  if (!liquidadaAt || servicio == null || servicioAt == null || servicioAplicado == null || !fechaPrimerIngreso) return false;
+  if (new Date(servicioAt).getTime() <= corteBogota(fechaPrimerIngreso).getTime()) return false;
+  return aCentavos(servicio) !== aCentavos(servicioAplicado);
 }
