@@ -101,6 +101,11 @@ const ERRORES_RESULTADO = {
   no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
   monto_invalido: [422, "El monto no asignado no es válido."],
   no_anulable: [409, "La preliquidación no se puede anular."],
+  saldo_alterna_vigente: [
+    409,
+    "El cambio modifica el servicio aplicado y hay un saldo vigente de una liquidación alterna calculado con el valor anterior: " +
+      "descarte o ajuste ese saldo antes de recalcular.",
+  ],
   no_pendiente: [409, "El saldo ya no está pendiente (se aplicó, se movió o se quitó): no se puede cambiar."],
   valor_invalido: [422, "El valor del saldo no es válido."],
   destino_invalido: [422, "La preliquidación destino no existe o no está abierta."],
@@ -1479,11 +1484,16 @@ const dineroValido = (v) => {
  * animales nuevos: un desborde que ahora cabe se libera. Con `cambios` vacío es un recosteo puro:
  * no recalcula el gasto y solo la `orden_version` sube en la base.
  *
+ * Si el cambio modifica `servicio_aplicado` y la preliquidación tiene un saldo vigente (pendiente o aplicado)
+ * nacido de una alterna, se rechaza con `saldo_alterna_vigente`: la alterna y su saldo se calcularon contra el
+ * servicio aplicado anterior y `registrarAlterna` no los recalcula (es idempotente por `servicio_at`).
+ *
  * @param {{cabecera: object, sedes: Array<object>, gastos?: Array<object>, saldosAplicados?: Array<object>,
- *   cambios?: object}} p `sedes` en la forma de `aSedePlan`
+ *   saldosOrigen?: Array<object>, cambios?: object}} p `sedes` en la forma de `aSedePlan`;
+ *   `saldosOrigen` son los saldos cuyo origen es esta preliquidación
  * @returns {{ok: true, plan: object, cambios: object} | {ok: false, resultado: string}}
  */
-export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplicados = [], cambios = {} }) {
+export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplicados = [], saldosOrigen = [], cambios = {} }) {
   if (Object.keys(cambios).some((k) => !CAMPOS_RECALCULAR.includes(k))) return { ok: false, resultado: "cambios_invalidos" };
 
   const aplicar = {};
@@ -1565,6 +1575,9 @@ export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplica
     });
     if (gasto.bloqueo) return { ok: false, resultado: "servicio_cero" };
     const { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal } = gasto.plan;
+    const cambiaServicioAplicado = cabecera.servicio_aplicado == null || aCentavos(servicioAplicado) !== aCentavos(cabecera.servicio_aplicado);
+    const saldoDeAlterna = saldosOrigen.some((x) => x.alterna_id != null && (x.estado === "pendiente" || x.estado === "aplicado"));
+    if (cambiaServicioAplicado && saldoDeAlterna) return { ok: false, resultado: "saldo_alterna_vigente" };
     Object.assign(plan, { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal });
   }
 
@@ -1626,11 +1639,13 @@ export async function recalcular(id, { cambios = {}, motivo = null } = {}, opcio
     if (cabecera.estado !== "abierta") return { resultado: "no_abierta" };
     if (!cabecera.liquidada_at) return { resultado: "no_liquidada" };
     const saldosAplicados = await leerLista(T_SALDOS, { destino_preliquidacion_id: id, estado: "aplicado" });
+    const saldosOrigen = await leerLista(T_SALDOS, { origen_preliquidacion_id: id });
     const armado = armarPlanRecalcular({
       cabecera,
       sedes: contexto.sedes.map(aSedePlan),
       gastos: contexto.gastos,
       saldosAplicados,
+      saldosOrigen,
       cambios,
     });
     if (!armado.ok) return { resultado: armado.resultado };

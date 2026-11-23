@@ -448,7 +448,9 @@ $fn$ LANGUAGE plpgsql;
 -- devuelve en la respuesta para el aviso; no hay columna de auditoría.
 --
 -- Resultados: ok | no_encontrada | no_abierta | no_liquidada | version_cambiada |
---             cambios_invalidos | motivo_requerido | datos_invalidos
+--             cambios_invalidos | motivo_requerido | datos_invalidos | saldo_alterna_vigente
+--   saldo_alterna_vigente: el plan cambia `servicio_aplicado` y la preliquidación tiene un saldo
+--   pendiente/aplicado nacido de una alterna (calculado con el servicio anterior).
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carnes_preliq_recalcular_no_enviadas(
   p_id      BIGINT,
@@ -502,6 +504,19 @@ BEGIN
   v_invalido := carnes_preliq_validar_plan_sedes(p_id, p_plan);
   IF v_invalido IS NOT NULL THEN
     RETURN jsonb_build_object('resultado', 'version_cambiada', 'motivo', v_invalido);
+  END IF;
+
+  -- Cambiar el servicio aplicado deja desactualizada la alterna y su saldo (se calcularon contra el valor
+  -- anterior y la alterna es idempotente por servicio_at). Se revalida bajo el lock de la cabecera, que
+  -- también toma `carnes_preliq_registrar_alterna`: no hay carrera con una alterna recién registrada.
+  IF p_plan ? 'servicio_aplicado'
+     AND (p_plan->>'servicio_aplicado')::NUMERIC IS DISTINCT FROM v_header.servicio_aplicado
+     AND EXISTS (
+       SELECT 1 FROM carnes_preliquidacion_saldos
+        WHERE origen_preliquidacion_id = p_id AND alterna_id IS NOT NULL AND estado IN ('pendiente', 'aplicado')
+     )
+  THEN
+    RETURN jsonb_build_object('resultado', 'saldo_alterna_vigente');
   END IF;
 
   -- Orden de bloqueo: cabecera (ya tomada) -> sedes.

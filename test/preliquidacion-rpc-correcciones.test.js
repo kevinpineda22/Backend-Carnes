@@ -51,7 +51,7 @@ const FUNCIONES = {
     parametros: ["p_id", "p_version", "p_cambios", "p_plan", "p_por", "p_motivo"],
     codigos: [
       "ok", "no_encontrada", "no_abierta", "no_liquidada", "version_cambiada", "cambios_invalidos",
-      "motivo_requerido", "datos_invalidos",
+      "motivo_requerido", "datos_invalidos", "saldo_alterna_vigente",
     ],
   },
   carnes_preliq_anular: {
@@ -237,6 +237,16 @@ test("recalcular_no_enviadas: gastos y retomas se reemplazan dentro del mismo bl
   assert.match(f, /DELETE FROM carnes_preliquidacion_retomas WHERE preliquidacion_id = p_id/);
   assert.match(f, /INSERT INTO carnes_preliquidacion_retomas/);
   assert.match(f, /EXCEPTION\s+WHEN check_violation/);
+});
+
+test("recalcular_no_enviadas: rechaza cambiar el servicio aplicado con un saldo vigente de una alterna, bajo el lock", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  assert.match(f, /p_plan \? 'servicio_aplicado'/);
+  assert.match(f, /\(p_plan->>'servicio_aplicado'\)::NUMERIC IS DISTINCT FROM v_header\.servicio_aplicado/);
+  assert.match(f, /origen_preliquidacion_id = p_id AND alterna_id IS NOT NULL AND estado IN \('pendiente', 'aplicado'\)/);
+  const guarda = f.indexOf("'saldo_alterna_vigente'");
+  assert.ok(guarda > f.indexOf("FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE"), "con la cabecera bloqueada");
+  assert.ok(guarda < f.indexOf("UPDATE carnes_preliquidaciones"), "antes de escribir");
 });
 
 test("anular (R12): guardas revalidadas bajo el lock y orden de bloqueo cabecera -> sedes -> recepciones", () => {

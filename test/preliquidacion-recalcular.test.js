@@ -160,6 +160,46 @@ test("plan: gastos nuevos reemplazan a los vigentes; servicio_por_animal nuevo c
   assert.equal(r.plan.servicio_aplicado, "600000.00");
 });
 
+const saldoAlterna = (extra = {}) => ({ id: 3, origen_preliquidacion_id: 1, valor: "200000.00", estado: "pendiente", alterna_id: 77, ...extra });
+
+test("plan: cambiar el servicio aplicado con un saldo vigente de una alterna -> saldo_alterna_vigente", () => {
+  for (const estado of ["pendiente", "aplicado"]) {
+    const r = Modelo.armarPlanRecalcular({
+      cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [], saldosOrigen: [saldoAlterna({ estado })],
+      cambios: { servicio_por_animal: "60000" },
+    });
+    assert.deepEqual({ ok: r.ok, resultado: r.resultado }, { ok: false, resultado: "saldo_alterna_vigente" }, estado);
+  }
+});
+
+test("plan: con saldo de alterna pero sin cambiar el servicio aplicado (o saldo descartado/movido) el recálculo sigue", () => {
+  const base = { cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [] };
+  // animal_en_pie no toca el servicio aplicado (50,000 x 10 = 500,000).
+  assert.equal(Modelo.armarPlanRecalcular({ ...base, saldosOrigen: [saldoAlterna()], cambios: { animal_en_pie: "2000000" } }).ok, true);
+  // Recosteo puro: no recalcula el gasto.
+  assert.equal(Modelo.armarPlanRecalcular({ ...base, saldosOrigen: [saldoAlterna()], cambios: {} }).ok, true);
+  // Un servicio por animal distinto pero igual servicio aplicado (animales x por animal = 500,000).
+  assert.equal(Modelo.armarPlanRecalcular({ ...base, saldosOrigen: [saldoAlterna()], cambios: { servicio_por_animal: "50000" } }).ok, true);
+  for (const estado of ["descartado", "movido"]) {
+    const r = Modelo.armarPlanRecalcular({ ...base, saldosOrigen: [saldoAlterna({ estado })], cambios: { servicio_por_animal: "60000" } });
+    assert.equal(r.ok, true, estado);
+  }
+});
+
+test("recalcular con un saldo de alterna vigente y servicio aplicado distinto: 409 y no se llama a la RPC", async () => {
+  tablas.carnes_preliquidacion_saldos = [saldoAlterna()];
+  await assert.rejects(
+    () => recalcular({ servicio_por_animal: "60000" }, "ajuste de servicio"),
+    (e) => e.statusCode === 409 && e.codigo === "saldo_alterna_vigente",
+  );
+  assert.equal(rpcDe("carnes_preliq_recalcular_no_enviadas").length, 0);
+});
+
+test("la RPC también lo rechaza bajo el lock: el código llega como 409", async () => {
+  manejadores.carnes_preliq_recalcular_no_enviadas = () => ({ resultado: "saldo_alterna_vigente" });
+  await assert.rejects(() => recalcular({ animal_en_pie: "1" }, "x"), (e) => e.statusCode === 409 && e.codigo === "saldo_alterna_vigente");
+});
+
 test("plan: animales sube -> la sede en desborde se libera (B-S5)", () => {
   const desborde = sedePlan({ recepcionId: 102, animales: 3, orden: 2, estado: "bloqueada", motivoBloqueo: "excede_animales" });
   const r = Modelo.armarPlanRecalcular({

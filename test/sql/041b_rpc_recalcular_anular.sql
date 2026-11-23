@@ -32,6 +32,8 @@ DECLARE
   r       JSONB;
   saldo_c BIGINT;
   saldo_p BIGINT;
+  saldo_a BIGINT;
+  alt     BIGINT;
   v_cerdo INTEGER;
   res2    BIGINT;
   v_res2  INTEGER;
@@ -117,6 +119,26 @@ BEGIN
      OR (SELECT requiere_correccion FROM carnes_preliquidacion_sedes WHERE id = sede) THEN
     RAISE EXCEPTION 'una sede no enviada no debía cambiar';
   END IF;
+
+  -- Servicio aplicado distinto con un saldo vigente de una alterna -> saldo_alterna_vigente, sin escribir.
+  INSERT INTO carnes_preliquidacion_alternas (preliquidacion_id, servicio_real, servicio_at, servicio_aplicado, diferencia)
+  VALUES (pre, 700000, now(), 50000, 650000) RETURNING id INTO alt;
+  INSERT INTO carnes_preliquidacion_saldos (origen_preliquidacion_id, especie, valor, destino_preliquidacion_id, estado, alterna_id)
+  VALUES (pre, 'res', 650000, NULL, 'pendiente', alt) RETURNING id INTO saldo_a;
+  r := carnes_preliq_recalcular_no_enviadas(
+    pre, hv, '{"servicio_por_animal": 2000}'::jsonb,
+    jsonb_build_object('orden_version', ov, 'gasto_total', '5100000.00', 'servicio_aplicado', '100000.00', 'costo_por_animal', '102000.00'),
+    'qa', 'cambio de servicio'
+  );
+  IF r->>'resultado' <> 'saldo_alterna_vigente' THEN RAISE EXCEPTION 'servicio aplicado distinto debía ser saldo_alterna_vigente: %', r; END IF;
+  IF (SELECT version FROM carnes_preliquidaciones WHERE id = pre) <> hv THEN RAISE EXCEPTION 'saldo_alterna_vigente no debía escribir'; END IF;
+  -- Con el saldo descartado ya no estorba; con otro valor de servicio igual al aplicado tampoco.
+  UPDATE carnes_preliquidacion_saldos SET estado = 'descartado' WHERE id = saldo_a;
+  r := carnes_preliq_recalcular_no_enviadas(pre, hv, '{}'::jsonb, jsonb_build_object('orden_version', ov), 'qa', NULL);
+  IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'recosteo puro debía ser ok: %', r; END IF;
+  ov := ov + 1;
+  DELETE FROM carnes_preliquidacion_saldos WHERE id = saldo_a;
+  DELETE FROM carnes_preliquidacion_alternas WHERE id = alt;
 
   -- Con la sede ya enviada: cambios reales (gastos) -> version + 1, sede marcada con la nueva orden_version.
   UPDATE carnes_preliquidacion_sedes SET estado = 'enviada' WHERE id = sede;
