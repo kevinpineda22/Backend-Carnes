@@ -170,7 +170,8 @@ async function leerFilasPor(tabla, columna, valor) {
  *
  * Efectos (todos en la RPC, una transacción): la cabecera pasa a `anulada` y libera el índice parcial
  * de "sin iniciar"; las recepciones vuelven al flujo legado; los saldos que consumió regresan a
- * `pendiente` sin destino y sus propios saldos pendientes se descartan; se borran los avisos sin enviar.
+ * `pendiente` hacia la preliquidación abierta más antigua de la especie (o sin destino si no hay una)
+ * y sus propios saldos pendientes se descartan; se borran los avisos sin enviar.
  * Nunca toca SIESA.
  *
  * @param {number|string} id

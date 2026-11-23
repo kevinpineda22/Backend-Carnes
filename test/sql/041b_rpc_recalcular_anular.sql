@@ -33,6 +33,8 @@ DECLARE
   saldo_c BIGINT;
   saldo_p BIGINT;
   v_cerdo INTEGER;
+  res2    BIGINT;
+  v_res2  INTEGER;
 BEGIN
   UPDATE carnes_preliquidacion_config SET servicio_por_animal = 1000 WHERE especie IN ('res', 'cerdo');
   r := carnes_preliq_crear('res', '{"animales": 50, "animal_en_pie": 5000000}'::jsonb);
@@ -168,6 +170,11 @@ BEGIN
   IF r->>'resultado' <> 'version_cambiada' THEN RAISE EXCEPTION 'orden_version vieja debía ser version_cambiada: %', r; END IF;
 
   -- ── anular: efectos ──
+  -- Ya hay otra preliquidación de res abierta y sin liquidar: los saldos liberados deben pasar a ella.
+  UPDATE carnes_preliquidaciones SET ventana_fin = now() - interval '1 day', fecha_primer_ingreso = current_date - 5 WHERE id = pre;
+  r := carnes_preliq_crear('res', '{"animales": 10, "animal_en_pie": 100}'::jsonb);
+  res2 := (r->>'preliquidacion_id')::BIGINT;
+  IF res2 IS NULL THEN RAISE EXCEPTION 'No se pudo crear la segunda preliquidación de res: %', r; END IF;
   -- Saldo consumido por esta preliquidación (origen ajeno, aplicado, destino = pre) y saldo propio pendiente.
   INSERT INTO carnes_preliquidacion_saldos (origen_preliquidacion_id, especie, valor, destino_preliquidacion_id, estado)
   VALUES (cerdo1, 'res', 2000, pre, 'aplicado') RETURNING id INTO saldo_c;
@@ -177,6 +184,7 @@ BEGIN
   VALUES ('excede_animales', pre, sede, 1), ('ventana_vencida', pre, 0, 0);
   UPDATE carnes_recepciones SET estado = 'Costeado', costeado_at = now() WHERE id = rec AND estado = 'Aprobado';
   SELECT version INTO v_cerdo FROM carnes_preliquidaciones WHERE id = cerdo1;
+  SELECT version INTO v_res2 FROM carnes_preliquidaciones WHERE id = res2;
 
   r := carnes_preliq_anular(pre, hv, ov, 'qa', 'prueba de anulación');
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'anular debía ser ok: %', r; END IF;
@@ -195,8 +203,14 @@ BEGIN
     RAISE EXCEPTION 'la recepción Costeado debía volver a Aprobado';
   END IF;
   IF (SELECT estado FROM carnes_preliquidacion_saldos WHERE id = saldo_c) <> 'pendiente'
-     OR (SELECT destino_preliquidacion_id FROM carnes_preliquidacion_saldos WHERE id = saldo_c) IS NOT NULL THEN
-    RAISE EXCEPTION 'el saldo consumido debía volver a pendiente sin destino';
+     OR (SELECT destino_preliquidacion_id FROM carnes_preliquidacion_saldos WHERE id = saldo_c) IS DISTINCT FROM res2 THEN
+    RAISE EXCEPTION 'el saldo consumido debía volver a pendiente hacia la otra preliquidación abierta de res';
+  END IF;
+  IF (r->>'saldos_reasignados')::INTEGER <> 1 OR (r->>'saldos_destino_id')::BIGINT <> res2 THEN
+    RAISE EXCEPTION 'anular debía informar la reasignación: %', r;
+  END IF;
+  IF (SELECT version FROM carnes_preliquidaciones WHERE id = res2) <> v_res2 + 1 THEN
+    RAISE EXCEPTION 'el nuevo destino de los saldos debía subir su versión';
   END IF;
   IF (SELECT estado FROM carnes_preliquidacion_saldos WHERE id = saldo_p) <> 'descartado' THEN
     RAISE EXCEPTION 'el saldo propio pendiente debía quedar descartado';
@@ -213,6 +227,9 @@ BEGIN
   IF r->>'resultado' <> 'no_anulable' OR r->>'motivo' <> 'no_abierta' THEN
     RAISE EXCEPTION 'anular dos veces debía ser no_anulable(no_abierta): %', r;
   END IF;
+  -- Sin otra abierta los saldos quedan sin destino (NULL): se simula quitando la segunda de res.
+  UPDATE carnes_preliquidaciones SET estado = 'anulada', anulada_at = now() WHERE id = res2;
+  UPDATE carnes_preliquidacion_saldos SET destino_preliquidacion_id = NULL WHERE id = saldo_c;
   r := carnes_preliq_crear('res', '{"animales": 10, "animal_en_pie": 100}'::jsonb);
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'tras anular se debía poder crear otra de res: %', r; END IF;
   -- Y el saldo que esperaba se adjunta a la nueva (carnes_preliq_crear).

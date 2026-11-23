@@ -266,14 +266,32 @@ test("anular (R12): desvincula como desvincular, devuelve saldos consumidos y de
   assert.match(f, /DELETE FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id/);
   assert.match(f, /DELETE FROM carnes_preliquidacion_alertas/);
   assert.match(f, /enviado_ok = false/);
-  // Saldos consumidos/dirigidos vuelven a pendiente sin destino.
-  assert.match(f, /SET estado = 'pendiente', destino_preliquidacion_id = NULL/);
+  // Saldos consumidos/dirigidos vuelven a pendiente hacia la abierta más antigua (o sin destino si no hay).
+  assert.match(f, /SET estado = 'pendiente', destino_preliquidacion_id = v_destino_nuevo/);
   assert.match(f, /destino_preliquidacion_id = p_id AND estado IN \('aplicado', 'pendiente'\)/);
   // Saldos propios pendientes se descartan y el destino sube su versión.
   assert.match(f, /SET estado = 'descartado'/);
   assert.match(f, /UPDATE carnes_preliquidaciones SET version = version \+ 1 WHERE id = ANY \(v_destinos\)/);
   assert.match(f, /estado = 'anulada'/);
   for (const c of ["anulada_at = now()", "anulada_por", "motivo_anulacion"]) assert.ok(f.includes(c), c);
+});
+
+test("anular: los saldos liberados se reasignan a la abierta más antigua de la especie, con bloqueo y versión", () => {
+  const f = cuerpoFuncion("carnes_preliq_anular");
+  // Destino candidato: misma especie, abierta, sin liquidar, distinta de la anulada, la más antigua.
+  assert.match(f, /especie = v_header\.especie AND estado = 'abierta' AND liquidada_at IS NULL AND id <> p_id/);
+  assert.match(f, /ORDER BY created_at, id\s+LIMIT 1/);
+  // Se bloquea junto con los destinos propios (por id) y se revalida con el bloqueo tomado.
+  assert.match(f, /id = ANY \(array_remove\(v_destinos \|\| v_destino_nuevo, NULL\)\) ORDER BY id FOR UPDATE/);
+  assert.match(f, /v_destino_nuevo := NULL/);
+  assert.ok(f.indexOf("v_destino_nuevo := NULL") < f.indexOf("SET estado = 'pendiente', destino_preliquidacion_id = v_destino_nuevo"));
+  // El destino sube su versión (su gasto total suma esos saldos) y la respuesta lo informa.
+  assert.match(f, /UPDATE carnes_preliquidaciones SET version = version \+ 1 WHERE id = v_destino_nuevo/);
+  assert.match(f, /GET DIAGNOSTICS v_reasignados = ROW_COUNT/);
+  assert.match(f, /'saldos_reasignados', v_reasignados/);
+  assert.match(f, /'saldos_destino_id', v_destino_nuevo/);
+  // Solo se busca destino si hay saldos que reasignar.
+  assert.ok(f.indexOf("estado IN ('aplicado', 'pendiente')") < f.indexOf("ORDER BY created_at, id"));
 });
 
 test("anular: el motivo es obligatorio y se valida antes de tocar nada", () => {

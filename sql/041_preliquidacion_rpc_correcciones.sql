@@ -590,7 +590,9 @@ $fn$ LANGUAGE plpgsql;
 -- Efectos en una transacción: cabecera -> `anulada` (anulada_at/por, motivo); borra sus
 -- sedes y desvincula cada recepción como `carnes_preliq_desvincular` (costos limpios,
 -- Costeado -> Aprobado, preliquidacion_id NULL); los saldos que ELLA consumió
--- (aplicado) o tenía dirigidos (pendiente) vuelven a `pendiente` sin destino; sus propios
+-- (aplicado) o tenía dirigidos (pendiente) vuelven a `pendiente` y pasan a la preliquidación abierta y
+-- sin liquidar más antigua de su especie (sube su versión; `saldos_reasignados` y `saldos_destino_id`
+-- lo informan), o quedan sin destino si no hay ninguna (los adjunta `carnes_preliq_crear`); sus propios
 -- saldos pendientes pasan a `descartado` y suben la versión de su destino; borra los avisos
 -- sin enviar. La anulada libera el índice parcial de "sin iniciar".
 --
@@ -609,6 +611,8 @@ DECLARE
   v_recepciones JSONB;
   v_destinos    BIGINT[];
   v_sedes       INTEGER;
+  v_destino_nuevo BIGINT;
+  v_reasignados INTEGER := 0;
 BEGIN
   IF NULLIF(btrim(COALESCE(p_motivo, '')), '') IS NULL THEN
     RETURN jsonb_build_object('resultado', 'motivo_requerido');
@@ -658,7 +662,30 @@ BEGIN
   SELECT COALESCE(array_agg(DISTINCT destino_preliquidacion_id), '{}'::BIGINT[]) INTO v_destinos
     FROM carnes_preliquidacion_saldos
    WHERE origen_preliquidacion_id = p_id AND estado = 'pendiente' AND destino_preliquidacion_id IS NOT NULL;
-  PERFORM 1 FROM carnes_preliquidaciones WHERE id = ANY (v_destinos) ORDER BY id FOR UPDATE;
+
+  -- Los saldos que ella consumió o tenía dirigidos esperan una preliquidación de su especie: si ya hay
+  -- una abierta y sin liquidar (la más antigua, como `elegirDestinoSaldo`), pasan a ella para entrar en
+  -- su gasto; solo `carnes_preliq_crear` adjunta saldos sin destino, y no corre para una ya abierta.
+  -- Se bloquea junto con los destinos propios, por id ascendente.
+  IF EXISTS (
+    SELECT 1 FROM carnes_preliquidacion_saldos
+     WHERE destino_preliquidacion_id = p_id AND estado IN ('aplicado', 'pendiente')
+  ) THEN
+    SELECT id INTO v_destino_nuevo
+      FROM carnes_preliquidaciones
+     WHERE especie = v_header.especie AND estado = 'abierta' AND liquidada_at IS NULL AND id <> p_id
+     ORDER BY created_at, id
+     LIMIT 1;
+  END IF;
+  PERFORM 1 FROM carnes_preliquidaciones
+   WHERE id = ANY (array_remove(v_destinos || v_destino_nuevo, NULL)) ORDER BY id FOR UPDATE;
+  -- Con el bloqueo tomado se revalida: si el destino se liquidó o cerró, los saldos esperan a `crear`.
+  IF v_destino_nuevo IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM carnes_preliquidaciones
+     WHERE id = v_destino_nuevo AND estado = 'abierta' AND liquidada_at IS NULL
+  ) THEN
+    v_destino_nuevo := NULL;
+  END IF;
 
   SELECT COALESCE(jsonb_agg(recepcion_id ORDER BY recepcion_id), '[]'::jsonb) INTO v_recepciones
     FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id;
@@ -681,16 +708,22 @@ BEGIN
   DELETE FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id;
   GET DIAGNOSTICS v_sedes = ROW_COUNT;
 
-  -- Saldos que consumió o tenía dirigidos: vuelven a esperar una preliquidación de su especie.
+  -- Saldos que consumió o tenía dirigidos: vuelven a `pendiente` hacia la abierta más antigua de la
+  -- especie, o sin destino (NULL) si no hay ninguna, a la espera de `carnes_preliq_crear`.
   UPDATE carnes_preliquidacion_saldos
-     SET estado = 'pendiente', destino_preliquidacion_id = NULL, updated_at = now()
+     SET estado = 'pendiente', destino_preliquidacion_id = v_destino_nuevo, updated_at = now()
    WHERE destino_preliquidacion_id = p_id AND estado IN ('aplicado', 'pendiente');
+  GET DIAGNOSTICS v_reasignados = ROW_COUNT;
 
   -- Sus propios saldos pendientes ya no tienen sentido; el destino cambia su gasto total.
   UPDATE carnes_preliquidacion_saldos
      SET estado = 'descartado', editado_por = COALESCE(NULLIF(p_por, ''), editado_por), updated_at = now()
    WHERE origen_preliquidacion_id = p_id AND estado = 'pendiente';
   UPDATE carnes_preliquidaciones SET version = version + 1 WHERE id = ANY (v_destinos);
+  -- Su gasto total sumó los saldos reasignados: `carnes_preliq_liquidar` debe ver una versión nueva.
+  IF v_destino_nuevo IS NOT NULL AND v_reasignados > 0 AND NOT (v_destino_nuevo = ANY (v_destinos)) THEN
+    UPDATE carnes_preliquidaciones SET version = version + 1 WHERE id = v_destino_nuevo;
+  END IF;
 
   UPDATE carnes_preliquidaciones
      SET estado = 'anulada',
@@ -705,7 +738,9 @@ BEGIN
     'resultado', 'ok',
     'preliquidacion_id', p_id,
     'sedes_desvinculadas', v_sedes,
-    'recepciones', v_recepciones
+    'recepciones', v_recepciones,
+    'saldos_reasignados', v_reasignados,
+    'saldos_destino_id', v_destino_nuevo
   );
 END;
 $fn$ LANGUAGE plpgsql;

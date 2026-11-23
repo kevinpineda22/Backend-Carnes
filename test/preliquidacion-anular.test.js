@@ -198,6 +198,6 @@ test("el índice parcial de 'sin iniciar' solo cubre abierta: anular libera la e
 
 test("la RPC revierte los saldos consumidos y descarta los propios pendientes", () => {
   const rpc = sqlDe("041_preliquidacion_rpc_correcciones.sql");
-  assert.match(rpc, /SET estado = 'pendiente', destino_preliquidacion_id = NULL[\s\S]{0,120}estado IN \('aplicado', 'pendiente'\)/);
+  assert.match(rpc, /SET estado = 'pendiente', destino_preliquidacion_id = v_destino_nuevo[\s\S]{0,120}estado IN \('aplicado', 'pendiente'\)/);
   assert.match(rpc, /SET estado = 'descartado'[\s\S]{0,200}origen_preliquidacion_id = p_id AND estado = 'pendiente'/);
 });
