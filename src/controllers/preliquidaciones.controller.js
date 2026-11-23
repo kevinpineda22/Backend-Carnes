@@ -1,6 +1,7 @@
 import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import * as CorreccionesModel from "../models/PreliquidacionCorrecciones.model.js";
+import * as SaldosModel from "../models/PreliquidacionSaldos.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
@@ -268,6 +269,24 @@ export async function descartarCorreccion(req, res, next) {
   try {
     const { motivo } = req.body;
     res.json({ ok: true, data: await CorreccionesModel.descartarCorreccion(req.idSede, { por: quien(req), motivo }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** GET /api/preliquidaciones/saldos?especie=&estado= — saldos pendientes y banner (por defecto solo pendientes). */
+export async function listarSaldos(req, res, next) {
+  try {
+    res.json({ ok: true, data: await SaldosModel.listarSaldos(req.datosValidados ?? {}) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** PATCH /api/preliquidaciones/saldos/:saldoId — Body: UNA de { valor } | { descartar: true } | { destino_id }. */
+export async function actualizarSaldo(req, res, next) {
+  try {
+    res.json({ ok: true, data: await SaldosModel.actualizarSaldo(req.idSaldo, req.body, { por: quien(req) }) });
   } catch (error) {
     next(error);
   }

@@ -879,6 +879,14 @@ const preliqDinero = z
   })
   .refine((v) => Number(v) >= 0, "El valor no puede ser negativo.");
 
+/** Valor de un saldo: con signo (puede ser negativo), hasta 2 decimales y dentro de NUMERIC(14,2). */
+const preliqSaldoValor = z
+  .union([z.number(), z.string()], { errorMap: () => ({ message: "El valor del saldo debe ser un número." }) })
+  .refine(
+    (v) => /^-?\d+(\.\d{1,2})?$/.test(String(v).trim()) && Math.abs(Number(v)) < 1e12,
+    "El valor del saldo debe ser un número con hasta 2 decimales.",
+  );
+
 const preliqAnimales = z.coerce
   .number({ invalid_type_error: "Los animales deben ser un número entero." })
   .int("Los animales deben ser un número entero.")
@@ -1206,6 +1214,38 @@ export const validators = {
         motivo: z.string().trim().max(500, "El motivo no puede pasar de 500 caracteres.").optional(),
       })
       .strict(),
+  ),
+
+  // Saldos pendientes. La lectura filtra por especie y estado ("todos" = historial).
+  listarSaldosPreliquidacion: validar(
+    z.object({
+      especie: z.enum(["res", "cerdo"], { errorMap: () => ({ message: "Especie inválida. Debe ser: res o cerdo." }) }).optional(),
+      estado: z
+        .enum(["pendiente", "aplicado", "movido", "descartado", "todos"], {
+          errorMap: () => ({ message: "Estado inválido. Debe ser: pendiente, aplicado, movido, descartado o todos." }),
+        })
+        .optional(),
+    }),
+    "query",
+  ),
+
+  // PATCH de un saldo: EXACTAMENTE una acción (editar el valor, quitarlo o moverlo de destino).
+  actualizarSaldoPreliquidacion: validar(
+    z
+      .object({
+        valor: preliqSaldoValor.optional(),
+        descartar: z.literal(true, { errorMap: () => ({ message: "descartar solo admite true." }) }).optional(),
+        destino_id: z.coerce
+          .number({ invalid_type_error: "El destino debe ser un número." })
+          .int("El destino debe ser un número entero.")
+          .positive("El destino no es válido.")
+          .optional(),
+      })
+      .strict()
+      .refine(
+        (v) => [v.valor, v.descartar, v.destino_id].filter((x) => x !== undefined).length === 1,
+        "Indique exactamente una acción: valor, descartar o destino_id.",
+      ),
   ),
 
   // Anular la preliquidación completa: el motivo queda como trazabilidad (`motivo_anulacion`).

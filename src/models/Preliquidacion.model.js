@@ -60,7 +60,7 @@ const VENTANA_DIAS = 2;
 // ─── Código de resultado de la RPC -> error HTTP ───────────────────────────
 
 /** Resultados que no son error (el primero es el caso normal; `excede` y `tardio` son avisos). */
-const RESULTADOS_OK = new Set(["ok", "vinculada", "excede", "tardio"]);
+const RESULTADOS_OK = new Set(["ok", "vinculada", "excede", "tardio", "sin_cambios"]);
 
 /** Resultado de negocio -> [HTTP, mensaje]. Los mensajes llegan al navegador. */
 const ERRORES_RESULTADO = {
@@ -99,6 +99,11 @@ const ERRORES_RESULTADO = {
   no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
   monto_invalido: [422, "El monto no asignado no es válido."],
   no_anulable: [409, "La preliquidación no se puede anular."],
+  no_pendiente: [409, "El saldo ya no está pendiente (se aplicó, se movió o se quitó): no se puede cambiar."],
+  valor_invalido: [422, "El valor del saldo no es válido."],
+  destino_invalido: [422, "La preliquidación destino no existe o no está abierta."],
+  especie_distinta: [422, "El saldo solo se puede mover a una preliquidación de la misma especie."],
+  destino_liquidada: [409, "La preliquidación destino ya se liquidó: el saldo no entraría en su gasto."],
   sede_no_enviada: [409, "Solo se puede anular una sede que ya se envió a SIESA (estado enviada)."],
   sin_correccion: [409, "La sede no tiene una corrección pendiente."],
   no_encontrada: [404, "No se encontró el registro."],

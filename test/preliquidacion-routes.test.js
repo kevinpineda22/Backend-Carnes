@@ -54,6 +54,13 @@ mock.module(url("models/PreliquidacionCorrecciones.model.js"), {
   },
 });
 
+mock.module(url("models/PreliquidacionSaldos.model.js"), {
+  namedExports: {
+    listarSaldos: falso("listarSaldos"),
+    actualizarSaldo: falso("actualizarSaldo"),
+  },
+});
+
 let perdidasFalsas = [];
 mock.module(url("models/PreliquidacionVigilancia.model.js"), {
   namedExports: {

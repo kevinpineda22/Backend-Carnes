@@ -23,6 +23,7 @@ function idEntero(nombre, destino) {
 }
 router.param("id", idEntero("id de la preliquidación", "idPreliquidacion"));
 router.param("sedeId", idEntero("id de la sede", "idSede"));
+router.param("saldoId", idEntero("id del saldo", "idSaldo"));
 
 router.get("/", PreliquidacionesController.listar);
 router.post("/", validators.crearPreliquidacion, PreliquidacionesController.crear);
@@ -35,6 +36,10 @@ router.put(
   validators.guardarConfigPreliquidacion,
   PreliquidacionesController.guardarConfig,
 );
+
+// Saldos pendientes: se declaran ANTES de `/:id` para que "saldos" no se lea como un id.
+router.get("/saldos", validators.listarSaldosPreliquidacion, PreliquidacionesController.listarSaldos);
+router.patch("/saldos/:saldoId", validators.actualizarSaldoPreliquidacion, PreliquidacionesController.actualizarSaldo);
 
 router.get("/:id", PreliquidacionesController.obtener);
 router.patch("/:id", validators.actualizarPreliquidacion, PreliquidacionesController.actualizar);
