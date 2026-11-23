@@ -67,8 +67,12 @@ export async function registrarProgreso(corrida, { preliquidacionId, resultado =
   }
   if (resultado) {
     for (const [clave, valor] of Object.entries(resultado)) {
-      if (typeof valor === "number" && clave !== "preliquidacion_id" && clave !== "pendientes") {
-        corrida.resumen[clave] = (corrida.resumen[clave] ?? 0) + valor;
+      // Solo se acumulan contadores: una clave que en la corrida no es numérica (p. ej.
+      // `reevaluadas`, que allí es la lista de ids) nunca se sobrescribe con la suma.
+      const actual = corrida.resumen[clave];
+      const esContador = actual === undefined || typeof actual === "number";
+      if (typeof valor === "number" && esContador && clave !== "preliquidacion_id" && clave !== "pendientes") {
+        corrida.resumen[clave] = (actual ?? 0) + valor;
       }
     }
   }

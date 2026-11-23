@@ -498,3 +498,23 @@ test("D-S11 (OPEN-4): una sede corregida que quedó en lista_para_enviar NO se e
   assert.equal(r.enviadas, 0);
   assert.equal(r.pendientes, 0, "una lista_para_enviar no cuenta como pendiente automático");
 });
+
+test("JD S2: registrarProgreso real no corrompe `reevaluadas` y la siguiente preliquidación de la corrida puede reevaluar", async () => {
+  const Corridas = await import(url("models/PreliquidacionCorrida.model.js"));
+  tablas.carnes_preliquidaciones = [liquidada({ orden_version: 6, gasto_total_aplicado: "99999999.00" })];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "bloqueada", motivo_bloqueo: "costeo_invalido" }),
+  ];
+  const corrida = { id: 90, preliquidacion_ids: [], resumen: { reevaluadas: [] } };
+  const primero = await procesar({ corrida });
+  assert.equal(typeof primero.reevaluadas, "number");
+  await Corridas.registrarProgreso(corrida, { preliquidacionId: 1, resultado: primero });
+  assert.deepEqual(corrida.resumen.reevaluadas, [11]);
+
+  // Siguiente preliquidación de la misma corrida: otra sede reevaluable.
+  tablas.carnes_preliquidacion_sedes.push(
+    sede({ id: 13, recepcion_id: 101, animales: 10, orden: 3, estado: "bloqueada", motivo_bloqueo: "costeo_invalido" }),
+  );
+  await procesar({ corrida });
+  assert.deepEqual(corrida.resumen.reevaluadas, [11, 13]);
+});
