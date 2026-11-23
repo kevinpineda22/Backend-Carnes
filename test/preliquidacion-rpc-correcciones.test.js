@@ -244,6 +244,13 @@ test("recalcular_no_enviadas: rechaza cambiar el servicio aplicado con un saldo 
   assert.match(f, /p_plan \? 'servicio_aplicado'/);
   assert.match(f, /\(p_plan->>'servicio_aplicado'\)::NUMERIC IS DISTINCT FROM v_header\.servicio_aplicado/);
   assert.match(f, /origen_preliquidacion_id = p_id AND alterna_id IS NOT NULL AND estado IN \('pendiente', 'aplicado'\)/);
+  // Solo bloquea con neto distinto de cero (en centavos) y al menos un saldo pendiente; si todo está aplicado avisa.
+  assert.match(f, /v_neto := v_neto \+ v_saldo\.valor/);
+  assert.match(f, /v_saldo\.estado = 'pendiente'/);
+  assert.match(f, /IF v_neto <> 0 THEN/);
+  assert.match(f, /IF v_hay_pendiente THEN/);
+  assert.match(f, /'aviso', v_aviso/);
+  assert.match(f, /v_aviso := 'saldo_alterna_aplicado'/);
   const guarda = f.indexOf("'saldo_alterna_vigente'");
   assert.ok(guarda > f.indexOf("FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE"), "con la cabecera bloqueada");
   assert.ok(guarda < f.indexOf("UPDATE carnes_preliquidaciones"), "antes de escribir");

@@ -162,14 +162,36 @@ test("plan: gastos nuevos reemplazan a los vigentes; servicio_por_animal nuevo c
 
 const saldoAlterna = (extra = {}) => ({ id: 3, origen_preliquidacion_id: 1, valor: "200000.00", estado: "pendiente", alterna_id: 77, ...extra });
 
-test("plan: cambiar el servicio aplicado con un saldo vigente de una alterna -> saldo_alterna_vigente", () => {
-  for (const estado of ["pendiente", "aplicado"]) {
+test("plan: cambiar el servicio aplicado con un saldo pendiente de una alterna (neto distinto de cero) -> saldo_alterna_vigente", () => {
+  for (const saldos of [
+    [saldoAlterna({ estado: "pendiente" })],
+    [saldoAlterna({ id: 3, estado: "aplicado" }), saldoAlterna({ id: 4, estado: "pendiente", valor: "50000.00" })],
+  ]) {
     const r = Modelo.armarPlanRecalcular({
-      cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [], saldosOrigen: [saldoAlterna({ estado })],
+      cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [], saldosOrigen: saldos,
       cambios: { servicio_por_animal: "60000" },
     });
-    assert.deepEqual({ ok: r.ok, resultado: r.resultado }, { ok: false, resultado: "saldo_alterna_vigente" }, estado);
+    assert.deepEqual({ ok: r.ok, resultado: r.resultado }, { ok: false, resultado: "saldo_alterna_vigente" });
   }
+});
+
+test("plan: saldos de alterna solo aplicados -> el recálculo sigue con aviso de saldo no recomputado", () => {
+  const r = Modelo.armarPlanRecalcular({
+    cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [], saldosOrigen: [saldoAlterna({ estado: "aplicado" })],
+    cambios: { servicio_por_animal: "60000" },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.aviso, "saldo_alterna_aplicado");
+});
+
+test("plan: saldos de alterna vigentes con neto cero no bloquean ni avisan", () => {
+  const r = Modelo.armarPlanRecalcular({
+    cabecera: cabecera(), sedes: [sedePlan()], gastos: [], saldosAplicados: [],
+    saldosOrigen: [saldoAlterna({ id: 3, estado: "aplicado" }), saldoAlterna({ id: 4, estado: "pendiente", valor: "-200000.00" })],
+    cambios: { servicio_por_animal: "60000" },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.aviso ?? null, null);
 });
 
 test("plan: con saldo de alterna pero sin cambiar el servicio aplicado (o saldo descartado/movido) el recálculo sigue", () => {
@@ -193,6 +215,21 @@ test("recalcular con un saldo de alterna vigente y servicio aplicado distinto: 4
     (e) => e.statusCode === 409 && e.codigo === "saldo_alterna_vigente",
   );
   assert.equal(rpcDe("carnes_preliq_recalcular_no_enviadas").length, 0);
+});
+
+test("recalcular con saldo de alterna ya aplicado: sigue y devuelve el aviso de saldo no recomputado", async () => {
+  tablas.carnes_preliquidacion_saldos = [saldoAlterna({ estado: "aplicado" })];
+  manejadores.carnes_preliq_recalcular_no_enviadas = () => ({ resultado: "ok", version: 4, orden_version: 6, sedes_marcadas: [], aviso: "saldo_alterna_aplicado" });
+  const r = await recalcular({ servicio_por_animal: "60000" }, "ajuste de servicio");
+  assert.equal(r.resultado, "ok");
+  assert.deepEqual(r.aviso, Modelo.AVISO_RECALCULAR_SALDO_APLICADO);
+  assert.match(r.aviso.mensaje, /no se recalcul/i);
+});
+
+test("recalcular sin saldo aplicado: aviso nulo", async () => {
+  manejadores.carnes_preliq_recalcular_no_enviadas = () => ({ resultado: "ok", version: 4, orden_version: 6, sedes_marcadas: [], aviso: null });
+  const r = await recalcular({ animal_en_pie: "1" }, "x");
+  assert.equal(r.aviso ?? null, null);
 });
 
 test("la RPC también lo rechaza bajo el lock: el código llega como 409", async () => {

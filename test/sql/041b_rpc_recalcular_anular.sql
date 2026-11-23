@@ -34,6 +34,8 @@ DECLARE
   saldo_p BIGINT;
   saldo_a BIGINT;
   alt     BIGINT;
+  alt2    BIGINT;
+  sa_orig NUMERIC;
   v_cerdo INTEGER;
   res2    BIGINT;
   v_res2  INTEGER;
@@ -139,6 +141,37 @@ BEGIN
   ov := ov + 1;
   DELETE FROM carnes_preliquidacion_saldos WHERE id = saldo_a;
   DELETE FROM carnes_preliquidacion_alternas WHERE id = alt;
+
+  -- Solo saldos aplicados (el dinero ya entró a otra preliquidación): no bloquea, avisa que no se recomputó.
+  SELECT servicio_aplicado INTO sa_orig FROM carnes_preliquidaciones WHERE id = pre;
+  INSERT INTO carnes_preliquidacion_alternas (preliquidacion_id, servicio_real, servicio_at, servicio_aplicado, diferencia)
+  VALUES (pre, 700000, now() + interval '1 minute', 50000, 650000) RETURNING id INTO alt2;
+  INSERT INTO carnes_preliquidacion_saldos (origen_preliquidacion_id, especie, valor, destino_preliquidacion_id, estado, alterna_id)
+  VALUES (pre, 'res', 650000, cerdo1, 'aplicado', alt2) RETURNING id INTO saldo_a;
+  r := carnes_preliq_recalcular_no_enviadas(
+    pre, hv, '{}'::jsonb,
+    jsonb_build_object('orden_version', ov, 'gasto_total', '5100000.00', 'servicio_aplicado', '100000.00', 'costo_por_animal', '102000.00'),
+    'qa', NULL
+  );
+  IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'solo saldos aplicados debía permitir el recálculo: %', r; END IF;
+  IF r->>'aviso' IS DISTINCT FROM 'saldo_alterna_aplicado' THEN RAISE EXCEPTION 'solo saldos aplicados debía avisar saldo_alterna_aplicado: %', r; END IF;
+  ov := ov + 1;
+  UPDATE carnes_preliquidaciones SET servicio_aplicado = sa_orig WHERE id = pre;
+
+  -- Un pendiente que compensa al aplicado (neto cero): no bloquea ni avisa.
+  INSERT INTO carnes_preliquidacion_saldos (origen_preliquidacion_id, especie, valor, destino_preliquidacion_id, estado, alterna_id)
+  VALUES (pre, 'res', -650000, NULL, 'pendiente', alt2);
+  r := carnes_preliq_recalcular_no_enviadas(
+    pre, hv, '{}'::jsonb,
+    jsonb_build_object('orden_version', ov, 'gasto_total', '5100000.00', 'servicio_aplicado', '100000.00', 'costo_por_animal', '102000.00'),
+    'qa', NULL
+  );
+  IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'neto cero debía permitir el recálculo: %', r; END IF;
+  IF r->>'aviso' IS NOT NULL THEN RAISE EXCEPTION 'neto cero no debía avisar: %', r; END IF;
+  ov := ov + 1;
+  UPDATE carnes_preliquidaciones SET servicio_aplicado = sa_orig WHERE id = pre;
+  DELETE FROM carnes_preliquidacion_saldos WHERE origen_preliquidacion_id = pre AND alterna_id = alt2;
+  DELETE FROM carnes_preliquidacion_alternas WHERE id = alt2;
 
   -- Con la sede ya enviada: cambios reales (gastos) -> version + 1, sede marcada con la nueva orden_version.
   UPDATE carnes_preliquidacion_sedes SET estado = 'enviada' WHERE id = sede;

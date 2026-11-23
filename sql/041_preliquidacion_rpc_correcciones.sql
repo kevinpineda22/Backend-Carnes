@@ -449,8 +449,9 @@ $fn$ LANGUAGE plpgsql;
 --
 -- Resultados: ok | no_encontrada | no_abierta | no_liquidada | version_cambiada |
 --             cambios_invalidos | motivo_requerido | datos_invalidos | saldo_alterna_vigente
---   saldo_alterna_vigente: el plan cambia `servicio_aplicado` y la preliquidación tiene un saldo
---   pendiente/aplicado nacido de una alterna (calculado con el servicio anterior).
+--   saldo_alterna_vigente: el plan cambia `servicio_aplicado` y los saldos vigentes (pendiente/aplicado)
+--   nacidos de una alterna suman un neto distinto de cero (NUMERIC de 2 decimales = centavos exactos) con al menos uno pendiente.
+--   Si todos están aplicados el recálculo sigue y la respuesta lleva `aviso` = 'saldo_alterna_aplicado'.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carnes_preliq_recalcular_no_enviadas(
   p_id      BIGINT,
@@ -469,6 +470,10 @@ DECLARE
   v_orden_nueva INTEGER;
   v_version     INTEGER;
   v_marcadas    JSONB;
+  v_neto        NUMERIC := 0;
+  v_hay_pendiente BOOLEAN := false;
+  v_saldo       RECORD;
+  v_aviso       TEXT := NULL;
 BEGIN
   v_cambios := COALESCE(p_cambios, '{}'::jsonb);
   IF jsonb_typeof(v_cambios) <> 'object' THEN
@@ -509,14 +514,26 @@ BEGIN
   -- Cambiar el servicio aplicado deja desactualizada la alterna y su saldo (se calcularon contra el valor
   -- anterior y la alterna es idempotente por servicio_at). Se revalida bajo el lock de la cabecera, que
   -- también toma `carnes_preliq_registrar_alterna`: no hay carrera con una alterna recién registrada.
+  -- Solo bloquea si el neto vigente (en centavos) no es cero y queda algún saldo pendiente (se puede
+  -- descartar o mover). Si todo lo vigente ya se aplicó (el dinero entró a otra preliquidación) no hay nada
+  -- que el usuario pueda corregir: se permite y se devuelve el aviso `saldo_alterna_aplicado`.
   IF p_plan ? 'servicio_aplicado'
      AND (p_plan->>'servicio_aplicado')::NUMERIC IS DISTINCT FROM v_header.servicio_aplicado
-     AND EXISTS (
-       SELECT 1 FROM carnes_preliquidacion_saldos
-        WHERE origen_preliquidacion_id = p_id AND alterna_id IS NOT NULL AND estado IN ('pendiente', 'aplicado')
-     )
   THEN
-    RETURN jsonb_build_object('resultado', 'saldo_alterna_vigente');
+    -- Los valores son NUMERIC con 2 decimales (centavos exactos): se acumulan en un lazo, sin agregados (R8).
+    FOR v_saldo IN
+      SELECT valor, estado FROM carnes_preliquidacion_saldos
+       WHERE origen_preliquidacion_id = p_id AND alterna_id IS NOT NULL AND estado IN ('pendiente', 'aplicado')
+    LOOP
+      v_neto := v_neto + v_saldo.valor;
+      IF v_saldo.estado = 'pendiente' THEN v_hay_pendiente := true; END IF;
+    END LOOP;
+    IF v_neto <> 0 THEN
+      IF v_hay_pendiente THEN
+        RETURN jsonb_build_object('resultado', 'saldo_alterna_vigente');
+      END IF;
+      v_aviso := 'saldo_alterna_aplicado';
+    END IF;
   END IF;
 
   -- Orden de bloqueo: cabecera (ya tomada) -> sedes.
@@ -583,7 +600,8 @@ BEGIN
     'version', v_version,
     'orden_version', v_orden_nueva,
     'sedes_marcadas', v_marcadas,
-    'por', p_por
+    'por', p_por,
+    'aviso', v_aviso
   );
 EXCEPTION
   WHEN check_violation OR not_null_violation OR invalid_text_representation OR numeric_value_out_of_range THEN
