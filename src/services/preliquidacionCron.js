@@ -22,6 +22,8 @@ const ORIGENES = ["schedule", "sweep", "dispatch"];
 const ESPECIES = ["res", "cerdo"];
 /** Margen bajo el límite de la función serverless (el workflow espera hasta 290 s). */
 export const PRESUPUESTO_CRON_MS = 240_000;
+/** Alertas que se despachan por invocación del cron (el resto lo toma el siguiente ciclo). */
+const LIMITE_DESPACHO_CRON = 10;
 
 /**
  * Valida el cuerpo del cron. Un cuerpo ausente equivale a `{}`.
@@ -164,21 +166,25 @@ export async function ejecutarCron(entrada, dependencias = {}) {
         procesadas.push({ id: preliq.id, especie: preliq.especie, resultado: "error", error: error?.message ?? String(error) });
       }
     }
-
-    // Backlog de alertas: cada invocación lo drena. Una falla aquí no invalida la corrida.
-    if (!dryRun) {
-      try {
-        await deps.despacharAlertas({ ahora });
-      } catch (error) {
-        log.error?.(`Cron preliquidación: el despacho de alertas falló: ${error?.message}`);
-      }
-    }
   } catch (error) {
     fallo ??= error;
   }
 
   const continua = !dryRun && pendientes > 0 && !fallo;
   await deps.terminarCorrida(corrida, { error: fallo, ahora: deps.ahora(), continua });
+
+  // Backlog de alertas: se despacha DESPUÉS de cerrar la corrida y acotado por el tiempo que queda y un límite.
+  // Una falla aquí nunca altera el resultado de la corrida.
+  if (!dryRun) {
+    try {
+      const margen = restante();
+      if (margen !== null) {
+        await deps.despacharAlertas({ ahora, limite: LIMITE_DESPACHO_CRON, hasta: Date.now() + margen });
+      }
+    } catch (error) {
+      log.error?.(`Cron preliquidación: el despacho de alertas falló: ${error?.message}`);
+    }
+  }
 
   const respuesta = {
     ok: !fallo,

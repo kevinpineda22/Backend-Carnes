@@ -217,7 +217,7 @@ test("tras procesar la sede, la misma tarea en segundo plano despacha las alerta
   const r = await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, deps);
   assert.equal(r.envio, "programado");
   await registro.promesa;
-  assert.deepEqual(registro.orden.slice(0, 2), ["procesar", "despachar"]);
+  assert.deepEqual(registro.orden.slice(0, 3), ["procesar", "terminar", "despachar"], "se cierra la corrida y luego se despacha");
   assert.equal(registro.despachos.length, 1);
   assert.equal(registro.segundoPlano, 0, "el envío ya lleva su propia tarea");
 });

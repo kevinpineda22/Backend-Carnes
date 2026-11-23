@@ -139,6 +139,30 @@ test("escanea ventanas vencidas y despacha el backlog de alertas", async () => {
   assert.equal(por(llamadas, "despacharAlertas").length, 1);
 });
 
+test("cierra la corrida ANTES de despachar y el despacho va acotado por límite y fecha límite", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }] });
+  await ejecutarCron({ origen: "schedule" }, deps);
+  const orden = llamadas.map((l) => l.nombre);
+  assert.ok(orden.indexOf("terminarCorrida") < orden.indexOf("despacharAlertas"), orden.join(","));
+  const [{ args }] = por(llamadas, "despacharAlertas");
+  assert.ok(args[0].limite > 0 && args[0].limite <= 10);
+  assert.ok(args[0].hasta > Date.now(), "la fecha límite sale del tiempo que queda");
+});
+
+test("un despacho que falla (o lanza) no cambia el resultado de la corrida", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], fallos: { despacharAlertas: new Error("smtp") } });
+  const r = await ejecutarCron({ origen: "schedule" }, deps);
+  assert.equal(r.ok, true);
+  assert.equal(por(llamadas, "terminarCorrida")[0].args[1].error, null);
+});
+
+test("sin tiempo restante no se despacha, pero la corrida igual se cierra", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], relojMs: [0, 100_000_000] });
+  await ejecutarCron({ origen: "schedule" }, deps);
+  assert.equal(por(llamadas, "terminarCorrida").length, 1);
+  assert.equal(por(llamadas, "despacharAlertas").length, 0);
+});
+
 test("revisa corridas perdidas antes de procesar (no en dry_run) y su falla no detiene la corrida", async () => {
   const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], fallos: { revisarCorridasPerdidas: new Error("boom") } });
   const r = await ejecutarCron({ origen: "sweep" }, deps);

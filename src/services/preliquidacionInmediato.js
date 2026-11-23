@@ -80,9 +80,9 @@ function dependenciasPorDefecto() {
 const LIMITE_DESPACHO_INMEDIATO = 10;
 
 /** Despacha el backlog de alertas; una falla del correo nunca debe afectar a quien llama. */
-async function despacharSeguro(deps) {
+async function despacharSeguro(deps, { hasta } = {}) {
   try {
-    await deps.despacharAlertas({ ahora: new Date(), limite: LIMITE_DESPACHO_INMEDIATO });
+    await deps.despacharAlertas({ ahora: new Date(), limite: LIMITE_DESPACHO_INMEDIATO, ...(hasta === undefined ? {} : { hasta }) });
   } catch (error) {
     deps.log.error?.(`Despacho de alertas falló: ${error?.message}`);
   }
@@ -229,13 +229,15 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
         fallo = error;
         log.error?.(`Envío inmediato de la sede ${sede.id} falló: ${error?.message}`);
       }
-      // Lo que el envío encoló (error, sin_confirmar, bloqueos) sale en la misma tarea.
-      await despacharSeguro(deps);
       try {
         await deps.terminarCorrida(corrida, { error: fallo, ahora: new Date() });
       } catch (error) {
         log.error?.(`No se pudo cerrar la corrida inmediata ${corrida.id}: ${error?.message}`);
       }
+      // Lo que el envío encoló (error, sin_confirmar, bloqueos) sale en la misma tarea, DESPUÉS de cerrar la
+      // corrida y acotado por el tiempo que queda; sin tiempo, queda en cola para el barrido.
+      const margen = restante();
+      if (margen !== null) await despacharSeguro(deps, { hasta: Date.now() + margen });
     };
     const registrada = await deps.waitUntil(tarea);
     if (registrada === false) return { resultado, envio: "diferido" };
