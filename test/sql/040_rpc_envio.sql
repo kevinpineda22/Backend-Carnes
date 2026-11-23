@@ -191,6 +191,11 @@ BEGIN
   IF r->>'resultado' <> 'no_encontrada' THEN RAISE EXCEPTION 'cerrar inexistente: %', r; END IF;
   r := carnes_preliq_cerrar(pre, ov + 5, 0);
   IF r->>'resultado' <> 'version_cambiada' THEN RAISE EXCEPTION 'orden_version distinta debía ser version_cambiada: %', r; END IF;
+  -- JD S2: una sede en vuelo o pendiente impide cerrar (revalidación bajo el lock).
+  UPDATE carnes_preliquidacion_sedes SET estado = 'enviando' WHERE id = sede;
+  r := carnes_preliq_cerrar(pre, ov, 0);
+  IF r->>'resultado' <> 'no_cerrable' THEN RAISE EXCEPTION 'sede enviando debía ser no_cerrable: %', r; END IF;
+  UPDATE carnes_preliquidacion_sedes SET estado = 'enviada' WHERE id = sede;
   r := carnes_preliq_cerrar(pre, ov, 123.45);
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'cerrar debía ser ok: %', r; END IF;
   IF (SELECT monto_no_asignado FROM carnes_preliquidaciones WHERE id = pre) <> 123.45 THEN
@@ -198,6 +203,11 @@ BEGIN
   END IF;
   r := carnes_preliq_cerrar(pre, ov, 0);
   IF r->>'resultado' <> 'no_abierta' THEN RAISE EXCEPTION 'cerrar dos veces: %', r; END IF;
+
+  -- JD S2: con la cabecera cerrada ya no se reclama ninguna sede.
+  SELECT version INTO ver FROM carnes_preliquidacion_sedes WHERE id = sede;
+  r := carnes_preliq_reclamar_sede(sede, ver, 'calculada', gen_random_uuid(), (SELECT max(id) FROM carnes_preliquidacion_corridas), 'schedule', false);
+  IF r->>'resultado' <> 'no_abierta' THEN RAISE EXCEPTION 'reclamo con cabecera cerrada debía ser no_abierta: %', r; END IF;
 END $$;
 
 -- inicial_pendiente (verificación a mano): con una sede `calculada` de una recepción SIN envío

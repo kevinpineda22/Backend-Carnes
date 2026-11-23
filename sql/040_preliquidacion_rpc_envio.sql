@@ -66,8 +66,11 @@ END $$;
 -- Al reclamar guarda `claim_costeo_orden_version` (M2): la versión de costeo con la que
 -- saldrá el CEA; decide después si el envío puede limpiar `requiere_correccion`.
 --
+-- Cabecera cerrada o anulada (JD S2): con el lock FOR SHARE de la cabecera ya tomado devuelve
+-- `no_abierta` sin escribir, para que un reclamo no corra contra un cierre concurrente.
+--
 -- Resultados: ok | corrida_requerida | origen_invalido | desde_invalido | no_encontrada |
---             no_reclamada | costeo_desactualizado | inicial_pendiente
+--             no_abierta | no_reclamada | costeo_desactualizado | inicial_pendiente
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carnes_preliq_reclamar_sede(
   p_sede_id         BIGINT,
@@ -104,6 +107,10 @@ BEGIN
   SELECT * INTO v_sede FROM carnes_preliquidacion_sedes WHERE id = p_sede_id FOR UPDATE;
   IF NOT FOUND THEN
     RETURN jsonb_build_object('resultado', 'no_encontrada');
+  END IF;
+
+  IF v_header.estado <> 'abierta' THEN
+    RETURN jsonb_build_object('resultado', 'no_abierta');
   END IF;
 
   IF v_sede.estado <> p_desde OR v_sede.version <> p_sede_version THEN
@@ -281,7 +288,13 @@ $fn$ LANGUAGE plpgsql;
 -- centavos; aquí solo se guarda. `p_orden_version` cubre la carrera con vincular/novillos:
 -- si el conjunto de sedes cambió desde que JS decidió cerrar, devuelve `version_cambiada`.
 --
--- Resultados: ok | no_encontrada | no_abierta | no_liquidada | version_cambiada | monto_invalido
+-- Revalidación bajo el lock (JD S2): con la cabecera ya bloqueada FOR UPDATE, si alguna sede
+-- sigue pendiente o en vuelo (`enviando` incluida) devuelve `no_cerrable` sin escribir. Los
+-- reclamos toman FOR SHARE sobre la cabecera, así que no pueden colarse entre la decisión de
+-- JS y este cierre.
+--
+-- Resultados: ok | no_encontrada | no_abierta | no_liquidada | version_cambiada | monto_invalido |
+--             no_cerrable
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carnes_preliq_cerrar(
   p_id                  BIGINT,
@@ -308,6 +321,13 @@ BEGIN
   END IF;
   IF v_header.orden_version <> p_orden_version THEN
     RETURN jsonb_build_object('resultado', 'version_cambiada');
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM carnes_preliquidacion_sedes s
+     WHERE s.preliquidacion_id = p_id
+       AND s.estado IN ('vinculada', 'calculada', 'lista_para_enviar', 'error', 'simulada', 'anulada', 'enviando', 'sin_confirmar')
+  ) THEN
+    RETURN jsonb_build_object('resultado', 'no_cerrable');
   END IF;
 
   UPDATE carnes_preliquidaciones

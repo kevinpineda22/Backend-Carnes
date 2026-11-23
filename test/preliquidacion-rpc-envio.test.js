@@ -32,7 +32,7 @@ const FUNCIONES = {
     parametros: ["p_sede_id", "p_sede_version", "p_desde", "p_token", "p_corrida_id", "p_origen", "p_reset_intentos"],
     codigos: [
       "ok", "corrida_requerida", "origen_invalido", "desde_invalido", "no_encontrada", "no_reclamada",
-      "costeo_desactualizado", "inicial_pendiente",
+      "costeo_desactualizado", "inicial_pendiente", "no_abierta",
     ],
   },
   carnes_preliq_cerrar_envio: {
@@ -45,7 +45,7 @@ const FUNCIONES = {
   },
   carnes_preliq_cerrar: {
     parametros: ["p_id", "p_orden_version", "p_monto_no_asignado"],
-    codigos: ["ok", "no_encontrada", "no_abierta", "no_liquidada", "version_cambiada", "monto_invalido"],
+    codigos: ["ok", "no_encontrada", "no_abierta", "no_liquidada", "version_cambiada", "monto_invalido", "no_cerrable"],
   },
   carnes_preliq_transicionar_sede: {
     parametros: ["p_sede_id", "p_sede_version", "p_desde", "p_hacia", "p_campos"],
@@ -90,6 +90,24 @@ test("reclamar_sede: FOR SHARE en la cabecera, FOR UPDATE en la sede y CAS por e
   assert.match(f, /FROM carnes_preliquidacion_sedes WHERE id = p_sede_id FOR UPDATE/);
   assert.ok(f.indexOf("FOR SHARE") < f.indexOf("FOR UPDATE"), "orden de bloqueo: cabecera -> sede");
   assert.match(f, /v_sede\.estado <> p_desde OR v_sede\.version <> p_sede_version/);
+});
+
+test("reclamar_sede (JD S2): con la cabecera no abierta devuelve no_abierta, bajo el lock y antes de reclamar", () => {
+  const f = cuerpoFuncion("carnes_preliq_reclamar_sede");
+  assert.match(f, /IF v_header\.estado <> 'abierta' THEN\s*RETURN jsonb_build_object\('resultado', 'no_abierta'\)/);
+  assert.ok(f.indexOf("FOR SHARE") < f.indexOf("'no_abierta'"), "se evalúa tras tomar el lock de la cabecera");
+  assert.ok(f.indexOf("'no_abierta'") < f.indexOf("SET estado = 'enviando'"), "antes de escribir el reclamo");
+});
+
+test("cerrar (JD S2): bajo el lock revalida que ninguna sede esté pendiente o en vuelo y devuelve no_cerrable", () => {
+  const f = cuerpoFuncion("carnes_preliq_cerrar");
+  assert.match(f, /FROM carnes_preliquidacion_sedes/);
+  for (const e of ["vinculada", "calculada", "lista_para_enviar", "error", "simulada", "anulada", "enviando", "sin_confirmar"]) {
+    assert.ok(f.includes(`'${e}'`), `no_cerrable debe considerar ${e}`);
+  }
+  assert.match(f, /RETURN jsonb_build_object\('resultado', 'no_cerrable'\)/);
+  assert.ok(f.indexOf("FOR UPDATE") < f.indexOf("'no_cerrable'"), "tras el lock de la cabecera");
+  assert.ok(f.indexOf("'no_cerrable'") < f.indexOf("estado = 'cerrada'"), "antes de cerrar");
 });
 
 test("reclamar_sede: guarda de costeo obsoleto con las tres condiciones (T2)", () => {
