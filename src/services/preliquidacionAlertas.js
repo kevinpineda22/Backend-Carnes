@@ -1,6 +1,6 @@
 import { motivoApagado } from "../config/preliquidacion.js";
 import { sandboxOn } from "../config/sandbox.js";
-import { destinatariosPreliquidacion } from "./email.service.js";
+import { destinatariosPreliquidacion, emailConfigurado } from "./email.service.js";
 import { enviarAlerta } from "./preliquidacionAlertasEnvio.js";
 
 /**
@@ -76,6 +76,16 @@ export const MAX_INTENTOS_ALERTA = 5;
 
 /** Un reclamo más viejo que esto se considera abandonado (el proceso que lo tomó murió). */
 export const VENCIMIENTO_RECLAMO_MS = 5 * 60 * 1000;
+
+/**
+ * Espera mínima desde el último intento (`reclamada_at`) antes de volver a reclamar una fila, según los
+ * intentos ya gastados: 5, 10, 20 y 40 min. Evita agotar el tope en minutos cuando el SMTP está caído; con
+ * un reclamo en vuelo (sin resultado) la misma espera hace de vencimiento.
+ */
+export function esperaReintentoMs(intentos) {
+  const n = entero(intentos);
+  return n <= 0 ? 0 : VENCIMIENTO_RECLAMO_MS * 2 ** (n - 1);
+}
 
 /** Filas que se despachan por invocación si el contexto no pide otro límite. */
 const LIMITE_POR_DEFECTO = 25;
@@ -215,6 +225,8 @@ export async function despacharAlertas(contexto, opciones = {}) {
     log = console,
     destinatarios = () => destinatariosPreliquidacion(env),
     sandbox = () => sandboxOn(),
+    // Con transporte o notificador inyectado no se exige el SMTP real; por defecto sí.
+    emailListo = () => (typeof enviar === "function" || typeof notificar === "function" ? true : emailConfigurado()),
   } = opciones ?? {};
   try {
     const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO } = contexto && typeof contexto === "object" ? contexto : {};
@@ -223,6 +235,12 @@ export async function despacharAlertas(contexto, opciones = {}) {
     if (!sandbox() && destinatarios().length === 0) {
       seguro(() => log.warn(`[preliquidacion-alertas] ${VARIABLE_DESTINATARIOS} no está definida: no se despachan alertas`));
       return { ok: true, enviadas: 0, sin_destinatarios: true };
+    }
+
+    // Sin SMTP configurado cada intento fallaría y agotaría el tope: no se reclama nada y se avisa una vez por corrida.
+    if (!sandbox() && !emailListo()) {
+      seguro(() => log.warn("[preliquidacion-alertas] EMAIL_USER/EMAIL_PASS no están configurados: no se despachan alertas"));
+      return { ok: true, enviadas: 0, sin_correo: true };
     }
 
     const cliente = db ?? (await baseDeDatos());
@@ -237,9 +255,9 @@ export async function despacharAlertas(contexto, opciones = {}) {
     const { data, error } = await lectura.limit(LECTURA_MAXIMA);
     if (error) throw new Error(error.message);
 
-    const vencido = ahora.getTime() - VENCIMIENTO_RECLAMO_MS;
+    // `reclamada_at` es la hora del último intento: la fila vuelve a ser elegible pasada la espera de su backoff.
     const candidatas = (data || [])
-      .filter((f) => f.reclamada_at == null || new Date(f.reclamada_at).getTime() < vencido)
+      .filter((f) => f.reclamada_at == null || new Date(f.reclamada_at).getTime() <= ahora.getTime() - esperaReintentoMs(f.intentos_envio))
       .slice(0, Math.max(0, entero(limite)));
 
     let enviadas = 0;
@@ -285,8 +303,8 @@ export async function despacharAlertas(contexto, opciones = {}) {
             ),
           );
         }
-        // Se libera el reclamo para que la siguiente corrida la reintente sin esperar el vencimiento.
-        await cliente.from(TABLA).update({ reclamada_at: null }).eq("id", reclamada.id).eq("enviado_ok", false);
+        // El reclamo NO se libera: `reclamada_at` queda como hora del último intento y marca el backoff. Así un
+        // proceso tardío no puede borrar el reclamo de otro (compare-and-set sobre el valor que puso cada quien).
       } catch (e) {
         seguro(() => log.error(`[preliquidacion-alertas] no se pudo actualizar la alerta ${reclamada.id}: ${e?.message}`));
       }

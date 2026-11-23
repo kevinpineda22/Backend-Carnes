@@ -11,6 +11,7 @@ import {
   EVENTOS_ALERTA,
   REGLA_OCURRENCIA,
   MAX_INTENTOS_ALERTA,
+  esperaReintentoMs,
 } from "../src/services/preliquidacionAlertas.js";
 
 const ENV_ON = { CARNES_PRELIQUIDACION: "on", CARNES_MAIL_PRELIQUIDACION: "ops@example.test" };
@@ -285,18 +286,48 @@ test("G-S4: una ocurrencia nueva después de resuelta vuelve a alertar", async (
   assert.equal(almacen.tabla.length, 2);
 });
 
-test("un envío fallido deja la fila sin marcar y se reintenta en la siguiente corrida", async () => {
+const MIN = 60 * 1000;
+const tras = (ms) => ({ ahora: new Date(AHORA.getTime() + ms) });
+
+test("un envío fallido deja la fila sin marcar y se reintenta solo pasada la espera (backoff)", async () => {
   const { almacen, t, despachar } = await conCola([ALERTA], { respuestas: [{ success: false, error: "smtp caído" }, { success: true }] });
   const r1 = await despachar();
   assert.equal(r1.enviadas, 0);
   assert.equal(r1.fallidas, 1);
   assert.equal(almacen.tabla[0].enviado_ok, false);
-  assert.equal(almacen.tabla[0].reclamada_at, null, "el reclamo se libera para reintentar de inmediato");
-  const r2 = await despachar();
+  assert.equal(almacen.tabla[0].reclamada_at, AHORA.toISOString(), "reclamada_at queda como hora del último intento");
+  assert.equal((await despachar()).enviadas, 0, "sin esperar no se reintenta");
+  assert.equal((await despachar(tras(4 * MIN))).enviadas, 0, "antes de la espera no se reintenta");
+  assert.equal(t.enviados.length, 1);
+  const r2 = await despachar(tras(6 * MIN));
   assert.equal(r2.enviadas, 1);
   assert.equal(almacen.tabla[0].enviado_ok, true);
   assert.equal(almacen.tabla[0].intentos_envio, 2);
   assert.equal(t.enviados.length, 2);
+});
+
+test("la espera entre reintentos crece con los intentos", () => {
+  assert.equal(esperaReintentoMs(0), 0);
+  assert.ok(esperaReintentoMs(1) > 0);
+  for (let n = 1; n < MAX_INTENTOS_ALERTA; n += 1) assert.ok(esperaReintentoMs(n + 1) > esperaReintentoMs(n), `intento ${n}`);
+});
+
+test("un fallo tardío no libera el reclamo de otro proceso (el fallo no toca reclamada_at)", async () => {
+  const { almacen, despachar } = await conCola([ALERTA], { respuestas: [{ success: false, error: "x" }] });
+  await despachar();
+  const llamadasUpdate = almacen.llamadas.filter((c) => c.modo === "update" && c.valores && "reclamada_at" in c.valores && c.valores.reclamada_at === null);
+  assert.equal(llamadasUpdate.length, 0);
+});
+
+test("sin correo configurado no se reclama nada, no se gastan intentos y se avisa una sola vez", async () => {
+  const { almacen, t, despachar } = await conCola([ALERTA, { ...ALERTA, ocurrencia: 3 }], { emailListo: () => false });
+  const log = logger();
+  const r = await despachar({ ahora: AHORA }, { log });
+  assert.equal(r.ok, true);
+  assert.equal(r.sin_correo, true);
+  assert.equal(t.enviados.length, 0);
+  assert.ok(almacen.tabla.every((f) => f.intentos_envio === 0 && f.reclamada_at === null));
+  assert.equal(log.llamadas.warn.filter((m) => /EMAIL_USER/.test(m)).length, 1);
 });
 
 test("un transporte que lanza cuenta como fallo y no escapa", async () => {
@@ -310,7 +341,7 @@ test("un transporte que lanza cuenta como fallo y no escapa", async () => {
 test("tope de intentos: tras MAX_INTENTOS_ALERTA fallos la fila ya no se reclama", async () => {
   assert.equal(MAX_INTENTOS_ALERTA, 5);
   const { almacen, t, despachar } = await conCola([ALERTA], { respuestas: [{ success: false, error: "x" }] });
-  for (let i = 0; i < 8; i += 1) await despachar();
+  for (let i = 0; i < 8; i += 1) await despachar(tras(i * 24 * 60 * MIN));
   assert.equal(t.enviados.length, 5);
   assert.equal(almacen.tabla[0].intentos_envio, 5);
   assert.equal(almacen.tabla[0].enviado_ok, false);
@@ -319,7 +350,7 @@ test("tope de intentos: tras MAX_INTENTOS_ALERTA fallos la fila ya no se reclama
 test("al agotar los intentos queda un error en el log", async () => {
   const { despachar } = await conCola([ALERTA], { respuestas: [{ success: false, error: "x" }] });
   const log = logger();
-  for (let i = 0; i < 5; i += 1) await despachar({ ahora: AHORA }, { log });
+  for (let i = 0; i < 5; i += 1) await despachar(tras(i * 24 * 60 * MIN), { log });
   assert.ok(log.llamadas.error.some((m) => /agot/i.test(m)));
 });
 
