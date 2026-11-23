@@ -860,7 +860,8 @@ export async function procesarSede(sede, contexto = {}) {
     p_reset_intentos: decision.resetIntentos,
   });
 
-  if (reclamo?.resultado === "no_reclamada") return { resultado: "no_reclamada" };
+  // `no_abierta`: la cabecera se cerró entre la lectura y el reclamo; no hay nada que enviar.
+  if (reclamo?.resultado === "no_reclamada" || reclamo?.resultado === "no_abierta") return { resultado: "no_reclamada" };
   if (reclamo?.resultado === "costeo_desactualizado") return { resultado: "costeo_desactualizado" };
   if (reclamo?.resultado === "inicial_pendiente") {
     // La RPC marca `motivo_pendiente` y sube la versión solo la primera vez: la alerta también.

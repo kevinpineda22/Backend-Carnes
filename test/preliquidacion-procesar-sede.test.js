@@ -89,6 +89,13 @@ test("D-S5: reclamo perdido (no_reclamada) es no-op: no envía ni cierra", async
   assert.equal(rpcDe("carnes_preliq_cerrar_envio").length, 0);
 });
 
+test("JD S2: reclamo con la cabecera ya cerrada (no_abierta) es no-op, no un error", async () => {
+  respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "no_abierta" }];
+  const r = await procesar(sede());
+  assert.equal(r.resultado, "no_reclamada");
+  assert.equal(enviados.length, 0);
+});
+
 test("reclama con CAS de estado+versión, token UUID, corrida y origen", async () => {
   respuestasRpc.carnes_preliq_reclamar_sede = [reclamoOk()];
   await procesar(sede());
