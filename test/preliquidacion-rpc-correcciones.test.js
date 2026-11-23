@@ -74,6 +74,23 @@ test("041 exige que 039 ya esté aplicada", () => {
   assert.match(sql, /proname = 'carnes_preliq_transicionar_sede'/);
 });
 
+test("041 exige la 040 vigente: carnes_preliq_cerrar_envio con el CAS de la corrección (M2)", () => {
+  const guarda = sql.slice(sql.indexOf("DO $$"), sql.indexOf("END $$"));
+  assert.match(guarda, /proname = 'carnes_preliq_cerrar_envio'/);
+  assert.match(guarda, /prosrc LIKE '%correccion_orden_version_esperada%'/);
+  assert.match(guarda, /RAISE EXCEPTION/);
+  assert.match(guarda, /sql\/040_preliquidacion_rpc_envio\.sql/);
+  const crudo = readFileSync(RUTA, "utf8");
+  assert.match(crudo, /Vuelva a correr sql\/040/);
+  assert.ok(crudo.indexOf("END $$") < crudo.indexOf("CREATE OR REPLACE FUNCTION"), "la guarda va antes de redefinir nada");
+});
+
+test("la cabecera de 040 avisa que 041 exige su versión con el CAS de la corrección", () => {
+  const cabecera040 = readFileSync(join(RAIZ, "sql", "040_preliquidacion_rpc_envio.sql"), "utf8").split("BEGIN;")[0];
+  assert.match(cabecera040, /041 exige/);
+  assert.match(cabecera040, /correccion_orden_version_esperada/);
+});
+
 for (const [nombre, def] of Object.entries(FUNCIONES)) {
   test(`${nombre}: existe con sus parámetros, devuelve JSONB y declara sus códigos`, () => {
     const f = cuerpoFuncion(nombre);

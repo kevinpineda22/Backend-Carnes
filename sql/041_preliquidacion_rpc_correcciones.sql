@@ -27,6 +27,9 @@
 --
 -- SECURITY INVOKER (por defecto). Idempotente: CREATE OR REPLACE. Todo o nada.
 --
+-- Precondiciones (guarda al inicio): 039 aplicada y la 040 vigente, con el CAS de la corrección en
+-- carnes_preliq_cerrar_envio.
+--
 -- Orden de despliegue: 038 -> 039 -> 040 -> 041 -> backend con CARNES_PRELIQUIDACION apagado.
 -- Reversión: sql/041_rollback.sql (antes de sql/040_rollback.sql y sql/038_039_rollback.sql).
 -- =============================================================================
@@ -41,6 +44,17 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'Falta sql/039_preliquidacion_rpc.sql (carnes_preliq_transicionar_sede). Correla antes de esta migración.';
+  END IF;
+
+  -- La 040 desplegada debe ser la que lleva el CAS de la corrección (M2): una 040 anterior
+  -- dejaría que un envío en vuelo pisara el aviso levantado por un recálculo, sin error alguno.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_proc
+     WHERE proname = 'carnes_preliq_cerrar_envio'
+       AND prosrc LIKE '%correccion_orden_version_esperada%'
+  ) THEN
+    RAISE EXCEPTION
+      'carnes_preliq_cerrar_envio no tiene el CAS de la corrección (correccion_orden_version_esperada): la 040 desplegada es anterior. Vuelva a correr sql/040_preliquidacion_rpc_envio.sql antes de esta migración.';
   END IF;
 END $$;
 

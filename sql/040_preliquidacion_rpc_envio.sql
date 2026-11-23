@@ -28,6 +28,9 @@
 --
 -- SECURITY INVOKER (por defecto). Idempotente: CREATE OR REPLACE. Todo o nada.
 --
+-- Nota: sql/041 exige esta versión de 040 (carnes_preliq_cerrar_envio con el CAS
+-- `correccion_orden_version_esperada`) y aborta si la base tiene una 040 anterior. Si ya se
+-- corrió una 040 sin ese CAS, vuelva a correr este archivo completo (es idempotente) antes de 041.
 -- Orden de despliegue: 038 -> 039 -> 040 -> backend con CARNES_PRELIQUIDACION apagado.
 -- Reversión: sql/040_rollback.sql (antes de sql/038_039_rollback.sql).
 -- =============================================================================
