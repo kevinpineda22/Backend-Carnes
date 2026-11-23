@@ -23,15 +23,32 @@ import { encolarAlerta } from "./preliquidacionAlertas.js";
 const ESPECIES = ["res", "cerdo"];
 const ALERTAS_SIN_VINCULO = ["sin_preliquidacion", "fuera_ventana", "oficial_legacy"];
 
+let avisoWaitUntilEmitido = false;
+
+/** Solo para pruebas: permite volver a emitir el aviso. */
+export function reiniciarAvisoWaitUntil() {
+  avisoWaitUntilEmitido = false;
+}
+
 /**
  * Registra la tarea con `waitUntil` de `@vercel/functions`. Devuelve `false` (y NO inicia la
- * tarea) si la dependencia no está instalada: en ese caso el envío queda diferido.
+ * tarea) si la dependencia no está instalada: en ese caso el envío queda diferido y se avisa
+ * una sola vez con `log.warn`.
  */
-async function waitUntilPorDefecto(crearTarea) {
+export async function waitUntilPorDefecto(
+  crearTarea,
+  { importar = () => import("@vercel/functions"), log = console } = {},
+) {
   let waitUntil;
   try {
-    ({ waitUntil } = await import("@vercel/functions"));
-  } catch {
+    ({ waitUntil } = await importar());
+  } catch (error) {
+    if (!avisoWaitUntilEmitido) {
+      avisoWaitUntilEmitido = true;
+      log.warn?.(
+        `@vercel/functions no se pudo cargar (${error?.message}): el envío inmediato queda diferido al cron.`,
+      );
+    }
     return false;
   }
   if (typeof waitUntil !== "function") return false;

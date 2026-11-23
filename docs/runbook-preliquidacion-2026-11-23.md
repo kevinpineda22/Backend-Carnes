@@ -306,7 +306,7 @@ Cualquier diferencia en conteos o en `ultimo_cambio` es un NO-GO.
 
 ## 7. Despliegue de código
 
-Vercel despliega desde `main` (`vercel.json` usa `src/server.js` con `@vercel/node`). En el modelo `feature-branch-chain` solo el tracker `feat/preliquidacion-taller` se fusiona a `main`.
+Vercel despliega desde `main` (`vercel.json` usa `src/server.js` con `@vercel/node` y `config.maxDuration: 300` en el bloque legacy `builds`; verificar en el primer despliegue que el panel de Vercel muestre 300 s para la función, porque el límite de 285 s del código asume ese tope). Tras este cambio falta correr `npm install` para actualizar `package-lock.json` (`@vercel/functions`). En el modelo `feature-branch-chain` solo el tracker `feat/preliquidacion-taller` se fusiona a `main`.
 
 ### 7.0 Orden obligatorio
 

@@ -8,7 +8,7 @@ process.env.SUPABASE_URL = "http://127.0.0.1:1";
 process.env.SUPABASE_SERVICE_KEY = "clave-falsa-de-test";
 process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 
-const { alFinalizar } = await import("../src/services/preliquidacionInmediato.js");
+const { alFinalizar, waitUntilPorDefecto, reiniciarAvisoWaitUntil } = await import("../src/services/preliquidacionInmediato.js");
 
 const silencio = { info() {}, warn() {}, error() {} };
 const recepcion = (extra = {}) => ({ id: 101, especie: "res", fecha_ingreso: "2026-11-23", recibido_por: "ana@x.co", ...extra });
@@ -232,4 +232,33 @@ test("finalizar captura inicioPeticion al empezar y llama a alFinalizar antes de
 test("@vercel/functions está declarado como dependencia", () => {
   const paquete = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
   assert.ok(paquete.dependencies["@vercel/functions"]);
+});
+
+// ─── JD S2: la falta de @vercel/functions no se traga en silencio ──────────
+
+test("si @vercel/functions no carga: devuelve false, no inicia la tarea y avisa UNA sola vez con console.warn", async () => {
+  reiniciarAvisoWaitUntil();
+  const avisos = [];
+  const log = { warn: (m) => avisos.push(m) };
+  let iniciada = 0;
+  const importar = async () => {
+    throw new Error("Cannot find package '@vercel/functions'");
+  };
+  assert.equal(await waitUntilPorDefecto(() => { iniciada += 1; }, { importar, log }), false);
+  assert.equal(await waitUntilPorDefecto(() => { iniciada += 1; }, { importar, log }), false);
+  assert.equal(iniciada, 0);
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /@vercel\/functions/);
+});
+
+test("waitUntilPorDefecto registra la tarea cuando la dependencia carga", async () => {
+  const tareas = [];
+  const importar = async () => ({ waitUntil: (t) => tareas.push(t) });
+  assert.equal(await waitUntilPorDefecto(() => "tarea", { importar }), true);
+  assert.deepEqual(tareas, ["tarea"]);
+});
+
+test("vercel.json fija maxDuration 300 s para la función (legacy builds)", () => {
+  const cfg = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
+  assert.equal(cfg.builds[0].config?.maxDuration, 300);
 });
