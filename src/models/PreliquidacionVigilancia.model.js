@@ -112,21 +112,23 @@ export async function revisarCorridasPerdidas({
   const abiertas = base.filter((p) => p.estado === "abierta");
   // Sin corridas, `corridaPerdida` solo es verdadera para las candidatas (debe liquidar y pasó el margen).
   const candidatas = abiertas.filter((preliq) => corridaPerdida({ preliq, corridas: [], ahora }));
-  if (!candidatas.length) return { perdidas: [] };
+  if (!candidatas.length) return { perdidas: [], nuevas: 0 };
 
   const corridas = await leerCorridas({ desde: new Date(ahora.getTime() - MARGEN_CORRIDA_MS) });
   const perdidas = [];
+  let nuevas = 0;
   for (const preliq of candidatas) {
     if (!corridaPerdida({ preliq, corridas, ahora })) continue;
     perdidas.push(preliq.id);
     try {
-      await encolar(
+      const r = await encolar(
         { evento: "corrida_perdida", preliquidacionId: preliq.id, sedeId: 0, ocurrencia: 0, detalle: { especie: preliq.especie } },
         { log },
       );
+      if (r?.encolada === true) nuevas += 1;
     } catch (error) {
       log.error?.(`Alerta de corrida perdida de la preliquidación ${preliq.id} falló: ${error?.message}`);
     }
   }
-  return { perdidas };
+  return { perdidas, nuevas };
 }

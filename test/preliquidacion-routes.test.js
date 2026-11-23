@@ -61,13 +61,30 @@ mock.module(url("models/PreliquidacionSaldos.model.js"), {
   },
 });
 
+let despachos = [];
+mock.module(url("services/preliquidacionAlertas.js"), {
+  namedExports: {
+    despacharAlertas: async (contexto) => {
+      despachos.push(contexto);
+      return { ok: true, enviadas: 0 };
+    },
+    encolarAlerta: async () => ({ ok: true }),
+    EVENTOS_ALERTA: [],
+    REGLA_OCURRENCIA: {},
+    MAX_INTENTOS_ALERTA: 5,
+    VENCIMIENTO_RECLAMO_MS: 300000,
+    esperaReintentoMs: () => 0,
+  },
+});
+
 let perdidasFalsas = [];
+let nuevasFalsas = 0;
 mock.module(url("models/PreliquidacionVigilancia.model.js"), {
   namedExports: {
     revisarCorridasPerdidas: async (o) => {
       llamadas.push({ nombre: "revisarCorridasPerdidas", args: [o] });
       if (respuestas.revisarCorridasPerdidas instanceof Error) throw respuestas.revisarCorridasPerdidas;
-      return { perdidas: perdidasFalsas };
+      return { perdidas: perdidasFalsas, nuevas: nuevasFalsas };
     },
     escanearVentanas: async () => ({ vencidas: [], avisadas: [] }),
   },
@@ -116,6 +133,8 @@ const silenciar = console.error;
 beforeEach(() => {
   llamadas = [];
   respuestas = {};
+  despachos = [];
+  nuevasFalsas = 0;
   guardPasa = true;
   delete process.env.CARNES_PRELIQUIDACION;
   console.error = () => {};
@@ -222,6 +241,42 @@ test("R7: si la revisión falla la lectura responde igual, con corrida_perdida f
   const r = await llamar("GET", "/3");
   assert.equal(r.estado, 200);
   assert.equal(r.json.data.corrida_perdida, false);
+});
+
+test("B6: las lecturas solo despachan si la revisión encoló una alerta NUEVA", async () => {
+  encendida();
+  perdidasFalsas = [2];
+  respuestas.listar = [{ id: 2, estado: "abierta" }];
+  respuestas.obtener = { id: 2, estado: "abierta" };
+  nuevasFalsas = 0;
+  await llamar("GET", "/");
+  await llamar("GET", "/2");
+  assert.equal(despachos.length, 0, "perdida ya conocida: la lectura no tiene efectos de lado");
+  nuevasFalsas = 1;
+  await llamar("GET", "/");
+  assert.equal(despachos.length, 1);
+  await llamar("GET", "/2");
+  assert.equal(despachos.length, 2);
+  perdidasFalsas = [];
+});
+
+test("B5: si la acción lanza tras encolar, igual se despacha y la respuesta de error no cambia", async () => {
+  encendida();
+  const casos = [
+    ["POST", "/5/procesar", "procesarAdmin"],
+    ["POST", "/sedes/3/procesar", "procesarSedeAdmin"],
+    ["POST", "/5/recalcular", "recalcular"],
+    ["POST", "/5/cerrar", "cerrar"],
+  ];
+  for (const [metodo, ruta, nombre] of casos) {
+    despachos = [];
+    respuestas[nombre] = createError(409, "no se pudo", "conflicto_test");
+    const r = await llamar(metodo, ruta, {});
+    assert.equal(r.estado, 409, ruta);
+    assert.equal(r.json.ok, false, ruta);
+    assert.equal(despachos.length, 1, `${ruta} debe despachar tras el fallo`);
+    assert.ok(despachos[0].limite <= 3 && Number.isFinite(despachos[0].hasta), ruta);
+  }
 });
 
 // ─── Interruptor ───────────────────────────────────────────────────────────

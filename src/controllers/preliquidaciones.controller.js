@@ -97,13 +97,13 @@ export function exigirEscrituraHabilitada(req, _res, next) {
  * apagado no revisa nada; una falla de la revisión nunca rompe la lectura.
  */
 async function idsConCorridaPerdida(preliquidaciones) {
-  if (motivoApagado()) return new Set();
+  if (motivoApagado()) return { ids: new Set(), nuevas: 0 };
   try {
-    const { perdidas } = await revisarCorridasPerdidas({ preliquidaciones });
-    return new Set(perdidas.map(String));
+    const { perdidas, nuevas = 0 } = await revisarCorridasPerdidas({ preliquidaciones });
+    return { ids: new Set(perdidas.map(String)), nuevas };
   } catch (error) {
     console.error("Revisión de corridas perdidas falló:", error?.message);
-    return new Set();
+    return { ids: new Set(), nuevas: 0 };
   }
 }
 
@@ -115,8 +115,9 @@ export async function listar(req, res, next) {
     if (especie) filtros.especie = especie;
     if (estado) filtros.estado = estado;
     const data = await PreliquidacionModel.listar(filtros);
-    const perdidas = await idsConCorridaPerdida(data);
-    if (perdidas.size > 0) await despacharTrasAccion();
+    const { ids: perdidas, nuevas } = await idsConCorridaPerdida(data);
+    // Una lectura solo despacha si esta misma revisión encoló una alerta nueva (sin efectos de lado repetidos).
+    if (nuevas > 0) await despacharTrasAccion();
     res.json({ ok: true, data: data.map((p) => ({ ...p, corrida_perdida: perdidas.has(String(p.id)) })) });
   } catch (error) {
     next(error);
@@ -138,8 +139,8 @@ export async function crear(req, res, next) {
 export async function obtener(req, res, next) {
   try {
     const data = await PreliquidacionModel.obtener(req.idPreliquidacion);
-    const perdidas = await idsConCorridaPerdida([data]);
-    if (perdidas.size > 0) await despacharTrasAccion();
+    const { ids: perdidas, nuevas } = await idsConCorridaPerdida([data]);
+    if (nuevas > 0) await despacharTrasAccion();
     res.json({ ok: true, data: { ...data, corrida_perdida: perdidas.has(String(data.id)) } });
   } catch (error) {
     next(error);
@@ -153,6 +154,8 @@ export async function actualizar(req, res, next) {
     await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }
@@ -191,10 +194,15 @@ export async function vincular(req, res, next) {
         resultados.push({ recepcion_id: recepcionId, ok: false, codigo: error.codigo ?? null, error: error.message });
       }
     }
-    if (primerError && resultados.every((r) => !r.ok)) return next(primerError);
+    if (primerError && resultados.every((r) => !r.ok)) {
+      await despacharTrasAccion();
+      return next(primerError);
+    }
     await despacharTrasAccion();
     res.json({ ok: true, data: resultados });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }
@@ -263,6 +271,8 @@ export async function procesar(req, res, next) {
     await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }
@@ -274,6 +284,8 @@ export async function procesarSede(req, res, next) {
     await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }
@@ -286,6 +298,8 @@ export async function recalcular(req, res, next) {
     await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }
@@ -348,6 +362,8 @@ export async function cerrar(req, res, next) {
     await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
+    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
+    await despacharTrasAccion();
     next(error);
   }
 }

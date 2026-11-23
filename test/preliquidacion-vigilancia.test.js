@@ -190,6 +190,17 @@ test("con preliquidaciones dadas (GET) no las lee de la base y encola la alerta 
   assert.equal(alertas[0].preliquidacionId, 5);
 });
 
+test("`nuevas` cuenta solo las alertas realmente encoladas en esta revisión (no las que ya existían)", async () => {
+  const comun = { ahora: TARDE, leerAbiertas: async () => [sinLiquidar()], leerCorridas: async () => [], log: silencio };
+  const nueva = await revisarCorridasPerdidas({ ...comun, encolar: async () => ({ ok: true, encolada: true }) });
+  assert.equal(nueva.nuevas, 1);
+  const repetida = await revisarCorridasPerdidas({ ...comun, encolar: async () => ({ ok: true, encolada: false }) });
+  assert.deepEqual(repetida.perdidas, [1]);
+  assert.equal(repetida.nuevas, 0);
+  const fallida = await revisarCorridasPerdidas({ ...comun, encolar: async () => { throw new Error("x"); } });
+  assert.equal(fallida.nuevas, 0);
+});
+
 test("una falla al alertar no impide devolver las perdidas ni lanza", async () => {
   const r = await revisarCorridasPerdidas({
     ahora: TARDE,
