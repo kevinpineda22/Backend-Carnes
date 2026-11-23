@@ -87,9 +87,18 @@ export function esperaReintentoMs(intentos) {
   return n <= 0 ? 0 : VENCIMIENTO_RECLAMO_MS * 2 ** (n - 1);
 }
 
+/**
+ * Peor caso de UN envío: los tres timeouts del transporte SMTP (conexión, saludo y socket: 10 s cada uno, ver
+ * `email.service.js`). Antes de reclamar una fila se reserva este tiempo dentro del presupuesto (`hasta`); si no
+ * cabe, no se reclama (la toma el cron). Así un reclamo nunca queda abierto con un envío que no puede terminar.
+ */
+export const TIMEOUT_ENVIO_MS = 30 * 1000;
+/** Holgura tras el envío para marcar el resultado en la base. */
+const MARGEN_MARCA_MS = 1000;
+
 /** Filas que se despachan por invocación si el contexto no pide otro límite. */
 const LIMITE_POR_DEFECTO = 25;
-/** Filas que se leen para elegir las despachables (el filtro del reclamo vencido se hace en JS). */
+/** Filas que se leen para elegir las despachables (la espera mínima se filtra en SQL; el backoff exacto, en JS). */
 const LECTURA_MAXIMA = 200;
 
 const TABLA = "carnes_preliquidacion_alertas";
@@ -184,6 +193,7 @@ export async function encolarAlerta(alerta, { log = console, db, env = process.e
 
 /** Reclamo atómico (CAS): solo gana quien ve la fila exactamente como la leyó. */
 async function reclamar(cliente, fila, ahora) {
+  // `ahora` es una lectura FRESCA del reloj (no la hora de inicio de la corrida): marca el backoff y el vuelo.
   let consulta = cliente
     .from(TABLA)
     .update({ reclamada_at: ahora.toISOString(), intentos_envio: fila.intentos_envio + 1 })
@@ -209,8 +219,10 @@ function contextoDeEnvio(fila) {
 /**
  * Despacha el backlog de alertas sin enviar.
  *
- * @param {{ahora?: Date, preliquidacionId?: number, limite?: number, hasta?: number}} [contexto]
- *   `hasta` (ms epoch) es la fecha límite: pasada, deja de reclamar filas nuevas.
+ * @param {{preliquidacionId?: number, limite?: number, hasta?: number}} [contexto]
+ *   `hasta` (ms epoch) es la fecha límite: no se reclama una fila si su peor caso de envío
+ *   (`TIMEOUT_ENVIO_MS`) ya no cabe antes de `hasta`. La hora de los reclamos y del backoff sale SIEMPRE de
+ *   `reloj()` (lectura fresca), nunca de la hora en que el llamador empezó su corrida.
  * @param {{enviar?: (evento: string, contexto: object) => Promise<{success: boolean, sandbox?: boolean, error?: string}>,
  *   notificar?: Function, db?: object, env?: object, log?: object, destinatarios?: () => string[], sandbox?: () => boolean}} [opciones]
  *   `enviar` es el transporte; por defecto completa el contexto desde la base y manda el correo de
@@ -227,12 +239,12 @@ export async function despacharAlertas(contexto, opciones = {}) {
     destinatarios = () => destinatariosPreliquidacion(env),
     sandbox = () => sandboxOn(),
     // Con transporte o notificador inyectado no se exige el SMTP real; por defecto sí.
-    // Reloj para la fecha límite (`hasta`, ms epoch); inyectable en pruebas.
+    // Reloj (ms epoch) para la fecha límite, el backoff y los sellos de tiempo; inyectable en pruebas.
     reloj = () => Date.now(),
     emailListo = () => (typeof enviar === "function" || typeof notificar === "function" ? true : emailConfigurado()),
   } = opciones ?? {};
   try {
-    const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO, hasta } = contexto && typeof contexto === "object" ? contexto : {};
+    const { preliquidacionId, limite = LIMITE_POR_DEFECTO, hasta } = contexto && typeof contexto === "object" ? contexto : {};
     if (motivoApagado(env) !== null) return { ok: true, enviadas: 0 };
 
     if (!sandbox() && destinatarios().length === 0) {
@@ -253,24 +265,29 @@ export async function despacharAlertas(contexto, opciones = {}) {
       .select("*")
       .eq("enviado_ok", false)
       .lt("intentos_envio", MAX_INTENTOS_ALERTA)
+      // Las filas en backoff no deben llenar la ventana: solo entran las sin reclamar o con la espera mínima cumplida
+      // (el backoff exacto por intento se verifica abajo). Las nunca reclamadas van primero.
+      .or(`reclamada_at.is.null,reclamada_at.lte.${new Date(reloj() - esperaReintentoMs(1)).toISOString()}`)
+      .order("reclamada_at", { ascending: true, nullsFirst: true })
       .order("created_at", { ascending: true });
     if (preliquidacionId !== undefined) lectura = lectura.eq("preliquidacion_id", preliquidacionId);
     const { data, error } = await lectura.limit(LECTURA_MAXIMA);
     if (error) throw new Error(error.message);
 
     // `reclamada_at` es la hora del último intento: la fila vuelve a ser elegible pasada la espera de su backoff.
+    const inicioLectura = reloj();
     const candidatas = (data || [])
-      .filter((f) => f.reclamada_at == null || new Date(f.reclamada_at).getTime() <= ahora.getTime() - esperaReintentoMs(f.intentos_envio))
+      .filter((f) => f.reclamada_at == null || new Date(f.reclamada_at).getTime() <= inicioLectura - esperaReintentoMs(f.intentos_envio))
       .slice(0, Math.max(0, entero(limite)));
 
     let enviadas = 0;
     let fallidas = 0;
     for (const candidata of candidatas) {
-      // Presupuesto agotado: no se reclama nada nuevo (lo que falte lo toma la siguiente corrida).
-      if (Number.isFinite(hasta) && reloj() >= hasta) break;
+      // Sin tiempo para el peor caso de un envío: no se reclama nada nuevo (lo que falte lo toma la siguiente corrida).
+      if (Number.isFinite(hasta) && reloj() + TIMEOUT_ENVIO_MS + MARGEN_MARCA_MS > hasta) break;
       let reclamada = null;
       try {
-        reclamada = await reclamar(cliente, candidata, ahora);
+        reclamada = await reclamar(cliente, candidata, new Date(reloj()));
       } catch (e) {
         seguro(() => log.error(`[preliquidacion-alertas] no se pudo reclamar la alerta ${candidata.id}: ${e?.message}`));
       }
@@ -288,7 +305,7 @@ export async function despacharAlertas(contexto, opciones = {}) {
           const detalle = resultado.sandbox ? { ...(reclamada.detalle ?? {}), sandbox: true } : reclamada.detalle ?? {};
           const { error: errorMarca } = await cliente
             .from(TABLA)
-            .update({ enviado_ok: true, enviado_at: ahora.toISOString(), detalle })
+            .update({ enviado_ok: true, enviado_at: new Date(reloj()).toISOString(), detalle })
             .eq("id", reclamada.id);
           if (errorMarca) throw new Error(errorMarca.message);
           enviadas += 1;

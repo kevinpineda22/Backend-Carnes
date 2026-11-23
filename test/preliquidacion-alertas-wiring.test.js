@@ -124,6 +124,7 @@ function colaEnMemoria() {
         eq: (c, v) => (filtros.push((r) => String(r[c]) === String(v)), q),
         is: (c, v) => (filtros.push((r) => (v === null ? r[c] == null : r[c] === v)), q),
         lt: (c, v) => (filtros.push((r) => Number(r[c]) < Number(v)), q),
+        or: () => q,
         order: () => q,
         limit: () => q,
         then: (res, rej) => {
@@ -161,8 +162,8 @@ test("R4 de punta a punta: una alerta de sede sin detalle sale por correo con la
   const correos = [];
   const notificar = async (tipo, ctx) => (correos.push({ tipo, ctx }), { success: true });
   const opciones = { db, env, log: silencio, notificar, sandbox: () => false, destinatarios: () => ["ops@example.test"] };
-  const r1 = await despacharAlertas({ ahora: new Date("2026-11-24T03:00:00Z") }, opciones);
-  const r2 = await despacharAlertas({ ahora: new Date("2026-11-24T04:00:00Z") }, opciones);
+  const r1 = await despacharAlertas({}, { ...opciones, reloj: () => Date.parse("2026-11-24T03:00:00Z") });
+  const r2 = await despacharAlertas({}, { ...opciones, reloj: () => Date.parse("2026-11-24T04:00:00Z") });
   assert.equal(r1.enviadas, 1);
   assert.equal(r2.enviadas, 0);
   assert.equal(correos.length, 1);
