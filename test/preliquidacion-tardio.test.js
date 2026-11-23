@@ -120,6 +120,7 @@ test("E-S1: servicio real 700,000 contra 500,000 -> alterna +200,000, saldo nuev
   assert.deepEqual(args.p_por_sede.map((s) => [s.sede_id, s.diferencia]), [[11, "80000.00"], [12, "120000.00"]]);
   assert.deepEqual(args.p_saldo_plan, {
     accion: "crear_ajuste", valor: "200000.00", ajuste_de_saldo_id: null, destino_preliquidacion_id: 20, por: "ana",
+    version_esperada: 3, orden_version_esperada: 5,
   });
   assert.equal(reg.alertas.length, 1);
   assert.deepEqual(
@@ -141,7 +142,7 @@ test("un saldo pendiente del origen se actualiza en el lugar (no se crea otra fi
   const { deps, reg } = armar({ saldos: [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }] });
   deps.leer = async () => ({ cabecera: liquidada({ servicio: "900000.00", servicio_at: A_LAS_2140 }), sedes: sedes2(), saldos: [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }], abiertas: [], alterna: null });
   await Alterna.registrarAlterna(1, deps);
-  assert.deepEqual(reg.rpcs[0].args.p_saldo_plan, { accion: "actualizar_pendiente", saldo_id: 9, valor: "400000.00", descartar: false, por: null });
+  assert.deepEqual(reg.rpcs[0].args.p_saldo_plan, { accion: "actualizar_pendiente", saldo_id: 9, valor: "400000.00", descartar: false, por: null, version_esperada: 3, orden_version_esperada: 5 });
 });
 
 test("un saldo aplicado no se toca: se pide un ajuste nuevo que lo referencia", async () => {
@@ -155,6 +156,17 @@ test("un saldo aplicado no se toca: se pide un ajuste nuevo que lo referencia", 
     { a: otra.reg.rpcs[0].args.p_saldo_plan.accion, v: otra.reg.rpcs[0].args.p_saldo_plan.valor, aj: otra.reg.rpcs[0].args.p_saldo_plan.ajuste_de_saldo_id },
     { a: "crear_ajuste", v: "100000.00", aj: 9 },
   );
+});
+
+test("el plan lleva la versión y la orden_version de la cabecera que leyó JS (la RPC rechaza si cambiaron)", async () => {
+  const { deps, reg } = armar({ cab: liquidada({ servicio: "700000.00", servicio_at: A_LAS_2140, version: 8, orden_version: 12 }) });
+  await Alterna.registrarAlterna(1, deps);
+  assert.equal(reg.rpcs[0].args.p_saldo_plan.version_esperada, 8);
+  assert.equal(reg.rpcs[0].args.p_saldo_plan.orden_version_esperada, 12);
+  // También con la acción `nada`: la alterna en sí depende de la versión leída.
+  const nada = armar({ saldos: [{ id: 9, valor: "200000.00", estado: "aplicado", destino_preliquidacion_id: 20 }] });
+  await Alterna.registrarAlterna(1, nada.deps);
+  assert.deepEqual(nada.reg.rpcs[0].args.p_saldo_plan, { accion: "nada", version_esperada: 3, orden_version_esperada: 5 });
 });
 
 test("idempotencia: si ya existe la alterna de ese servicio no se llama a la RPC ni se alerta", async () => {
@@ -187,7 +199,7 @@ test("servicio corregido hasta igualar el aplicado con un saldo pendiente previo
   assert.equal(reg.rpcs.length, 1);
   const { args } = reg.rpcs[0];
   assert.equal(args.p_diferencia, "0.00");
-  assert.deepEqual(args.p_saldo_plan, { accion: "actualizar_pendiente", saldo_id: 9, valor: "0.00", descartar: true, por: "ana" });
+  assert.deepEqual(args.p_saldo_plan, { accion: "actualizar_pendiente", saldo_id: 9, valor: "0.00", descartar: true, por: "ana", version_esperada: 3, orden_version_esperada: 5 });
   assert.equal(r.alterna.diferencia, "0.00");
 });
 

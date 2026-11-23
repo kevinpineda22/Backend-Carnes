@@ -98,6 +98,31 @@ BEGIN
     RAISE EXCEPTION 'actualizar no debía crear otra fila';
   END IF;
 
+  -- Versión de la cabecera distinta de la que leyó JS (un recálculo concurrente) -> version_cambiada,
+  -- sin alterna escrita; con las versiones vigentes se registra.
+  SELECT version INTO v0 FROM carnes_preliquidaciones WHERE id = res1;
+  r := carnes_preliq_registrar_alterna(
+    res1, 850000, now() - interval '30 minutes', '[]'::jsonb, 350000,
+    jsonb_build_object('accion', 'nada', 'version_esperada', v0 + 1,
+                       'orden_version_esperada', (SELECT orden_version FROM carnes_preliquidaciones WHERE id = res1))
+  );
+  IF r->>'resultado' <> 'version_cambiada' THEN RAISE EXCEPTION 'version distinta debía ser version_cambiada: %', r; END IF;
+  r := carnes_preliq_registrar_alterna(
+    res1, 850000, now() - interval '30 minutes', '[]'::jsonb, 350000,
+    jsonb_build_object('accion', 'nada', 'version_esperada', v0,
+                       'orden_version_esperada', (SELECT orden_version FROM carnes_preliquidaciones WHERE id = res1) + 1)
+  );
+  IF r->>'resultado' <> 'version_cambiada' THEN RAISE EXCEPTION 'orden_version distinta debía ser version_cambiada: %', r; END IF;
+  IF (SELECT count(*) FROM carnes_preliquidacion_alternas WHERE preliquidacion_id = res1) <> 2 THEN
+    RAISE EXCEPTION 'version_cambiada no debía dejar alterna escrita';
+  END IF;
+  r := carnes_preliq_registrar_alterna(
+    res1, 850000, now() - interval '30 minutes', '[]'::jsonb, 350000,
+    jsonb_build_object('accion', 'nada', 'version_esperada', v0,
+                       'orden_version_esperada', (SELECT orden_version FROM carnes_preliquidaciones WHERE id = res1))
+  );
+  IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'con las versiones vigentes debía ser ok: %', r; END IF;
+
   -- Plan inválido: saldo ajeno / acción desconocida.
   r := carnes_preliq_registrar_alterna(
     res1, 900000, now(), '[]'::jsonb, 400000,
@@ -113,7 +138,7 @@ BEGIN
     jsonb_build_object('accion', 'crear_ajuste', 'valor', '100000.00', 'destino_preliquidacion_id', cerdo1)
   );
   IF r->>'resultado' <> 'destino_invalido' THEN RAISE EXCEPTION 'destino de otra especie debía ser destino_invalido: %', r; END IF;
-  IF (SELECT count(*) FROM carnes_preliquidacion_alternas WHERE preliquidacion_id = res1) <> 2 THEN
+  IF (SELECT count(*) FROM carnes_preliquidacion_alternas WHERE preliquidacion_id = res1) <> 3 THEN
     RAISE EXCEPTION 'un plan inválido no debía dejar alterna escrita';
   END IF;
 

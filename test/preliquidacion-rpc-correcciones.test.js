@@ -121,6 +121,17 @@ test("registrar_alterna: el servicio aplicado sale de la cabecera y todo se vali
   }
 });
 
+test("registrar_alterna: valida la versión y la orden_version de la cabecera antes de escribir (CAS)", () => {
+  const f = cuerpoFuncion("carnes_preliq_registrar_alterna");
+  assert.match(f, /v_header\.version IS DISTINCT FROM NULLIF\(p_saldo_plan->>'version_esperada', ''\)::INTEGER/);
+  assert.match(f, /v_header\.orden_version IS DISTINCT FROM NULLIF\(p_saldo_plan->>'orden_version_esperada', ''\)::INTEGER/);
+  const cas = f.indexOf("'version_esperada'");
+  assert.ok(cas > f.indexOf("FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE"), "se valida con la cabecera ya bloqueada");
+  assert.ok(cas > f.indexOf("'ya_registrada'"), "la idempotencia gana sobre la versión");
+  assert.ok(cas < f.indexOf("INSERT INTO carnes_preliquidacion_alternas"), "antes de escribir la alterna");
+  assert.ok(cas < f.indexOf("'saldo_invalido', 'motivo', 'datos'"), "antes de validar o escribir el saldo");
+});
+
 test("registrar_alterna: acciones de saldo permitidas y destino válido (misma especie, abierta, sin liquidar)", () => {
   const f = cuerpoFuncion("carnes_preliq_registrar_alterna");
   assert.match(f, /NOT IN \('nada', 'actualizar_pendiente', 'crear_ajuste'\)/);

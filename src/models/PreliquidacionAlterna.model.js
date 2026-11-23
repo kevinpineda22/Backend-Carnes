@@ -83,10 +83,15 @@ async function rpcDb(nombre, args) {
   return data;
 }
 
-/** `planearSaldo` -> el `p_saldo_plan` de `carnes_preliq_registrar_alterna`. */
-function aPlanSaldo(plan, por) {
+/**
+ * `planearSaldo` -> el `p_saldo_plan` de `carnes_preliq_registrar_alterna`. Lleva además la `version` y la
+ * `orden_version` de la cabecera con las que JS calculó la alterna: si un recálculo las cambió, la RPC
+ * responde `version_cambiada` y no deja una alterna incoherente (la UNIQUE la haría permanente).
+ */
+function aPlanSaldo(plan, por, cabecera) {
+  const versiones = { version_esperada: cabecera.version, orden_version_esperada: cabecera.orden_version };
   if (plan.accion === "actualizar_pendiente") {
-    return { accion: plan.accion, saldo_id: plan.saldoId, valor: plan.valor, descartar: plan.descartar, por };
+    return { accion: plan.accion, saldo_id: plan.saldoId, valor: plan.valor, descartar: plan.descartar, por, ...versiones };
   }
   if (plan.accion === "crear_ajuste") {
     return {
@@ -95,9 +100,10 @@ function aPlanSaldo(plan, por) {
       ajuste_de_saldo_id: plan.ajusteDeSaldoId,
       destino_preliquidacion_id: plan.destinoId,
       por,
+      ...versiones,
     };
   }
-  return { accion: "nada" };
+  return { accion: "nada", ...versiones };
 }
 
 /**
@@ -140,7 +146,7 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
       p_servicio_at: cabecera.servicio_at,
       p_por_sede: comparacion.plan.por_sede,
       p_diferencia: comparacion.plan.diferencia,
-      p_saldo_plan: aPlanSaldo(planSaldo, por),
+      p_saldo_plan: aPlanSaldo(planSaldo, por, cabecera),
     });
 
     // `destino_invalido`: el destino elegido se liquidó o cerró entre la lectura y la RPC; se relee y se replanea.

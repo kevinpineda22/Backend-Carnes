@@ -70,6 +70,9 @@ END $$;
 -- tocar el saldo.
 --
 -- p_saldo_plan: {accion: 'nada'|'actualizar_pendiente'|'crear_ajuste', por?,
+--   version_esperada?, orden_version_esperada?: los de la cabecera que leyó JS (CAS; si no coinciden
+--     devuelve `version_cambiada` antes de escribir). Van aquí y no como parámetros para no cambiar
+--     la firma de la función (los rollback siguen valiendo),
 --   actualizar_pendiente: saldo_id, valor, descartar?
 --   crear_ajuste:         valor, ajuste_de_saldo_id?, destino_preliquidacion_id?}
 --
@@ -122,6 +125,16 @@ BEGIN
    WHERE preliquidacion_id = p_id AND servicio_at = p_servicio_at;
   IF FOUND THEN
     RETURN jsonb_build_object('resultado', 'ya_registrada', 'alterna_id', v_alterna);
+  END IF;
+
+  -- La alterna se calculó con la `version` y la `orden_version` que JS leyó (servicio aplicado y gasto de
+  -- cada sede). Si un recálculo las cambió, la alterna saldría incoherente y la UNIQUE la haría permanente:
+  -- JS relee y vuelve a planear. Sin las claves (cliente anterior) no se valida.
+  IF (p_saldo_plan ? 'version_esperada' OR p_saldo_plan ? 'orden_version_esperada') AND (
+    v_header.version IS DISTINCT FROM NULLIF(p_saldo_plan->>'version_esperada', '')::INTEGER
+    OR v_header.orden_version IS DISTINCT FROM NULLIF(p_saldo_plan->>'orden_version_esperada', '')::INTEGER
+  ) THEN
+    RETURN jsonb_build_object('resultado', 'version_cambiada', 'motivo', 'cabecera');
   END IF;
 
   -- Validación del saldo antes de escribir nada.
