@@ -1,5 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { transicionSede } from "../shared/preliquidacionEstados.js";
+import { decidirAnulacionPreliquidacion } from "../shared/preliquidacionAnulacion.js";
 import { conReintentoVersion, resultadoAError } from "./Preliquidacion.model.js";
 
 /**
@@ -15,6 +16,9 @@ import { conReintentoVersion, resultadoAError } from "./Preliquidacion.model.js"
 
 const T_PRELIQ = "carnes_preliquidaciones";
 const T_SEDES = "carnes_preliquidacion_sedes";
+const T_SALDOS = "carnes_preliquidacion_saldos";
+const T_RECEPCIONES = "carnes_recepciones";
+const T_ENVIOS = "carnes_siesa_envios";
 
 async function llamarRpc(nombre, args) {
   const { data, error } = await supabase.rpc(nombre, args);
@@ -141,5 +145,63 @@ export async function descartarCorreccion(sedeId, { por = null, motivo = null } 
 
   exigirResultado(respuesta);
   log.info?.(`Sede ${sedeId}: corrección descartada por ${por ?? "—"}${motivo ? ` (${motivo})` : ""}.`);
+  return respuesta;
+}
+
+// ─── Anular la preliquidación completa (R12) ───────────────────────────────
+
+async function leerFilas(tabla, columna, valores) {
+  if (!valores.length) return [];
+  const { data, error } = await supabase.from(tabla).select("*").in(columna, valores);
+  if (error) throw new Error(`Error al leer ${tabla}: ${error.message}`);
+  return data ?? [];
+}
+
+async function leerFilasPor(tabla, columna, valor) {
+  const { data, error } = await supabase.from(tabla).select("*").eq(columna, valor);
+  if (error) throw new Error(`Error al leer ${tabla}: ${error.message}`);
+  return data ?? [];
+}
+
+/**
+ * Anula la preliquidación completa mientras nada haya salido a SIESA. Las guardas se deciden en JS
+ * (`decidirAnulacionPreliquidacion`) y la RPC las revalida bajo lock con `version` y `orden_version`:
+ * si algo cambió entre la lectura y la RPC responde `version_cambiada` y se relee (máx. 3).
+ *
+ * Efectos (todos en la RPC, una transacción): la cabecera pasa a `anulada` y libera el índice parcial
+ * de "sin iniciar"; las recepciones vuelven al flujo legado; los saldos que consumió regresan a
+ * `pendiente` sin destino y sus propios saldos pendientes se descartan; se borran los avisos sin enviar.
+ * Nunca toca SIESA.
+ *
+ * @param {number|string} id
+ * @param {{por?: string|null, motivo?: string|null}} datos el motivo es obligatorio (trazabilidad)
+ */
+export async function anularPreliquidacion(id, { por = null, motivo = null } = {}, opciones = {}) {
+  const log = opciones.log ?? console;
+  const texto = String(motivo ?? "").trim();
+  if (!texto) throw resultadoAError({ resultado: "motivo_requerido" });
+
+  const respuesta = await conReintentoVersion(async () => {
+    const cabecera = await leerCabecera(id);
+    const sedes = await leerFilasPor(T_SEDES, "preliquidacion_id", cabecera.id);
+    const [envios, recepciones, saldos] = await Promise.all([
+      leerFilas(T_ENVIOS, "id", sedes.map((s) => s.envio_id).filter((v) => v != null)),
+      leerFilas(T_RECEPCIONES, "id", sedes.map((s) => s.recepcion_id)),
+      leerFilasPor(T_SALDOS, "origen_preliquidacion_id", cabecera.id),
+    ]);
+    const decision = decidirAnulacionPreliquidacion({ cabecera, sedes, envios, recepciones, saldos });
+    if (!decision.ok) throw resultadoAError({ resultado: "no_anulable", motivo: decision.motivo });
+
+    return llamarRpc("carnes_preliq_anular", {
+      p_id: cabecera.id,
+      p_version: cabecera.version,
+      p_orden_version: cabecera.orden_version,
+      p_por: por,
+      p_motivo: texto,
+    });
+  });
+
+  if (respuesta?.resultado !== "ok") throw resultadoAError(respuesta);
+  log.info?.(`Preliquidación ${id}: anulada por ${por ?? "—"} (${texto}).`);
   return respuesta;
 }

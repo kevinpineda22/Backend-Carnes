@@ -1208,6 +1208,19 @@ export const validators = {
       .strict(),
   ),
 
+  // Anular la preliquidación completa: el motivo queda como trazabilidad (`motivo_anulacion`).
+  anularPreliquidacion: validar(
+    z
+      .object({
+        motivo: z
+          .string({ required_error: "Escriba el motivo de la anulación.", invalid_type_error: "El motivo no es válido." })
+          .trim()
+          .min(3, "Escriba el motivo de la anulación.")
+          .max(500, "El motivo no puede pasar de 500 caracteres."),
+      })
+      .strict(),
+  ),
+
   // Descartar el aviso "requiere corrección": decisión humana, queda el motivo en el log.
   descartarCorreccionPreliquidacion: validar(
     z

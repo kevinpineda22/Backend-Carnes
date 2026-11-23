@@ -98,10 +98,19 @@ const ERRORES_RESULTADO = {
   retomas_solo_cerdo: [422, "Las retomas solo aplican a la preliquidación de cerdo."],
   no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
   monto_invalido: [422, "El monto no asignado no es válido."],
+  no_anulable: [409, "La preliquidación no se puede anular."],
   sede_no_enviada: [409, "Solo se puede anular una sede que ya se envió a SIESA (estado enviada)."],
   sin_correccion: [409, "La sede no tiene una corrección pendiente."],
   no_encontrada: [404, "No se encontró el registro."],
   sin_recepcion: [404, "Recepción no encontrada."],
+};
+
+/** Por qué no se puede anular la preliquidación completa (`no_anulable.motivo`, R12). */
+const MENSAJES_NO_ANULABLE = {
+  no_abierta: "La preliquidación no está abierta: ya se cerró o se anuló.",
+  sede_enviada:
+    "Ya hay sedes enviadas a SIESA: la preliquidación no se puede anular. Corrija cada sede con la anulación por sede.",
+  saldo_aplicado: "Un saldo generado por esta preliquidación ya se aplicó en otra: no se puede anular.",
 };
 
 /**
@@ -117,7 +126,8 @@ export function resultadoAError(respuesta) {
     inesperado.statusCode = 500;
     return inesperado;
   }
-  const [estado, mensaje] = conocido;
+  const [estado, base] = conocido;
+  const mensaje = (codigo === "no_anulable" && MENSAJES_NO_ANULABLE[respuesta.motivo]) || base;
   const error = createError(estado, mensaje, codigo);
   if (respuesta.motivo) error.motivo = respuesta.motivo;
   if (respuesta.detalle) error.detalle = respuesta.detalle;

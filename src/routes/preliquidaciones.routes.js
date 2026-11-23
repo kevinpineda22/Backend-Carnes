@@ -56,6 +56,8 @@ router.post("/:id/recalcular", validators.recalcularPreliquidacion, Preliquidaci
 router.post("/sedes/:sedeId/procesar", PreliquidacionesController.procesarSede);
 router.post("/:id/procesar", PreliquidacionesController.procesar);
 router.post("/:id/cerrar", PreliquidacionesController.cerrar);
+// Anular la preliquidación completa: rollback mientras nada haya salido a SIESA (drenaje).
+router.post("/:id/anular", validators.anularPreliquidacion, PreliquidacionesController.anular);
 
 // Correcciones de una sede ya enviada. Anular confirma lo hecho a mano en SIESA (drenaje: sigue con el
 // interruptor apagado); descartar la corrección es una escritura normal.

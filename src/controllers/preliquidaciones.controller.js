@@ -46,6 +46,8 @@ const RUTAS_DRENAJE = [
   /^\/\d+\/cerrar\/?$/,
   // Confirmar la anulación hecha en SIESA solo registra algo que ya pasó: no abre trabajo nuevo.
   /^\/sedes\/\d+\/anular\/?$/,
+  // Anular la preliquidación entera es el rollback cuando nada salió a SIESA: debe poder hacerse apagada.
+  /^\/\d+\/anular\/?$/,
 ];
 
 /** Middleware: con el interruptor apagado corta toda escritura con 409, antes de validar y de tocar la base. */
@@ -266,6 +268,16 @@ export async function descartarCorreccion(req, res, next) {
   try {
     const { motivo } = req.body;
     res.json({ ok: true, data: await CorreccionesModel.descartarCorreccion(req.idSede, { por: quien(req), motivo }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** POST /api/preliquidaciones/:id/anular — Body: { motivo }. Solo si nada salió a SIESA (R12). */
+export async function anular(req, res, next) {
+  try {
+    const { motivo } = req.body;
+    res.json({ ok: true, data: await CorreccionesModel.anularPreliquidacion(req.idPreliquidacion, { por: quien(req), motivo }) });
   } catch (error) {
     next(error);
   }

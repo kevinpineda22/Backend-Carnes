@@ -13,6 +13,8 @@ export function errorHandler(err, req, res, _next) {
     ok: false,
     error: mensaje,
     ...(err.codigo && { codigo: err.codigo }),
+    // Detalle del código para el front (p. ej. el motivo de un `no_anulable`).
+    ...(err.motivo && { motivo: err.motivo }),
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 }

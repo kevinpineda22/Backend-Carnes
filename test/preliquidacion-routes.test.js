@@ -50,6 +50,7 @@ mock.module(url("models/PreliquidacionCorrecciones.model.js"), {
   namedExports: {
     anularSede: falso("anularSede"),
     descartarCorreccion: falso("descartarCorreccion"),
+    anularPreliquidacion: falso("anularPreliquidacion"),
   },
 });
 
@@ -655,4 +656,52 @@ test("descartar-correccion es una escritura normal: apagado responde 409 preliqu
   assert.equal(r.estado, 409);
   assert.equal(r.json.codigo, "preliquidacion_apagada");
   assert.deepEqual(llamadas, []);
+});
+
+// ─── Anular la preliquidación completa (3.7) ───────────────────────────────
+
+test("POST /:id/anular pasa id, quién y motivo al modelo", async () => {
+  encendida();
+  respuestas.anularPreliquidacion = { resultado: "ok", sedes_desvinculadas: 2 };
+  const r = await llamar("POST", "/5/anular", { motivo: "se creó por error" });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { resultado: "ok", sedes_desvinculadas: 2 } });
+  assert.equal(llamadas[0].nombre, "anularPreliquidacion");
+  assert.equal(llamadas[0].args[0], 5);
+  assert.deepEqual(llamadas[0].args[1], { por: null, motivo: "se creó por error" });
+});
+
+test("anular: el motivo es obligatorio (400 sin llegar al modelo), el id inválido 400 y el guard 403", async () => {
+  encendida();
+  for (const cuerpo of [{}, { motivo: "" }, { motivo: "x" }, { motivo: "y".repeat(501) }, { motivo: "ok motivo", otro: 1 }]) {
+    assert.equal((await llamar("POST", "/5/anular", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.equal((await llamar("POST", "/abc/anular", { motivo: "por error" })).estado, 400);
+  assert.deepEqual(llamadas, []);
+  guardPasa = false;
+  assert.equal((await llamar("POST", "/5/anular", { motivo: "por error" })).estado, 403);
+});
+
+test("anular no anulable: 409 con codigo y motivo para el panel", async () => {
+  encendida();
+  respuestas.anularPreliquidacion = Object.assign(createError(409, "Ya hay sedes enviadas", "no_anulable"), { motivo: "sede_enviada" });
+  const r = await llamar("POST", "/5/anular", { motivo: "por error" });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "no_anulable");
+  assert.equal(r.json.motivo, "sede_enviada");
+});
+
+test("anular es drenaje: con el interruptor apagado sigue disponible (rollback), pero la auth en producción va primero", async () => {
+  const r = await llamar("POST", "/5/anular", { motivo: "rollback" });
+  assert.equal(r.estado, 200);
+  assert.equal(llamadas[0].nombre, "anularPreliquidacion");
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    const bloqueada = await llamar("POST", "/5/anular", { motivo: "rollback" });
+    assert.equal(bloqueada.estado, 503);
+    assert.equal(bloqueada.json.codigo, "auth_requerida");
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
 });
