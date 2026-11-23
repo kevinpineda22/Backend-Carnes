@@ -30,11 +30,15 @@ test("concurrency preliquidacion sin cancelar la corrida en curso", () => {
   assert.match(sinComentarios, /concurrency:\s*\n\s+group:\s*preliquidacion\s*\n\s+cancel-in-progress:\s*false/);
 });
 
-test("curl con las banderas de la decisión y SIN --retry-all-errors", () => {
-  for (const bandera of ["--fail-with-body", "--max-time 290", "--retry 2", "--retry-connrefused"]) {
+test("curl con las banderas de la decisión y SIN ningún reintento (--retry reintenta timeouts/5xx y duplica corridas)", () => {
+  for (const bandera of ["--fail-with-body", "--max-time 290"]) {
     assert.ok(sinComentarios.includes(bandera), `falta ${bandera}`);
   }
-  assert.ok(!sinComentarios.includes("--retry-all-errors"));
+  assert.ok(!/--retry/.test(sinComentarios), "no debe haber ninguna bandera --retry*");
+});
+
+test("motivo auth_requerida es un fallo (exit 1), no un aviso", () => {
+  assert.match(sinComentarios, /auth_requerida[\s\S]{0,250}exit 1/);
 });
 
 test("bucle de hasta 6 iteraciones que comparte el corrida_id y se detiene sin pendientes", () => {

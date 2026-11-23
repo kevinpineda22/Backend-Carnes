@@ -59,7 +59,7 @@ jobs:
                + (if $especie != "" and $especie != "todas" then {especie: $especie} else {} end)
                + (if $corrida != "" then {corrida_id: ($corrida | tonumber)} else {} end)')
 
-            args=(--silent --show-error --fail-with-body --max-time 290 --retry 2 --retry-connrefused
+            args=(--silent --show-error --fail-with-body --max-time 290
               -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${CRON_SECRET}")
             # Los previews de Vercel exigen el bypass de la protección de despliegues.
             if [ -n "${BYPASS:-}" ]; then
@@ -83,6 +83,10 @@ jobs:
             flag=$(echo "$respuesta" | jq -r '.flag')
             if [ "$flag" != "on" ]; then
               motivo=$(echo "$respuesta" | jq -r '.motivo // "sin motivo"')
+              if [ "$motivo" = "auth_requerida" ]; then
+                echo "::error::Preliquidación deshabilitada por la compuerta de auth (auth_requerida): exigir CARNES_AUTH=exigir en producción"
+                exit 1
+              fi
               echo "::warning::preliquidacion flag is ${flag} (${motivo})"
               exit 0
             fi
