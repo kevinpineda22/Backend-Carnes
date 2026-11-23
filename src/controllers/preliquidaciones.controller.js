@@ -2,7 +2,7 @@ import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
-import { avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
+import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
 import { revisarCorridasPerdidas } from "../models/PreliquidacionVigilancia.model.js";
 
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
@@ -11,12 +11,12 @@ const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
 /**
  * Con el interruptor apagado NINGUNA escritura de /preliquidaciones procede (crear,
  * configurar, editar, gastos, retomas, vincular, desvincular). Solo quedan las lecturas.
- * El router lo aplica a todo método que no sea GET (ver `exigirEscrituraHabilitada`);
- * no depende de `CARNES_AUTH`, que hoy puede estar en `off`.
+ * El router lo aplica a todo método que no sea GET (ver `exigirEscrituraHabilitada`).
+ * La compuerta de auth se evalúa ANTES y sin depender del interruptor: en producción sin
+ * `CARNES_AUTH=exigir` toda escritura, drenaje incluido, es 503 `auth_requerida`.
  */
 function exigirEncendida({ drenaje = false } = {}) {
-  const motivo = motivoApagado();
-  if (motivo === "auth_requerida") {
+  if (authRequeridaEnProduccion()) {
     avisarAuthRequerida();
     throw createError(
       503,
@@ -24,8 +24,8 @@ function exigirEncendida({ drenaje = false } = {}) {
       "auth_requerida",
     );
   }
-  // Drenaje: con el interruptor apagado el admin puede terminar lo que ya está vinculado.
-  if (motivo && !(drenaje && motivo === "flag_apagado")) {
+  // Drenaje: con el interruptor apagado (y la auth ya superada) el admin puede terminar lo ya vinculado.
+  if (motivoApagado() && !drenaje) {
     throw createError(
       409,
       "La preliquidación de talleres está apagada (CARNES_PRELIQUIDACION).",
@@ -36,8 +36,8 @@ function exigirEncendida({ drenaje = false } = {}) {
 
 /**
  * Rutas que siguen disponibles con el interruptor apagado (drenaje): procesar y cerrar lo ya
- * vinculado. La compuerta de auth (503) las alcanza igual: producción sin CARNES_AUTH=exigir
- * no deja operar ninguna.
+ * vinculado. La compuerta de auth (503) se evalúa antes y las alcanza igual: producción sin
+ * CARNES_AUTH=exigir no deja operar ninguna, esté el interruptor encendido o no.
  */
 const RUTAS_DRENAJE = [/^\/\d+\/procesar\/?$/, /^\/sedes\/\d+\/procesar\/?$/, /^\/\d+\/cerrar\/?$/];
 

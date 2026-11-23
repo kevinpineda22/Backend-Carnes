@@ -22,6 +22,15 @@ const authExigida = (env) => String(env.CARNES_AUTH ?? "").trim().toLowerCase() 
 const esProduccion = (env) => String(env.VERCEL_ENV ?? "").trim().toLowerCase() === "production";
 
 /**
+ * Compuerta de autenticación, independiente del interruptor: en producción sin
+ * `CARNES_AUTH=exigir` es `true` aunque `CARNES_PRELIQUIDACION` esté apagado. Así las rutas
+ * de drenaje (que siguen vivas con el interruptor apagado) tampoco operan sin autenticación.
+ */
+export function authRequeridaEnProduccion(env = process.env) {
+  return esProduccion(env) && !authExigida(env);
+}
+
+/**
  * Por qué está apagada la preliquidación: `"flag_apagado"`, `"auth_requerida"` o `null`
  * si está habilitada. El interruptor manda: apagado es `flag_apagado` aunque falte auth.
  */

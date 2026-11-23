@@ -115,3 +115,41 @@ test("las lecturas (GET) nunca se bloquean por la compuerta", () =>
   conEntorno({ CARNES_PRELIQUIDACION: "on", VERCEL_ENV: "production" }, async () => {
     assert.equal(await correr("GET"), null);
   }));
+
+// ─── JD S2: la compuerta de auth no depende del interruptor ────────────────
+
+const correrRuta = (metodo, path) =>
+  new Promise((resolver) =>
+    Controlador.exigirEscrituraHabilitada({ method: metodo, path }, {}, (error) => resolver(error ?? null)),
+  );
+const RUTAS_DRENAJE_PRUEBA = ["/5/procesar", "/sedes/3/procesar", "/5/cerrar"];
+
+for (const auth of ["off", undefined, "reportar"]) {
+  test(`producción + interruptor apagado + CARNES_AUTH=${auth}: toda ruta de drenaje es 503 auth_requerida`, () =>
+    conEntorno({ VERCEL_ENV: "production", ...(auth ? { CARNES_AUTH: auth } : {}) }, async () => {
+      for (const ruta of RUTAS_DRENAJE_PRUEBA) {
+        const error = await correrRuta("POST", ruta);
+        assert.equal(error?.statusCode, 503, ruta);
+        assert.equal(error?.codigo, "auth_requerida", ruta);
+      }
+    }));
+}
+
+test("producción + interruptor apagado + CARNES_AUTH=exigir: el drenaje pasa", () =>
+  conEntorno({ VERCEL_ENV: "production", CARNES_AUTH: "exigir" }, async () => {
+    for (const ruta of RUTAS_DRENAJE_PRUEBA) assert.equal(await correrRuta("POST", ruta), null, ruta);
+  }));
+
+test("producción + interruptor apagado + auth exigir: una ruta que no es de drenaje sigue en 409", () =>
+  conEntorno({ VERCEL_ENV: "production", CARNES_AUTH: "exigir" }, async () => {
+    const error = await correrRuta("POST", "/5/recepciones");
+    assert.equal(error?.statusCode, 409);
+    assert.equal(error?.codigo, "preliquidacion_apagada");
+  }));
+
+test("producción + interruptor apagado + sin auth: ruta que no es de drenaje también es 503", () =>
+  conEntorno({ VERCEL_ENV: "production" }, async () => {
+    const error = await correrRuta("POST", "/5/recepciones");
+    assert.equal(error?.statusCode, 503);
+    assert.equal(error?.codigo, "auth_requerida");
+  }));
