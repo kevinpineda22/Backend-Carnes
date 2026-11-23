@@ -6,6 +6,34 @@ import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
 import { revisarCorridasPerdidas } from "../models/PreliquidacionVigilancia.model.js";
+import { despacharAlertas } from "../services/preliquidacionAlertas.js";
+
+/** Alertas que se despachan tras una acción del admin (el resto lo drena el barrido del cron). */
+const LIMITE_DESPACHO_ADMIN = 10;
+/** Espera máxima del despacho: el correo nunca debe retener la respuesta del admin. */
+const ESPERA_MAXIMA_DESPACHO_MS = 5000;
+
+/**
+ * Despacha las alertas que la acción acaba de encolar, antes de responder (en Vercel la función se
+ * congela al responder). NUNCA lanza ni espera más de `esperaMaximaMs`: lo que no salga queda en la
+ * cola y lo toma la siguiente corrida.
+ */
+export async function despacharTrasAccion({
+  despachar = despacharAlertas,
+  esperaMaximaMs = ESPERA_MAXIMA_DESPACHO_MS,
+} = {}) {
+  let temporizador;
+  try {
+    const limite = new Promise((resolver) => {
+      temporizador = setTimeout(resolver, esperaMaximaMs);
+    });
+    await Promise.race([Promise.resolve(despachar({ limite: LIMITE_DESPACHO_ADMIN })).catch(() => {}), limite]);
+  } catch (error) {
+    console.error("Despacho de alertas tras la acción falló:", error?.message);
+  } finally {
+    clearTimeout(temporizador);
+  }
+}
 
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
@@ -86,6 +114,7 @@ export async function listar(req, res, next) {
     if (estado) filtros.estado = estado;
     const data = await PreliquidacionModel.listar(filtros);
     const perdidas = await idsConCorridaPerdida(data);
+    if (perdidas.size > 0) await despacharTrasAccion();
     res.json({ ok: true, data: data.map((p) => ({ ...p, corrida_perdida: perdidas.has(String(p.id)) })) });
   } catch (error) {
     next(error);
@@ -108,6 +137,7 @@ export async function obtener(req, res, next) {
   try {
     const data = await PreliquidacionModel.obtener(req.idPreliquidacion);
     const perdidas = await idsConCorridaPerdida([data]);
+    if (perdidas.size > 0) await despacharTrasAccion();
     res.json({ ok: true, data: { ...data, corrida_perdida: perdidas.has(String(data.id)) } });
   } catch (error) {
     next(error);
@@ -118,6 +148,7 @@ export async function obtener(req, res, next) {
 export async function actualizar(req, res, next) {
   try {
     const data = await PreliquidacionModel.actualizar(req.idPreliquidacion, req.body, { por: quien(req) });
+    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
     next(error);
@@ -159,6 +190,7 @@ export async function vincular(req, res, next) {
       }
     }
     if (primerError && resultados.every((r) => !r.ok)) return next(primerError);
+    await despacharTrasAccion();
     res.json({ ok: true, data: resultados });
   } catch (error) {
     next(error);
@@ -225,7 +257,9 @@ export async function guardarConfig(req, res, next) {
 /** POST /api/preliquidaciones/:id/procesar — liquida y envía lo pendiente (origen admin). */
 export async function procesar(req, res, next) {
   try {
-    res.json({ ok: true, data: await PreliquidacionModel.procesarAdmin(req.idPreliquidacion, { por: quien(req) }) });
+    const data = await PreliquidacionModel.procesarAdmin(req.idPreliquidacion, { por: quien(req) });
+    await despacharTrasAccion();
+    res.json({ ok: true, data });
   } catch (error) {
     next(error);
   }
@@ -234,7 +268,9 @@ export async function procesar(req, res, next) {
 /** POST /api/preliquidaciones/sedes/:sedeId/procesar — recostea y envía UNA sede. */
 export async function procesarSede(req, res, next) {
   try {
-    res.json({ ok: true, data: await PreliquidacionModel.procesarSedeAdmin(req.idSede, { por: quien(req) }) });
+    const data = await PreliquidacionModel.procesarSedeAdmin(req.idSede, { por: quien(req) });
+    await despacharTrasAccion();
+    res.json({ ok: true, data });
   } catch (error) {
     next(error);
   }
@@ -245,6 +281,7 @@ export async function recalcular(req, res, next) {
   try {
     const { cambios = {}, motivo = null } = req.body ?? {};
     const data = await PreliquidacionModel.recalcular(req.idPreliquidacion, { cambios, motivo }, { por: quien(req) });
+    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
     next(error);
@@ -305,7 +342,9 @@ export async function anular(req, res, next) {
 /** POST /api/preliquidaciones/:id/cerrar — cierre manual. */
 export async function cerrar(req, res, next) {
   try {
-    res.json({ ok: true, data: await PreliquidacionModel.cerrar(req.idPreliquidacion) });
+    const data = await PreliquidacionModel.cerrar(req.idPreliquidacion);
+    await despacharTrasAccion();
+    res.json({ ok: true, data });
   } catch (error) {
     next(error);
   }

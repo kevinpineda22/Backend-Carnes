@@ -1,6 +1,7 @@
 import { motivoApagado } from "../config/preliquidacion.js";
 import { sandboxOn } from "../config/sandbox.js";
 import { destinatariosPreliquidacion } from "./email.service.js";
+import { enviarAlerta } from "./preliquidacionAlertasEnvio.js";
 
 /**
  * Puerto de alertas de la preliquidación.
@@ -200,13 +201,15 @@ function contextoDeEnvio(fila) {
  *
  * @param {{ahora?: Date, preliquidacionId?: number, limite?: number}} [contexto]
  * @param {{enviar?: (evento: string, contexto: object) => Promise<{success: boolean, sandbox?: boolean, error?: string}>,
- *   db?: object, env?: object, log?: object, destinatarios?: () => string[], sandbox?: () => boolean}} [opciones]
- *   `enviar` es el transporte; sin él no se envía nada.
+ *   notificar?: Function, db?: object, env?: object, log?: object, destinatarios?: () => string[], sandbox?: () => boolean}} [opciones]
+ *   `enviar` es el transporte; por defecto completa el contexto desde la base y manda el correo de
+ *   `notificarPreliquidacion` (`notificar` permite sustituir solo el correo).
  * @returns {Promise<{ok: boolean, enviadas: number, fallidas?: number, sin_destinatarios?: true, error?: string}>}
  */
 export async function despacharAlertas(contexto, opciones = {}) {
   const {
     enviar,
+    notificar,
     db,
     env = process.env,
     log = console,
@@ -215,7 +218,7 @@ export async function despacharAlertas(contexto, opciones = {}) {
   } = opciones ?? {};
   try {
     const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO } = contexto && typeof contexto === "object" ? contexto : {};
-    if (motivoApagado(env) !== null || typeof enviar !== "function") return { ok: true, enviadas: 0 };
+    if (motivoApagado(env) !== null) return { ok: true, enviadas: 0 };
 
     if (!sandbox() && destinatarios().length === 0) {
       seguro(() => log.warn(`[preliquidacion-alertas] ${VARIABLE_DESTINATARIOS} no está definida: no se despachan alertas`));
@@ -223,6 +226,7 @@ export async function despacharAlertas(contexto, opciones = {}) {
     }
 
     const cliente = db ?? (await baseDeDatos());
+    const transporte = typeof enviar === "function" ? enviar : (evento, ctx) => enviarAlerta(evento, ctx, { db: cliente, notificar, log });
     let lectura = cliente
       .from(TABLA)
       .select("*")
@@ -251,7 +255,7 @@ export async function despacharAlertas(contexto, opciones = {}) {
 
       let resultado;
       try {
-        resultado = await enviar(reclamada.evento, contextoDeEnvio(reclamada));
+        resultado = await transporte(reclamada.evento, contextoDeEnvio(reclamada));
       } catch (e) {
         resultado = { success: false, error: e?.message ?? String(e) };
       }

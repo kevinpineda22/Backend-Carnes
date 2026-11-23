@@ -15,6 +15,7 @@ primeras el módulo queda a medias:
 |---|---|
 | `CARNES_MAIL_ADMIN` | **el aviso al admin no sale**. Queda en el log del server y nada más. |
 | `CARNES_MAIL_PROVEEDORES` | **el aviso de recepción de proveedor no sale** (no cae al admin). Queda en el log del server. |
+| `CARNES_MAIL_PRELIQUIDACION` | **las alertas de la preliquidación de talleres no salen** y quedan en cola (cae a `CARNES_MAIL_ADMIN` si esa está definida). Nunca va en el código. |
 | `CARNES_ADMIN_KEY` | `GET /api/sedes/tokens` y `regenerar-token` responden 503. No se pueden imprimir los stickers de QR. |
 | `CARNES_PANEL_URL` | el botón del correo apunta al default. |
 | `CARNES_SANDBOX` | sin ella el sandbox queda **apagado** y los correos de prueba salen de verdad. |
@@ -44,6 +45,13 @@ CARNES_MAIL_ADMIN=
 # separados por coma o punto y coma. SIN respaldo al admin: si está vacía ese
 # correo no sale y queda registrado en el log del server.
 CARNES_MAIL_PROVEEDORES=
+
+# Quién recibe las alertas de la preliquidación de talleres (excede animales,
+# utilidad negativa, error de envío, servicio tardío, cierre, etc.). Acepta varios
+# separados por coma o punto y coma; si está vacía cae a CARNES_MAIL_ADMIN y, si
+# tampoco existe, las alertas quedan en cola (tabla carnes_preliquidacion_alertas)
+# y se registra un aviso en el log. Con CARNES_SANDBOX=true no sale ninguna.
+CARNES_MAIL_PRELIQUIDACION=
 
 # A dónde apunta el botón "Revisar y aprobar" del correo.
 CARNES_PANEL_URL=https://merkahorro.com/carnes/admin

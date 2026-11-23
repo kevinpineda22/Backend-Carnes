@@ -34,6 +34,8 @@ function armar({
     vincular: async (id) => vincular(id),
     leerSedeDeRecepcion: async () => ({ sede, cabecera }),
     encolar: async (a) => (registro.alertas.push(a), { ok: true }),
+    despacharAlertas: async () => ({ ok: true, enviadas: 0 }),
+    segundoPlano: async (fn) => (await fn(), true),
     revisarCorridasPerdidas: async () => (registro.perdidas += 1, { perdidas: [] }),
     abrirCorrida: async (o) => ({ id: 500, origen: o.origen, preliquidacion_ids: [], resumen: { reevaluadas: [] } }),
     registrarProgreso: async () => {},

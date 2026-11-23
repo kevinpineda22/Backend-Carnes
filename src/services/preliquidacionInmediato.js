@@ -6,7 +6,7 @@ import * as Vigilancia from "../models/PreliquidacionVigilancia.model.js";
 import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
 import { debeLiquidar } from "../shared/preliquidacionTiempo.js";
 import { TIMEOUT_OFICIAL_MS } from "./siesa.service.js";
-import { encolarAlerta } from "./preliquidacionAlertas.js";
+import { despacharAlertas, encolarAlerta } from "./preliquidacionAlertas.js";
 
 /**
  * Camino inmediato de la preliquidación: se ejecuta al finalizar una recepción de taller.
@@ -64,14 +64,40 @@ function dependenciasPorDefecto() {
     vincular: (id) => PreliquidacionModel.vincularRecepcion(id),
     leerSedeDeRecepcion: PreliquidacionModel.leerSedeDeRecepcion,
     encolar: encolarAlerta,
+    despacharAlertas,
     revisarCorridasPerdidas: Vigilancia.revisarCorridasPerdidas,
     abrirCorrida: Corridas.abrirCorrida,
     registrarProgreso: Corridas.registrarProgreso,
     terminarCorrida: Corridas.terminarCorrida,
     procesar: PreliquidacionModel.procesarPreliquidacion,
     waitUntil: waitUntilPorDefecto,
+    segundoPlano: waitUntilPorDefecto,
     log: console,
   };
+}
+
+/** Alertas que se despachan por invocación en el camino inmediato (el resto lo drena el barrido). */
+const LIMITE_DESPACHO_INMEDIATO = 10;
+
+/** Despacha el backlog de alertas; una falla del correo nunca debe afectar a quien llama. */
+async function despacharSeguro(deps) {
+  try {
+    await deps.despacharAlertas({ ahora: new Date(), limite: LIMITE_DESPACHO_INMEDIATO });
+  } catch (error) {
+    deps.log.error?.(`Despacho de alertas falló: ${error?.message}`);
+  }
+}
+
+/**
+ * Alertas sin envío (desborde, recepción sin preliquidación): se despachan en segundo plano para
+ * no retrasar la respuesta de `finalizar`. Si no hay cómo, quedan en cola y las toma el barrido.
+ */
+async function despacharEnSegundoPlano(deps) {
+  try {
+    await deps.segundoPlano(() => despacharSeguro(deps));
+  } catch (error) {
+    deps.log.error?.(`No se pudo programar el despacho de alertas: ${error?.message}`);
+  }
 }
 
 /** Alerta de una recepción que no pudo vincularse: una por recepción (clave con sede 0). */
@@ -125,6 +151,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
       const codigo = error?.codigo;
       if (ALERTAS_SIN_VINCULO.includes(codigo)) {
         await alertarSinVinculo(codigo, recepcion, error, deps);
+        await despacharEnSegundoPlano(deps);
         return { resultado: codigo, envio: null };
       }
       if (codigo !== "ya_vinculada") throw error;
@@ -151,6 +178,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
       } catch (e) {
         log.error?.(`Alerta excede_animales de la sede ${sede.id} falló: ${e?.message}`);
       }
+      await despacharEnSegundoPlano(deps);
       return { resultado: "excede", envio: "bloqueada" };
     }
 
@@ -201,6 +229,8 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
         fallo = error;
         log.error?.(`Envío inmediato de la sede ${sede.id} falló: ${error?.message}`);
       }
+      // Lo que el envío encoló (error, sin_confirmar, bloqueos) sale en la misma tarea.
+      await despacharSeguro(deps);
       try {
         await deps.terminarCorrida(corrida, { error: fallo, ahora: new Date() });
       } catch (error) {

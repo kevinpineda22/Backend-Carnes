@@ -378,13 +378,19 @@ test("G4: con el flag apagado el despacho no toca la base ni envía", async () =
   assert.equal(almacen.tabla[0].intentos_envio, 0);
 });
 
-test("sin transporte inyectado no hace nada y no lanza", async () => {
+test("sin transporte inyectado usa el de notificaciones (solo el correo se sustituye con `notificar`)", async () => {
   const almacen = baseFalsa();
   await encolarAlerta(ALERTA, base({ db: almacen.db }));
-  const r = await despacharAlertas({ ahora: AHORA }, { db: almacen.db, log: logger(), env: ENV_ON });
+  const correos = [];
+  const notificar = async (tipo, ctx) => (correos.push({ tipo, ctx }), { success: true });
+  const r = await despacharAlertas(
+    { ahora: AHORA },
+    { db: almacen.db, log: logger(), env: ENV_ON, notificar, destinatarios: () => ["ops@example.test"], sandbox: () => false },
+  );
   assert.equal(r.ok, true);
-  assert.equal(r.enviadas, 0);
-  assert.equal(almacen.tabla[0].intentos_envio, 0);
+  assert.equal(r.enviadas, 1);
+  assert.equal(correos[0].tipo, "excede_animales");
+  assert.equal(correos[0].ctx.restantes, 1);
 });
 
 test("el filtro por preliquidación despacha solo las filas de esa preliquidación", async () => {

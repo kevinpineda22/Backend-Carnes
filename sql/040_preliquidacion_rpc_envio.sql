@@ -352,6 +352,11 @@ BEGIN
          version = version + 1
    WHERE id = p_id;
 
+  -- Cerrada ya no hay nada que avisar de lo pendiente: las alertas sin enviar quedan obsoletas.
+  -- La alerta `cerrada` la encola JS DESPUÉS de este cierre, así que no se la lleva este borrado.
+  DELETE FROM carnes_preliquidacion_alertas
+   WHERE preliquidacion_id = p_id AND enviado_ok = false;
+
   RETURN jsonb_build_object('resultado', 'ok', 'monto_no_asignado', p_monto_no_asignado);
 END;
 $fn$ LANGUAGE plpgsql;
