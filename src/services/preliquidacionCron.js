@@ -171,18 +171,21 @@ export async function ejecutarCron(entrada, dependencias = {}) {
   }
 
   const continua = !dryRun && pendientes > 0 && !fallo;
-  await deps.terminarCorrida(corrida, { error: fallo, ahora: deps.ahora(), continua });
-
-  // Backlog de alertas: se despacha DESPUÉS de cerrar la corrida y acotado por el tiempo que queda y un límite.
-  // Una falla aquí nunca altera el resultado de la corrida.
-  if (!dryRun) {
-    try {
-      const margen = restante();
-      if (margen !== null) {
-        await deps.despacharAlertas({ ahora, limite: LIMITE_DESPACHO_CRON, hasta: Date.now() + margen });
+  try {
+    await deps.terminarCorrida(corrida, { error: fallo, ahora: deps.ahora(), continua });
+  } finally {
+    // Backlog de alertas: se despacha DESPUÉS de cerrar la corrida y acotado por el tiempo que queda y un límite.
+    // Corre aunque el cierre rechace (el error del cierre sigue propagándose igual) y una falla aquí nunca altera
+    // el resultado de la corrida.
+    if (!dryRun) {
+      try {
+        const margen = restante();
+        if (margen !== null) {
+          await deps.despacharAlertas({ ahora, limite: LIMITE_DESPACHO_CRON, hasta: Date.now() + margen });
+        }
+      } catch (error) {
+        log.error?.(`Cron preliquidación: el despacho de alertas falló: ${error?.message}`);
       }
-    } catch (error) {
-      log.error?.(`Cron preliquidación: el despacho de alertas falló: ${error?.message}`);
     }
   }
 

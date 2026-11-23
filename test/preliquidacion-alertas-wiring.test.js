@@ -254,6 +254,30 @@ for (const codigo of ["sin_preliquidacion", "fuera_ventana", "oficial_legacy"]) 
   });
 }
 
+test("los despachos en segundo plano (desborde y sin vínculo) van acotados por límite y fecha límite", async () => {
+  const desborde = armarInmediato({
+    vincular: async () => ({ resultado: "excede", preliquidacion_id: 1, restantes: 1 }),
+    sede: { id: 11, estado: "bloqueada", motivo_bloqueo: "excede_animales", version: 2, preliquidacion_id: 1 },
+  });
+  await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, desborde.deps);
+  await desborde.registro.promesaSegundoPlano;
+  const sinVinculo = armarInmediato({ vincular: async () => { throw Object.assign(new Error("x"), { codigo: "sin_preliquidacion" }); } });
+  await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, sinVinculo.deps);
+  await sinVinculo.registro.promesaSegundoPlano;
+  for (const { registro } of [desborde, sinVinculo]) {
+    assert.equal(registro.despachos.length, 1);
+    assert.ok(registro.despachos[0].limite > 0 && Number.isFinite(registro.despachos[0].hasta), "con fecha límite");
+  }
+});
+
+test("sin tiempo restante de la función el despacho en segundo plano no reclama nada", async () => {
+  const { deps, registro } = armarInmediato({ vincular: async () => { throw Object.assign(new Error("x"), { codigo: "fuera_ventana" }); } });
+  deps.ahoraMs = () => 10_000_000;
+  await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, deps);
+  await registro.promesaSegundoPlano;
+  assert.equal(registro.despachos.length, 0);
+});
+
 test("si no hay forma de correr en segundo plano, la alerta queda para el barrido y la respuesta no cambia", async () => {
   const { deps } = armarInmediato({
     vincular: async () => ({ resultado: "excede", preliquidacion_id: 1, restantes: 1 }),

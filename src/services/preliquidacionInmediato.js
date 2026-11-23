@@ -92,9 +92,14 @@ async function despacharSeguro(deps, { hasta } = {}) {
  * Alertas sin envío (desborde, recepción sin preliquidación): se despachan en segundo plano para
  * no retrasar la respuesta de `finalizar`. Si no hay cómo, quedan en cola y las toma el barrido.
  */
-async function despacharEnSegundoPlano(deps) {
+async function despacharEnSegundoPlano(deps, restante) {
   try {
-    await deps.segundoPlano(() => despacharSeguro(deps));
+    await deps.segundoPlano(async () => {
+      // Acotado como el despacho tras el envío: por el tiempo que queda de la función y el límite de filas.
+      const margen = restante();
+      if (margen === null) return;
+      await despacharSeguro(deps, { hasta: Date.now() + margen });
+    });
   } catch (error) {
     deps.log.error?.(`No se pudo programar el despacho de alertas: ${error?.message}`);
   }
@@ -136,6 +141,13 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
     if (deps.motivoApagado()) return null;
     if (!ESPECIES.includes(recepcion?.especie)) return null;
 
+    // Tiempo que queda de la función para un envío o un despacho (null = ya no alcanza).
+    const restante = () =>
+      esperaParaEnvio(deps.ahoraMs() - inicioPeticion, {
+        maxEsperaMs: TIMEOUT_OFICIAL_MS,
+        minimoMs: ESPERA_MINIMA_CIERRE_MS,
+      });
+
     // Corrida perdida (R7): también se revisa aquí, independiente del cron. Nunca bloquea al recibidor.
     try {
       await deps.revisarCorridasPerdidas({ ahora });
@@ -151,7 +163,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
       const codigo = error?.codigo;
       if (ALERTAS_SIN_VINCULO.includes(codigo)) {
         await alertarSinVinculo(codigo, recepcion, error, deps);
-        await despacharEnSegundoPlano(deps);
+        await despacharEnSegundoPlano(deps, restante);
         return { resultado: codigo, envio: null };
       }
       if (codigo !== "ya_vinculada") throw error;
@@ -178,7 +190,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
       } catch (e) {
         log.error?.(`Alerta excede_animales de la sede ${sede.id} falló: ${e?.message}`);
       }
-      await despacharEnSegundoPlano(deps);
+      await despacharEnSegundoPlano(deps, restante);
       return { resultado: "excede", envio: "bloqueada" };
     }
 
@@ -188,11 +200,6 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
     }
 
     // 4. El presupuesto de tiempo de la función decide si se envía ahora o queda diferido.
-    const restante = () =>
-      esperaParaEnvio(deps.ahoraMs() - inicioPeticion, {
-        maxEsperaMs: TIMEOUT_OFICIAL_MS,
-        minimoMs: ESPERA_MINIMA_CIERRE_MS,
-      });
     const timeoutMs = restante();
     if (timeoutMs === null) return { resultado, envio: "diferido" };
 

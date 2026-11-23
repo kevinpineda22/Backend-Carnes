@@ -156,6 +156,14 @@ test("un despacho que falla (o lanza) no cambia el resultado de la corrida", asy
   assert.equal(por(llamadas, "terminarCorrida")[0].args[1].error, null);
 });
 
+test("si terminarCorrida rechaza, el despacho acotado igual corre y el error del cierre se propaga", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], fallos: { terminarCorrida: new Error("cierre roto") } });
+  await assert.rejects(() => ejecutarCron({ origen: "schedule" }, deps), /cierre roto/);
+  const [despacho] = por(llamadas, "despacharAlertas");
+  assert.ok(despacho, "el despacho corre aunque el cierre falle");
+  assert.ok(despacho.args[0].limite > 0 && Number.isFinite(despacho.args[0].hasta));
+});
+
 test("sin tiempo restante no se despacha, pero la corrida igual se cierra", async () => {
   const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], relojMs: [0, 100_000_000] });
   await ejecutarCron({ origen: "schedule" }, deps);
