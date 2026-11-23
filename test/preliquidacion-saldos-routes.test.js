@@ -299,3 +299,36 @@ test("cada toque de un saldo sube la versión del destino (editar, descartar, mo
     assert.match(sql.slice(ini, fin), /UPDATE carnes_preliquidaciones SET version = version \+ 1 WHERE id/, nombre);
   }
 });
+
+// ─── E-S4: el efecto en el gasto del destino (lo que la base deja tras la RPC) ──
+
+const gastoDe = async (id) => (await llamar("GET", `/${id}`)).json.data.calculo.gasto_total;
+
+test("E-S4: editar el saldo a 150.000 mueve el gasto del destino; quitarlo lo devuelve a la base", async () => {
+  tablas.carnes_preliquidacion_saldos = [saldo({ id: 1, valor: "200000.00", destino_preliquidacion_id: 11 })];
+  assert.equal(await gastoDe(11), "9700000.00");
+  tablas.carnes_preliquidacion_saldos[0].valor = "150000.00"; // estado tras carnes_preliq_saldo_editar
+  assert.equal(await gastoDe(11), "9650000.00");
+  tablas.carnes_preliquidacion_saldos[0].estado = "descartado"; // tras carnes_preliq_saldo_descartar
+  assert.equal(await gastoDe(11), "9500000.00");
+});
+
+test("E-S4: mover el saldo a otra preliquidación abierta cambia el gasto de ambas, solo las sin liquidar", async () => {
+  tablas.carnes_preliquidaciones.push(preliq({ id: 13 }));
+  tablas.carnes_preliquidacion_saldos = [
+    saldo({ id: 1, estado: "movido", movido_a_saldo_id: 2, destino_preliquidacion_id: 11 }),
+    saldo({ id: 2, destino_preliquidacion_id: 13 }),
+  ];
+  assert.equal(await gastoDe(11), "9500000.00");
+  assert.equal(await gastoDe(13), "9700000.00");
+});
+
+test("E-S4: una preliquidación ya liquidada conserva su gasto congelado aunque cambien los saldos", async () => {
+  tablas.carnes_preliquidaciones.push(
+    preliq({ id: 14, liquidada_at: "2026-11-24T02:31:00.000Z", gasto_total_aplicado: "9700000.00", servicio_aplicado: "500000.00", costo_por_animal: "970000.00" }),
+  );
+  tablas.carnes_preliquidacion_saldos = [saldo({ id: 1, estado: "aplicado", destino_preliquidacion_id: 14 })];
+  assert.equal(await gastoDe(14), "9700000.00");
+  tablas.carnes_preliquidacion_saldos.push(saldo({ id: 2, valor: "999999.00", destino_preliquidacion_id: 14 }));
+  assert.equal(await gastoDe(14), "9700000.00", "un saldo pendiente nuevo no reabre lo congelado");
+});
