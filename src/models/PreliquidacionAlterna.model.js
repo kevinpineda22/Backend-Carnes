@@ -87,7 +87,7 @@ function aPlanSaldo(plan, por) {
 /**
  * Compara el servicio real vigente de la preliquidación contra el aplicado y registra la
  * alterna y su saldo. Idempotente: si ya existe la alterna de ese `servicio_at` no hace nada.
- * Relee y reintenta (máx. 3) si cambió el estado de los saldos.
+ * Relee y reintenta (máx. 3) si cambió el estado de los saldos o el destino dejó de ser válido.
  *
  * @returns {Promise<{resultado: string, alterna?: object, alterna_id?: *}>}
  *   ok | ya_registrada | sin_diferencia | sin_servicio | no_liquidada | no_encontrada | version_cambiada | <código de la RPC>
@@ -125,7 +125,8 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
       p_saldo_plan: aPlanSaldo(planSaldo, por),
     });
 
-    if (respuesta?.resultado === "version_cambiada") {
+    // `destino_invalido`: el destino elegido se liquidó o cerró entre la lectura y la RPC; se relee y se replanea.
+    if (respuesta?.resultado === "version_cambiada" || respuesta?.resultado === "destino_invalido") {
       ultimo = respuesta;
       continue;
     }

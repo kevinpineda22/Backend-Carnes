@@ -198,6 +198,27 @@ test("version_cambiada relee y reintenta; a la tercera se rinde sin lanzar", asy
   assert.equal(agotado.reg.rpcs.length, 3);
 });
 
+test("destino_invalido (el destino se liquidó o cerró entre la lectura y la RPC) relee y replanea con otro destino", async () => {
+  const abiertas = [
+    { id: 20, especie: "res", estado: "abierta", liquidada_at: null, created_at: "2026-11-25T10:00:00Z" },
+    { id: 21, especie: "res", estado: "abierta", liquidada_at: null, created_at: "2026-11-26T10:00:00Z" },
+  ];
+  const { deps, reg } = armar({ abiertas, respuestas: [{ resultado: "destino_invalido" }, { resultado: "ok", alterna_id: 3 }] });
+  let lectura = 0;
+  deps.leer = async () => {
+    lectura += 1;
+    return { cabecera: liquidada({ servicio: "700000.00", servicio_at: A_LAS_2140 }), sedes: sedes2(), saldos: [], abiertas: lectura === 1 ? abiertas : abiertas.slice(1), alterna: null };
+  };
+  const r = await Alterna.registrarAlterna(1, deps);
+  assert.equal(r.resultado, "ok");
+  assert.deepEqual(reg.rpcs.map((x) => x.args.p_saldo_plan.destino_preliquidacion_id), [20, 21]);
+
+  const agotado = armar({ respuestas: [{ resultado: "destino_invalido" }] });
+  const r2 = await Alterna.registrarAlterna(1, agotado.deps);
+  assert.equal(r2.resultado, "destino_invalido");
+  assert.equal(agotado.reg.rpcs.length, 3);
+});
+
 test("una alerta que falla no deshace la alterna", async () => {
   const { deps } = armar();
   deps.encolar = async () => { throw new Error("correo caído"); };
