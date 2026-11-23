@@ -16,6 +16,7 @@ import {
   AVISO_SERVICIO_DESBLOQUEO,
   AVISO_SERVICIO_TARDIO,
   AVISO_SERVICIO_TARDIO_REINTENTO,
+  AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO,
   AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA,
   AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR,
   registrarAlterna,
@@ -557,7 +558,7 @@ export async function actualizar(id, cambios = {}, { por = null, encolar = encol
         const r = await registrarAlterna(id, { por, encolar, log });
         if (r.resultado === "ok") {
           alterna = r.alterna;
-          aviso = Number(r.alterna.diferencia) === 0 ? AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA : AVISO_SERVICIO_TARDIO;
+          aviso = Number(r.alterna.diferencia) === 0 ? AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO : AVISO_SERVICIO_TARDIO;
         } else if (r.resultado === "ya_registrada") {
           aviso = AVISO_SERVICIO_TARDIO;
         } else if (r.resultado === "sin_diferencia") {

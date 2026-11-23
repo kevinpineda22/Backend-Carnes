@@ -34,6 +34,14 @@ export const AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA = Object.freeze({
     "no hay diferencia, no se generó liquidación alterna ni saldo pendiente nuevo.",
 });
 
+/** Variante cuando la diferencia es 0 pero se corrigió un saldo vigente de un servicio tardío anterior. */
+export const AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO = Object.freeze({
+  codigo: "servicio_tardio",
+  mensaje:
+    "El servicio se cargó después de la liquidación y coincide con el aplicado: no hay diferencia. " +
+    "El saldo pendiente anterior se descartó o se revirtió.",
+});
+
 /** Variante cuando la alterna no se pudo registrar: el servicio quedó guardado y la próxima corrida la reintenta. */
 export const AVISO_SERVICIO_TARDIO_REINTENTO = Object.freeze({
   codigo: "servicio_tardio",
@@ -157,8 +165,9 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
     if (respuesta?.resultado !== "ok") return { ...respuesta, resultado: respuesta?.resultado ?? "error" };
 
     // Aviso (deduplicado por alterna): una falla del correo no deshace la alterna.
+    // Con diferencia 0 solo se corrigió un saldo: no hay nada que avisar por correo.
     try {
-      await encolar(
+      if (comparacion.hayAlterna) await encolar(
         {
           evento: "servicio_tardio",
           preliquidacionId: id,

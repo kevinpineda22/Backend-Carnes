@@ -203,6 +203,14 @@ test("servicio corregido hasta igualar el aplicado con un saldo pendiente previo
   assert.equal(r.alterna.diferencia, "0.00");
 });
 
+test("diferencia 0 con saldo corregido: no se encola la alerta servicio_tardio", async () => {
+  const saldos = [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }];
+  const { deps, reg } = armar({ cab: liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 }), saldos });
+  const r = await Alterna.registrarAlterna(1, deps);
+  assert.equal(r.resultado, "ok");
+  assert.equal(reg.alertas.length, 0);
+});
+
 test("servicio corregido hasta igualar el aplicado con un saldo ya aplicado: ajuste que lo revierte", async () => {
   const saldos = [{ id: 9, valor: "200000.00", estado: "aplicado", destino_preliquidacion_id: 20 }];
   const { deps, reg } = armar({ cab: liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 }), saldos });
@@ -494,6 +502,15 @@ test("aviso: sin diferencia (servicio igual al aplicado) -> no promete alterna n
   assert.equal(r.alterna ?? null, null);
   assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA);
   assert.doesNotMatch(r.aviso.mensaje, /se generó la liquidación alterna/i);
+});
+
+test("aviso: diferencia 0 que corrigió un saldo vigente -> dice que el saldo se descartó o revirtió", async () => {
+  const patch = prepararPatchLiquidada(500000);
+  tablas.carnes_preliquidacion_saldos = [{ id: 9, origen_preliquidacion_id: 1, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }];
+  const r = await patch();
+  assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO);
+  assert.match(r.aviso.mensaje, /descart|revirti/i);
+  assert.doesNotMatch(r.aviso.mensaje, /no se generó liquidación alterna/i);
 });
 
 for (const [nombre, manejador] of [
