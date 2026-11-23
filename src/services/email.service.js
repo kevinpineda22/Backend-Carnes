@@ -81,6 +81,15 @@ export function destinatariosAnulacion() {
   return propios.length ? propios : destinatariosAdmin();
 }
 
+/**
+ * Quien recibe las alertas de la preliquidación de talleres (`CARNES_MAIL_PRELIQUIDACION`). Si está
+ * vacía cae al admin. La dirección nunca va en el código: sale solo del entorno, y se lee por llamada.
+ */
+export function destinatariosPreliquidacion(env = process.env) {
+  const propios = lista(env.CARNES_MAIL_PRELIQUIDACION);
+  return propios.length ? propios : lista(env.CARNES_MAIL_ADMIN);
+}
+
 export function emailConfigurado() {
   return Boolean(process.env.EMAIL_USER && process.env.EMAIL_PASS);
 }

@@ -1,14 +1,23 @@
+import { motivoApagado } from "../config/preliquidacion.js";
+import { sandboxOn } from "../config/sandbox.js";
+import { destinatariosPreliquidacion } from "./email.service.js";
+
 /**
  * Puerto de alertas de la preliquidación.
  *
- * S1-S3 dependen solo de este puerto. Hoy es un no-op que deja rastro en el log y
- * NUNCA lanza: una alerta que falla no puede tumbar una liquidación ni un envío.
- * S4 reemplaza el cuerpo por la cola real (tabla `carnes_preliquidacion_alertas`
- * con deduplicación por `(evento, preliquidacion_id, sede_id, ocurrencia)`) y el
- * despacho por correo, sin cambiar las firmas.
+ * Es una cola en la tabla `carnes_preliquidacion_alertas` con deduplicación por
+ * `(evento, preliquidacion_id, sede_id, ocurrencia)`:
  *
- * Los destinatarios salen de `CARNES_MAIL_PRELIQUIDACION`; si falta se avisa por
- * log (G-S3) y el flujo sigue.
+ * - `encolarAlerta` solo inserta (`INSERT ... ON CONFLICT DO NOTHING`): no envía nada.
+ * - `despacharAlertas` reclama las filas sin enviar, las manda por el transporte inyectado
+ *   (`enviar`) y marca `enviado_ok` SOLO después de un envío exitoso. Un envío fallido deja la
+ *   fila para la siguiente corrida (tope de `MAX_INTENTOS_ALERTA`).
+ *
+ * Ninguna de las dos lanza jamás: una alerta que falla no puede tumbar una liquidación ni un envío
+ * a SIESA. Con el interruptor de la preliquidación apagado (o la compuerta de auth cerrada) no se produce nada (G4).
+ *
+ * Los destinatarios salen de `CARNES_MAIL_PRELIQUIDACION` (con respaldo al admin); si no hay,
+ * se avisa por log (G-S3) y el flujo sigue.
  */
 
 /** Tipos de alerta del diseño (ver "Emails"). */
@@ -33,6 +42,47 @@ export const EVENTOS_ALERTA = Object.freeze([
   "cerrada",
 ]);
 
+/**
+ * Qué lleva cada evento en la clave de deduplicación (tabla "Alert dedupe" del diseño):
+ * - `sede`: sede_id real y `ocurrencia` = versión de la sede tras la transición que entró al estado alertado.
+ * - `recepcion`: sede 0 y `ocurrencia` = id de la recepción (el aviso se genera antes de tener sede).
+ * - `alterna`: sede 0 y `ocurrencia` = id de la alterna.
+ * - `preliquidacion`: sede 0 y ocurrencia 0 (una vez por preliquidación).
+ */
+export const REGLA_OCURRENCIA = Object.freeze({
+  excede_animales: "sede",
+  utilidad_negativa: "sede",
+  servicio_cero: "sede",
+  costeo_invalido: "sede",
+  armado_invalido: "sede",
+  envio_error: "sede",
+  reintentos_agotados: "sede",
+  sin_confirmar: "sede",
+  envio_en_vuelo: "sede",
+  inicial_pendiente: "sede",
+  requiere_correccion: "sede",
+  sin_preliquidacion: "recepcion",
+  fuera_ventana: "recepcion",
+  oficial_legacy: "recepcion",
+  servicio_tardio: "alterna",
+  ventana_vencida: "preliquidacion",
+  corrida_perdida: "preliquidacion",
+  cerrada: "preliquidacion",
+});
+
+/** Intentos de envío por fila antes de dejar de insistir (queda en el log y en la tabla). */
+export const MAX_INTENTOS_ALERTA = 5;
+
+/** Un reclamo más viejo que esto se considera abandonado (el proceso que lo tomó murió). */
+export const VENCIMIENTO_RECLAMO_MS = 5 * 60 * 1000;
+
+/** Filas que se despachan por invocación si el contexto no pide otro límite. */
+const LIMITE_POR_DEFECTO = 25;
+/** Filas que se leen para elegir las despachables (el filtro del reclamo vencido se hace en JS). */
+const LECTURA_MAXIMA = 200;
+
+const TABLA = "carnes_preliquidacion_alertas";
+const CLAVE_UNICA = "evento,preliquidacion_id,sede_id,ocurrencia";
 const VARIABLE_DESTINATARIOS = "CARNES_MAIL_PRELIQUIDACION";
 
 /** Ejecuta un log sin dejar que un logger roto escape. */
@@ -44,40 +94,202 @@ function seguro(fn) {
   }
 }
 
-function sinDestinatarios() {
-  return !String(process.env[VARIABLE_DESTINATARIOS] ?? "").trim();
+/** La base real se carga bajo demanda: importar el cliente exige las variables de Supabase. */
+async function baseDeDatos() {
+  return (await import("../config/supabase.js")).supabase;
+}
+
+const entero = (valor) => (Number.isFinite(Number(valor)) ? Math.trunc(Number(valor)) : 0);
+
+/** Normaliza la clave según la regla del evento, para que la deduplicación no dependa del llamador. */
+function claveNormalizada(evento, datos) {
+  const preliquidacionId = entero(datos.preliquidacionId);
+  const sedeId = entero(datos.sedeId);
+  const ocurrencia = entero(datos.ocurrencia);
+  switch (REGLA_OCURRENCIA[evento]) {
+    case "preliquidacion":
+      return { preliquidacion_id: preliquidacionId, sede_id: 0, ocurrencia: 0 };
+    case "recepcion":
+    case "alterna":
+      return { preliquidacion_id: preliquidacionId, sede_id: 0, ocurrencia };
+    default:
+      return { preliquidacion_id: preliquidacionId, sede_id: sedeId, ocurrencia };
+  }
 }
 
 /**
- * Encola una alerta (hoy: solo la registra en el log).
+ * Encola una alerta (solo inserta; el correo sale en `despacharAlertas`).
+ *
  * @param {{evento: string, preliquidacionId?: *, sedeId?: *, ocurrencia?: *, detalle?: object}} alerta
- * @param {{log?: Pick<Console, "info"|"warn"|"error">}} [opciones]
- * @returns {Promise<{ok: true, noop: true}>}
+ * @param {{log?: Pick<Console, "info"|"warn"|"error">, db?: object, env?: object}} [opciones]
+ * @returns {Promise<{ok: boolean, encolada?: boolean, noop?: boolean, error?: string}>}
+ *   `encolada:false` = ya existía esa clave; `noop:true` = no se encoló (flag apagado o evento inválido).
  */
-export async function encolarAlerta(alerta, { log = console } = {}) {
-  seguro(() => {
+export async function encolarAlerta(alerta, { log = console, db, env = process.env } = {}) {
+  try {
     const datos = alerta && typeof alerta === "object" ? alerta : {};
     const evento = typeof datos.evento === "string" ? datos.evento : String(datos.evento);
 
     if (!EVENTOS_ALERTA.includes(evento)) {
-      log.warn(`[preliquidacion-alertas] evento desconocido "${evento}"; se ignora`);
-      return;
+      seguro(() => log.warn(`[preliquidacion-alertas] evento desconocido "${evento}"; se ignora`));
+      return { ok: true, noop: true };
     }
-    if (sinDestinatarios()) {
-      log.warn(`[preliquidacion-alertas] ${VARIABLE_DESTINATARIOS} no está definida: la alerta "${evento}" no tiene a quién enviarse`);
+    if (motivoApagado(env) !== null) return { ok: true, noop: true, motivo: "flag_apagado" };
+
+    if (destinatariosPreliquidacion(env).length === 0) {
+      seguro(() =>
+        log.warn(
+          `[preliquidacion-alertas] ${VARIABLE_DESTINATARIOS} no está definida: la alerta "${evento}" queda en cola hasta que haya a quién enviarla`,
+        ),
+      );
     }
-    log.info(
-      `[preliquidacion-alertas] (no-op) ${evento} preliquidacion=${datos.preliquidacionId ?? 0} ` +
-        `sede=${datos.sedeId ?? 0} ocurrencia=${datos.ocurrencia ?? 0}`,
+
+    const cliente = db ?? (await baseDeDatos());
+    const fila = {
+      evento,
+      ...claveNormalizada(evento, datos),
+      detalle: datos.detalle && typeof datos.detalle === "object" ? datos.detalle : {},
+      enviado_ok: false,
+    };
+    const { data, error } = await cliente
+      .from(TABLA)
+      .upsert(fila, { onConflict: CLAVE_UNICA, ignoreDuplicates: true })
+      .select("id");
+    if (error) throw new Error(error.message);
+
+    const encolada = Array.isArray(data) && data.length > 0;
+    seguro(() =>
+      log.info(
+        `[preliquidacion-alertas] ${evento} preliquidacion=${fila.preliquidacion_id} sede=${fila.sede_id} ` +
+          `ocurrencia=${fila.ocurrencia} ${encolada ? "encolada" : "ya existía"}`,
+      ),
     );
-  });
-  return { ok: true, noop: true };
+    return { ok: true, encolada };
+  } catch (error) {
+    seguro(() => log.error(`[preliquidacion-alertas] no se pudo encolar la alerta: ${error?.message}`));
+    return { ok: false, error: error?.message ?? String(error) };
+  }
+}
+
+/** Reclamo atómico (CAS): solo gana quien ve la fila exactamente como la leyó. */
+async function reclamar(cliente, fila, ahora) {
+  let consulta = cliente
+    .from(TABLA)
+    .update({ reclamada_at: ahora.toISOString(), intentos_envio: fila.intentos_envio + 1 })
+    .eq("id", fila.id)
+    .eq("enviado_ok", false)
+    .eq("intentos_envio", fila.intentos_envio);
+  consulta = fila.reclamada_at == null ? consulta.is("reclamada_at", null) : consulta.eq("reclamada_at", fila.reclamada_at);
+  const { data, error } = await consulta.select();
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) && data.length > 0 ? data[0] : null;
+}
+
+/** El contexto del correo: el detalle de la alerta más las claves que la identifican. */
+function contextoDeEnvio(fila) {
+  return {
+    ...(fila.detalle && typeof fila.detalle === "object" ? fila.detalle : {}),
+    preliquidacion_id: fila.preliquidacion_id,
+    sede_id: fila.sede_id,
+    ocurrencia: fila.ocurrencia,
+  };
 }
 
 /**
- * Despacha el backlog de alertas (hoy: no hace nada).
- * @returns {Promise<{ok: true, noop: true, enviadas: 0}>}
+ * Despacha el backlog de alertas sin enviar.
+ *
+ * @param {{ahora?: Date, preliquidacionId?: number, limite?: number}} [contexto]
+ * @param {{enviar?: (evento: string, contexto: object) => Promise<{success: boolean, sandbox?: boolean, error?: string}>,
+ *   db?: object, env?: object, log?: object, destinatarios?: () => string[], sandbox?: () => boolean}} [opciones]
+ *   `enviar` es el transporte; sin él no se envía nada.
+ * @returns {Promise<{ok: boolean, enviadas: number, fallidas?: number, sin_destinatarios?: true, error?: string}>}
  */
-export async function despacharAlertas(_contexto, _opciones = {}) {
-  return { ok: true, noop: true, enviadas: 0 };
+export async function despacharAlertas(contexto, opciones = {}) {
+  const {
+    enviar,
+    db,
+    env = process.env,
+    log = console,
+    destinatarios = () => destinatariosPreliquidacion(env),
+    sandbox = () => sandboxOn(),
+  } = opciones ?? {};
+  try {
+    const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO } = contexto && typeof contexto === "object" ? contexto : {};
+    if (motivoApagado(env) !== null || typeof enviar !== "function") return { ok: true, enviadas: 0 };
+
+    if (!sandbox() && destinatarios().length === 0) {
+      seguro(() => log.warn(`[preliquidacion-alertas] ${VARIABLE_DESTINATARIOS} no está definida: no se despachan alertas`));
+      return { ok: true, enviadas: 0, sin_destinatarios: true };
+    }
+
+    const cliente = db ?? (await baseDeDatos());
+    let lectura = cliente
+      .from(TABLA)
+      .select("*")
+      .eq("enviado_ok", false)
+      .lt("intentos_envio", MAX_INTENTOS_ALERTA)
+      .order("created_at", { ascending: true });
+    if (preliquidacionId !== undefined) lectura = lectura.eq("preliquidacion_id", preliquidacionId);
+    const { data, error } = await lectura.limit(LECTURA_MAXIMA);
+    if (error) throw new Error(error.message);
+
+    const vencido = ahora.getTime() - VENCIMIENTO_RECLAMO_MS;
+    const candidatas = (data || [])
+      .filter((f) => f.reclamada_at == null || new Date(f.reclamada_at).getTime() < vencido)
+      .slice(0, Math.max(0, entero(limite)));
+
+    let enviadas = 0;
+    let fallidas = 0;
+    for (const candidata of candidatas) {
+      let reclamada = null;
+      try {
+        reclamada = await reclamar(cliente, candidata, ahora);
+      } catch (e) {
+        seguro(() => log.error(`[preliquidacion-alertas] no se pudo reclamar la alerta ${candidata.id}: ${e?.message}`));
+      }
+      if (!reclamada) continue;
+
+      let resultado;
+      try {
+        resultado = await enviar(reclamada.evento, contextoDeEnvio(reclamada));
+      } catch (e) {
+        resultado = { success: false, error: e?.message ?? String(e) };
+      }
+
+      try {
+        if (resultado?.success) {
+          const detalle = resultado.sandbox ? { ...(reclamada.detalle ?? {}), sandbox: true } : reclamada.detalle ?? {};
+          const { error: errorMarca } = await cliente
+            .from(TABLA)
+            .update({ enviado_ok: true, enviado_at: ahora.toISOString(), detalle })
+            .eq("id", reclamada.id);
+          if (errorMarca) throw new Error(errorMarca.message);
+          enviadas += 1;
+          continue;
+        }
+        fallidas += 1;
+        seguro(() =>
+          log.warn(
+            `[preliquidacion-alertas] el envío de la alerta ${reclamada.id} (${reclamada.evento}) falló ` +
+              `(intento ${reclamada.intentos_envio}/${MAX_INTENTOS_ALERTA}): ${resultado?.error ?? "sin detalle"}`,
+          ),
+        );
+        if (reclamada.intentos_envio >= MAX_INTENTOS_ALERTA) {
+          seguro(() =>
+            log.error(
+              `[preliquidacion-alertas] la alerta ${reclamada.id} (${reclamada.evento}) agotó los ${MAX_INTENTOS_ALERTA} intentos y ya no se reintentará`,
+            ),
+          );
+        }
+        // Se libera el reclamo para que la siguiente corrida la reintente sin esperar el vencimiento.
+        await cliente.from(TABLA).update({ reclamada_at: null }).eq("id", reclamada.id).eq("enviado_ok", false);
+      } catch (e) {
+        seguro(() => log.error(`[preliquidacion-alertas] no se pudo actualizar la alerta ${reclamada.id}: ${e?.message}`));
+      }
+    }
+    return { ok: true, enviadas, fallidas };
+  } catch (error) {
+    seguro(() => log.error(`[preliquidacion-alertas] el despacho falló: ${error?.message}`));
+    return { ok: false, enviadas: 0, error: error?.message ?? String(error) };
+  }
 }
