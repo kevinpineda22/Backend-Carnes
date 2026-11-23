@@ -86,7 +86,7 @@ function aPlanSaldo(plan, por) {
 
 /**
  * Compara el servicio real vigente de la preliquidación contra el aplicado y registra la
- * alterna y su saldo. Idempotente: si ya existe la alterna de ese `servicio_at` no hace nada.
+ * alterna y su saldo (si la diferencia es 0 pero quedó un saldo vigente de una alterna anterior, lo corrige). Idempotente: si ya existe la alterna de ese `servicio_at` no hace nada.
  * Relee y reintenta (máx. 3) si cambió el estado de los saldos o el destino dejó de ser válido.
  *
  * @returns {Promise<{resultado: string, alterna?: object, alterna_id?: *}>}
@@ -107,8 +107,9 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
       servicioAplicado: cabecera.servicio_aplicado,
       animales: Number(cabecera.animales),
     });
-    if (!comparacion.hayAlterna) return { resultado: "sin_diferencia" };
 
+    // Con diferencia 0 igual se planea el saldo: si un servicio tardío anterior dejó un saldo vigente y el
+    // servicio se corrigió hasta igualar el aplicado, ese monto viejo debe anularse (no sumar al gasto de la siguiente).
     const planSaldo = planearSaldo({
       diferencia: comparacion.plan.diferencia,
       saldosOrigen: saldos,
@@ -116,6 +117,7 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
       especie: cabecera.especie,
       abiertas,
     });
+    if (!comparacion.hayAlterna && planSaldo.accion === "nada") return { resultado: "sin_diferencia" };
     const respuesta = await rpc("carnes_preliq_registrar_alterna", {
       p_id: id,
       p_servicio: comparacion.plan.servicio_real,

@@ -179,6 +179,37 @@ test("sin diferencia (servicio igual al aplicado) no hay alterna ni RPC", async 
   assert.equal(reg.rpcs.length, 0);
 });
 
+test("servicio corregido hasta igualar el aplicado con un saldo pendiente previo: se descarta el saldo (no queda monto viejo)", async () => {
+  const saldos = [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }];
+  const { deps, reg } = armar({ cab: liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 }), saldos });
+  const r = await Alterna.registrarAlterna(1, { ...deps, por: "ana" });
+  assert.equal(r.resultado, "ok");
+  assert.equal(reg.rpcs.length, 1);
+  const { args } = reg.rpcs[0];
+  assert.equal(args.p_diferencia, "0.00");
+  assert.deepEqual(args.p_saldo_plan, { accion: "actualizar_pendiente", saldo_id: 9, valor: "0.00", descartar: true, por: "ana" });
+  assert.equal(r.alterna.diferencia, "0.00");
+});
+
+test("servicio corregido hasta igualar el aplicado con un saldo ya aplicado: ajuste que lo revierte", async () => {
+  const saldos = [{ id: 9, valor: "200000.00", estado: "aplicado", destino_preliquidacion_id: 20 }];
+  const { deps, reg } = armar({ cab: liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 }), saldos });
+  const r = await Alterna.registrarAlterna(1, deps);
+  assert.equal(r.resultado, "ok");
+  assert.deepEqual(
+    { a: reg.rpcs[0].args.p_saldo_plan.accion, v: reg.rpcs[0].args.p_saldo_plan.valor, aj: reg.rpcs[0].args.p_saldo_plan.ajuste_de_saldo_id },
+    { a: "crear_ajuste", v: "-200000.00", aj: 9 },
+  );
+});
+
+test("sin diferencia y con saldos que ya valen cero o están descartados: no hay nada que corregir", async () => {
+  const saldos = [{ id: 9, valor: "0.00", estado: "pendiente" }, { id: 8, valor: "100000.00", estado: "descartado" }];
+  const { deps, reg } = armar({ cab: liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 }), saldos });
+  const r = await Alterna.registrarAlterna(1, deps);
+  assert.equal(r.resultado, "sin_diferencia");
+  assert.equal(reg.rpcs.length, 0);
+});
+
 test("sin liquidar no se registra alterna", async () => {
   const { deps, reg } = armar({ cab: cabecera({ servicio: "700000.00", servicio_at: A_LAS_2140 }) });
   const r = await Alterna.registrarAlterna(1, deps);
