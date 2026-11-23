@@ -250,7 +250,7 @@ async function conCola(alertas, { respuestas, ...opciones } = {}) {
   const almacen = baseFalsa();
   for (const a of alertas) await encolarAlerta(a, base({ db: almacen.db }));
   const t = transporte(respuestas);
-  const despachar = (contexto = { ahora: AHORA }, extra = {}) =>
+  const despachar = (contexto = {}, extra = {}) =>
     despacharAlertas(contexto, { db: almacen.db, log: logger(), env: ENV_ON, enviar: t.enviar, destinatarios: () => ["ops@example.test"], sandbox: () => false, reloj: () => AHORA.getTime(), ...opciones, ...extra });
   return { almacen, t, despachar };
 }
@@ -331,7 +331,7 @@ test("un fallo tardío no libera el reclamo de otro proceso (el fallo no toca re
 test("sin correo configurado no se reclama nada, no se gastan intentos y se avisa una sola vez", async () => {
   const { almacen, t, despachar } = await conCola([ALERTA, { ...ALERTA, ocurrencia: 3 }], { emailListo: () => false });
   const log = logger();
-  const r = await despachar({ ahora: AHORA }, { log });
+  const r = await despachar({}, { log });
   assert.equal(r.ok, true);
   assert.equal(r.sin_correo, true);
   assert.equal(t.enviados.length, 0);
@@ -394,7 +394,7 @@ test("sandbox: el envío suprimido igual marca enviado_ok y deja detalle.sandbox
 test("G-S3: sin destinatarios (y sin sandbox) no gasta intentos, avisa por log y no lanza", async () => {
   const { almacen, t, despachar } = await conCola([ALERTA], { destinatarios: () => [] });
   const log = logger();
-  const r = await despachar({ ahora: AHORA }, { log });
+  const r = await despachar({}, { log });
   assert.equal(r.ok, true);
   assert.equal(r.sin_destinatarios, true);
   assert.equal(t.enviados.length, 0);
@@ -411,7 +411,7 @@ test("en sandbox el despacho sigue aunque no haya destinatarios", async () => {
 
 test("G4: con el flag apagado el despacho no toca la base ni envía", async () => {
   const { almacen, t, despachar } = await conCola([ALERTA]);
-  const r = await despachar({ ahora: AHORA }, { env: { CARNES_PRELIQUIDACION: "off" } });
+  const r = await despachar({}, { env: { CARNES_PRELIQUIDACION: "off" } });
   assert.equal(r.ok, true);
   assert.equal(r.enviadas, 0);
   assert.equal(t.enviados.length, 0);
@@ -424,7 +424,7 @@ test("sin transporte inyectado usa el de notificaciones (solo el correo se susti
   const correos = [];
   const notificar = async (tipo, ctx) => (correos.push({ tipo, ctx }), { success: true });
   const r = await despacharAlertas(
-    { ahora: AHORA },
+    {},
     { db: almacen.db, log: logger(), env: ENV_ON, notificar, destinatarios: () => ["ops@example.test"], sandbox: () => false },
   );
   assert.equal(r.ok, true);
@@ -438,7 +438,7 @@ test("el filtro por preliquidación despacha solo las filas de esa preliquidaci�
     { evento: "cerrada", preliquidacionId: 1 },
     { evento: "cerrada", preliquidacionId: 2 },
   ]);
-  const r = await despachar({ ahora: AHORA, preliquidacionId: 2 });
+  const r = await despachar({ preliquidacionId: 2 });
   assert.equal(r.enviadas, 1);
   assert.equal(t.enviados[0].contexto.preliquidacion_id, 2);
 });
@@ -446,7 +446,7 @@ test("el filtro por preliquidación despacha solo las filas de esa preliquidaci�
 test("el límite acota cuántas filas se despachan por invocación", async () => {
   const alertas = [1, 2, 3, 4].map((n) => ({ evento: "cerrada", preliquidacionId: n }));
   const { t, despachar } = await conCola(alertas);
-  const r = await despachar({ ahora: AHORA, limite: 2 });
+  const r = await despachar({ limite: 2 });
   assert.equal(r.enviadas, 2);
   assert.equal(t.enviados.length, 2);
 });
@@ -466,6 +466,18 @@ test("la fecha límite (`hasta`) reserva el peor caso de envío: no se reclama l
   assert.equal(almacen.tabla.filter((f) => f.reclamada_at != null).length, 2, "las demás ni se reclamaron");
 });
 
+test("un envío que no termina se corta al vencer el timeout: cuenta como intento fallido y el reclamo queda (backoff)", async () => {
+  const { almacen, despachar } = await conCola([ALERTA]);
+  const inicio = Date.now();
+  const r = await despachar({}, { enviar: () => new Promise(() => {}), timeoutEnvioMs: 20 });
+  assert.ok(Date.now() - inicio < 2000, "no se queda esperando al transporte");
+  assert.equal(r.enviadas, 0);
+  assert.equal(r.fallidas, 1);
+  assert.equal(almacen.tabla[0].enviado_ok, false);
+  assert.equal(almacen.tabla[0].intentos_envio, 1);
+  assert.notEqual(almacen.tabla[0].reclamada_at, null);
+});
+
 test("si ni un envío cabe en el presupuesto (`hasta`) no se reclama nada", async () => {
   const { almacen, t, despachar } = await conCola([ALERTA]);
   const r = await despachar({ hasta: AHORA.getTime() + TIMEOUT_ENVIO_MS - 1 });
@@ -483,16 +495,15 @@ test("con la fecha límite ya vencida no se reclama nada", async () => {
   assert.equal(almacen.tabla[0].intentos_envio, 0);
 });
 
-test("el reclamo y el envío se sellan con el reloj fresco, no con la `ahora` que capturó el llamador al empezar", async () => {
+test("el reclamo y el backoff salen siempre del reloj inyectado (`reloj`), no de una hora capturada por el llamador", async () => {
   const { almacen, despachar } = await conCola([ALERTA], { respuestas: [{ success: false, error: "x" }] });
-  const inicioViejo = new Date(AHORA.getTime() - 240 * 1000);
-  await despachar({ ahora: inicioViejo });
+  await despachar({});
   assert.equal(almacen.tabla[0].reclamada_at, AHORA.toISOString());
-  // Con el sello viejo el backoff de 5 min ya habría corrido 4 min: con el fresco aún no es elegible.
+  // Reclamada hace 3 min con un intento: el backoff de 5 min aún no se cumple, no es elegible.
   const { almacen: a2, t: t2, despachar: d2 } = await conCola([ALERTA], { respuestas: [{ success: true }] });
   a2.tabla[0].reclamada_at = new Date(AHORA.getTime() - 3 * MIN).toISOString();
   a2.tabla[0].intentos_envio = 1;
-  assert.equal((await d2({ ahora: new Date(AHORA.getTime() + 10 * MIN) })).enviadas, 0);
+  assert.equal((await d2({})).enviadas, 0);
   assert.equal(t2.enviados.length, 0);
 });
 

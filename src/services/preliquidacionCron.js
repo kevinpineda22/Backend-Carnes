@@ -2,7 +2,7 @@ import { motivoApagado } from "../config/preliquidacion.js";
 import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as Corridas from "../models/PreliquidacionCorrida.model.js";
 import * as Vigilancia from "../models/PreliquidacionVigilancia.model.js";
-import { despacharAlertas } from "./preliquidacionAlertas.js";
+import { despacharAlertas, PRESUPUESTO_MINIMO_DESPACHO_MS } from "./preliquidacionAlertas.js";
 import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
 import { TIMEOUT_OFICIAL_MS } from "./siesa.service.js";
 
@@ -180,8 +180,8 @@ export async function ejecutarCron(entrada, dependencias = {}) {
     if (!dryRun) {
       try {
         const margen = restante();
-        if (margen !== null) {
-          await deps.despacharAlertas({ ahora, limite: LIMITE_DESPACHO_CRON, hasta: Date.now() + margen });
+        if (Number.isFinite(margen) && margen >= PRESUPUESTO_MINIMO_DESPACHO_MS) {
+          await deps.despacharAlertas({ limite: LIMITE_DESPACHO_CRON, hasta: Date.now() + margen });
         }
       } catch (error) {
         log.error?.(`Cron preliquidación: el despacho de alertas falló: ${error?.message}`);

@@ -6,7 +6,7 @@ import * as Vigilancia from "../models/PreliquidacionVigilancia.model.js";
 import { ESPERA_MINIMA_CIERRE_MS, esperaParaEnvio } from "../shared/siesaAjusteVisceras.js";
 import { debeLiquidar } from "../shared/preliquidacionTiempo.js";
 import { TIMEOUT_OFICIAL_MS } from "./siesa.service.js";
-import { despacharAlertas, encolarAlerta } from "./preliquidacionAlertas.js";
+import { despacharAlertas, encolarAlerta, PRESUPUESTO_MINIMO_DESPACHO_MS } from "./preliquidacionAlertas.js";
 
 /**
  * Camino inmediato de la preliquidación: se ejecuta al finalizar una recepción de taller.
@@ -79,10 +79,16 @@ function dependenciasPorDefecto() {
 /** Alertas que se despachan por invocación en el camino inmediato (el resto lo drena el barrido). */
 const LIMITE_DESPACHO_INMEDIATO = 10;
 
+/**
+ * ¿Alcanza el tiempo que queda para despachar? Un valor no finito (NaN) o menor que el peor caso de un envío no
+ * es presupuesto: el despacho no reclamaría nada, o iría sin cota. Las alertas quedan en cola para el cron.
+ */
+const hayPresupuestoDeDespacho = (margen) => Number.isFinite(margen) && margen >= PRESUPUESTO_MINIMO_DESPACHO_MS;
+
 /** Despacha el backlog de alertas; una falla del correo nunca debe afectar a quien llama. */
 async function despacharSeguro(deps, { hasta } = {}) {
   try {
-    await deps.despacharAlertas({ ahora: new Date(), limite: LIMITE_DESPACHO_INMEDIATO, ...(hasta === undefined ? {} : { hasta }) });
+    await deps.despacharAlertas({ limite: LIMITE_DESPACHO_INMEDIATO, ...(hasta === undefined ? {} : { hasta }) });
   } catch (error) {
     deps.log.error?.(`Despacho de alertas falló: ${error?.message}`);
   }
@@ -97,7 +103,7 @@ async function despacharEnSegundoPlano(deps, restante) {
     await deps.segundoPlano(async () => {
       // Acotado como el despacho tras el envío: por el tiempo que queda de la función y el límite de filas.
       const margen = restante();
-      if (margen === null) return;
+      if (!hayPresupuestoDeDespacho(margen)) return;
       await despacharSeguro(deps, { hasta: Date.now() + margen });
     });
   } catch (error) {
@@ -244,7 +250,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
       // Lo que el envío encoló (error, sin_confirmar, bloqueos) sale en la misma tarea, DESPUÉS de cerrar la
       // corrida y acotado por el tiempo que queda; sin tiempo, queda en cola para el barrido.
       const margen = restante();
-      if (margen !== null) await despacharSeguro(deps, { hasta: Date.now() + margen });
+      if (hayPresupuestoDeDespacho(margen)) await despacharSeguro(deps, { hasta: Date.now() + margen });
     };
     const registrada = await deps.waitUntil(tarea);
     if (registrada === false) return { resultado, envio: "diferido" };

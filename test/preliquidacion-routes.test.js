@@ -73,6 +73,7 @@ mock.module(url("services/preliquidacionAlertas.js"), {
     REGLA_OCURRENCIA: {},
     MAX_INTENTOS_ALERTA: 5,
     VENCIMIENTO_RECLAMO_MS: 300000,
+    PRESUPUESTO_MINIMO_DESPACHO_MS: 31000,
     esperaReintentoMs: () => 0,
   },
 });

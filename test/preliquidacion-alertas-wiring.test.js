@@ -12,7 +12,7 @@ process.env.SUPABASE_SERVICE_KEY = "clave-falsa-de-test";
 process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 
 const { armarContextoAlerta, enviarAlerta } = await import("../src/services/preliquidacionAlertasEnvio.js");
-const { encolarAlerta, despacharAlertas } = await import("../src/services/preliquidacionAlertas.js");
+const { encolarAlerta, despacharAlertas, VENCIMIENTO_RECLAMO_MS, esperaReintentoMs } = await import("../src/services/preliquidacionAlertas.js");
 const { alFinalizar } = await import("../src/services/preliquidacionInmediato.js");
 
 const leer = (ruta) => readFileSync(fileURLToPath(new URL(ruta, import.meta.url)), "utf8");
@@ -352,6 +352,16 @@ test("obsolescencia: vincular borra las alertas sin enviar de la recepción al v
 
 test("obsolescencia: desvincular borra las alertas sin enviar de la sede que se desvincula", () => {
   assert.match(cuerpoVigente("carnes_preliq_desvincular", ORDEN), /DELETE FROM carnes_preliquidacion_alertas WHERE sede_id = p_sede_id AND enviado_ok = false/);
+});
+
+test("la ventana «en vuelo» de carnes_preliq_cerrar (SQL) es VENCIMIENTO_RECLAMO_MS, la misma cota inferior del `.or()` del despacho (JS)", () => {
+  const c = cuerpoVigente("carnes_preliq_cerrar", ORDEN);
+  const m = c.match(/reclamada_at < now\(\) - interval '(\d+) minutes'/);
+  assert.ok(m, "no se encontró la ventana en vuelo en el SQL");
+  assert.equal(Number(m[1]) * 60 * 1000, VENCIMIENTO_RECLAMO_MS);
+  assert.equal(esperaReintentoMs(1), VENCIMIENTO_RECLAMO_MS);
+  const fuente = leer("../src/services/preliquidacionAlertas.js");
+  assert.match(fuente, /reclamada_at\.lte\.\$\{new Date\(reloj\(\) - esperaReintentoMs\(1\)\)/);
 });
 
 test("obsolescencia: cerrar borra solo las alertas de estado pendiente, sin reclamar (la cerrada se encola después)", () => {

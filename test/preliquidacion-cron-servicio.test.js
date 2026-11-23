@@ -147,6 +147,15 @@ test("cierra la corrida ANTES de despachar y el despacho va acotado por límite 
   const [{ args }] = por(llamadas, "despacharAlertas");
   assert.ok(args[0].limite > 0 && args[0].limite <= 10);
   assert.ok(args[0].hasta > Date.now(), "la fecha límite sale del tiempo que queda");
+  assert.equal("ahora" in args[0], false, "el reloj lo lee el propio despacho");
+});
+
+test("si lo que queda no alcanza para el peor caso de un envío no se despacha, pero la corrida se cierra", async () => {
+  // LIMITE_FUNCION_MS = 285 000: quedan 30 500 ms (≥ mínimo de envío, < TIMEOUT_ENVIO_MS + margen).
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }], relojMs: [0, 254_500] });
+  await ejecutarCron({ origen: "schedule" }, deps);
+  assert.equal(por(llamadas, "terminarCorrida").length, 1);
+  assert.equal(por(llamadas, "despacharAlertas").length, 0);
 });
 
 test("un despacho que falla (o lanza) no cambia el resultado de la corrida", async () => {

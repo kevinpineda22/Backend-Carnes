@@ -95,6 +95,11 @@ export function esperaReintentoMs(intentos) {
 export const TIMEOUT_ENVIO_MS = 30 * 1000;
 /** Holgura tras el envío para marcar el resultado en la base. */
 const MARGEN_MARCA_MS = 1000;
+/**
+ * Presupuesto mínimo que un llamador debe tener por delante para despachar: el peor caso de un envío más la
+ * holgura de marcado. Con menos, `despacharAlertas` no reclamaría nada, así que el llamador ni lo invoca.
+ */
+export const PRESUPUESTO_MINIMO_DESPACHO_MS = TIMEOUT_ENVIO_MS + MARGEN_MARCA_MS;
 
 /** Filas que se despachan por invocación si el contexto no pide otro límite. */
 const LIMITE_POR_DEFECTO = 25;
@@ -138,8 +143,8 @@ function claveNormalizada(evento, datos) {
 }
 
 /**
- * Encola una alerta (solo inserta; el correo sale en `despacharAlertas`). Quien la encola, sea una acción del admin o
- * el camino inmediato, no espera el correo: lo entrega el cron (barrido horario + corrida de las 21:30), con hasta 1 h de retraso.
+ * Encola una alerta (solo inserta; el correo sale en `despacharAlertas`). Las acciones del admin no esperan el
+ * correo: lo entrega el cron (barrido horario + corrida de las 21:30), con hasta 1 h de retraso.
  *
  * @param {{evento: string, preliquidacionId?: *, sedeId?: *, ocurrencia?: *, detalle?: object}} alerta
  * @param {{log?: Pick<Console, "info"|"warn"|"error">, db?: object, env?: object}} [opciones]
@@ -242,6 +247,8 @@ export async function despacharAlertas(contexto, opciones = {}) {
     // Con transporte o notificador inyectado no se exige el SMTP real; por defecto sí.
     // Reloj (ms epoch) para la fecha límite, el backoff y los sellos de tiempo; inyectable en pruebas.
     reloj = () => Date.now(),
+    // Tope duro de cada envío (inyectable en pruebas): el reservado en `hasta` se cumple de verdad.
+    timeoutEnvioMs = TIMEOUT_ENVIO_MS,
     emailListo = () => (typeof enviar === "function" || typeof notificar === "function" ? true : emailConfigurado()),
   } = opciones ?? {};
   try {
@@ -294,11 +301,20 @@ export async function despacharAlertas(contexto, opciones = {}) {
       }
       if (!reclamada) continue;
 
+      // Un transporte que no responde se corta al vencer `timeoutEnvioMs` y cuenta como intento fallido (el reclamo
+      // y el backoff se conservan). Entrega al menos una vez: si el correo salió justo al vencer el plazo, el
+      // reintento puede duplicarlo; es preferible a dejar la función colgada hasta que Vercel la corte.
       let resultado;
+      let temporizador;
       try {
-        resultado = await transporte(reclamada.evento, contextoDeEnvio(reclamada));
+        const vencido = new Promise((resolver) => {
+          temporizador = setTimeout(() => resolver({ success: false, error: `el envío superó ${timeoutEnvioMs} ms` }), timeoutEnvioMs);
+        });
+        resultado = await Promise.race([Promise.resolve().then(() => transporte(reclamada.evento, contextoDeEnvio(reclamada))), vencido]);
       } catch (e) {
         resultado = { success: false, error: e?.message ?? String(e) };
+      } finally {
+        clearTimeout(temporizador);
       }
 
       try {

@@ -10,6 +10,9 @@ process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 
 const { alFinalizar, waitUntilPorDefecto, reiniciarAvisoWaitUntil } = await import("../src/services/preliquidacionInmediato.js");
 
+const { PRESUPUESTO_MINIMO_DESPACHO_MS } = await import("../src/services/preliquidacionAlertas.js");
+const { LIMITE_FUNCION_MS } = await import("../src/shared/siesaAjusteVisceras.js");
+
 const silencio = { info() {}, warn() {}, error() {} };
 const recepcion = (extra = {}) => ({ id: 101, especie: "res", fecha_ingreso: "2026-11-23", recibido_por: "ana@x.co", ...extra });
 // 2026-11-23: corte 21:30 Bogotá = 2026-11-24T02:30Z
@@ -26,7 +29,7 @@ function armar({
   waitUntil,
   procesar,
 } = {}) {
-  const registro = { perdidas: 0, alertas: [], procesar: [], terminar: [], waitUntil: 0, registradoAntesDeResponder: null };
+  const registro = { despachos: [], perdidas: 0, alertas: [], procesar: [], terminar: [], waitUntil: 0, registradoAntesDeResponder: null };
   const deps = {
     motivoApagado: () => apagado,
     siesaActivo: () => siesaEncendido,
@@ -34,7 +37,7 @@ function armar({
     vincular: async (id) => vincular(id),
     leerSedeDeRecepcion: async () => ({ sede, cabecera }),
     encolar: async (a) => (registro.alertas.push(a), { ok: true }),
-    despacharAlertas: async () => ({ ok: true, enviadas: 0 }),
+    despacharAlertas: async (c) => (registro.despachos.push(c), { ok: true, enviadas: 0 }),
     segundoPlano: async (fn) => (await fn(), true),
     revisarCorridasPerdidas: async () => (registro.perdidas += 1, { perdidas: [] }),
     abrirCorrida: async (o) => ({ id: 500, origen: o.origen, preliquidacion_ids: [], resumen: { reevaluadas: [] } }),
@@ -263,4 +266,37 @@ test("waitUntilPorDefecto registra la tarea cuando la dependencia carga", async 
 test("vercel.json fija maxDuration 300 s para la función (legacy builds)", () => {
   const cfg = JSON.parse(readFileSync(new URL("../vercel.json", import.meta.url), "utf8"));
   assert.equal(cfg.builds[0].config?.maxDuration, 300);
+});
+
+// ─── Despacho en segundo plano de las alertas sin envío ────────────────────
+
+const desborde = (extra = {}) =>
+  armar({
+    vincular: async () => ({ resultado: "excede", preliquidacion_id: 1, restantes: 1 }),
+    sede: { id: 11, estado: "bloqueada", motivo_bloqueo: "excede_animales", version: 2, preliquidacion_id: 1 },
+    ...extra,
+  });
+
+test("el despacho en segundo plano no pasa `ahora` (el reloj lo lee el propio despacho) y va acotado", async () => {
+  const { deps, registro } = desborde();
+  await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, deps);
+  assert.equal(registro.despachos.length, 1);
+  assert.equal("ahora" in registro.despachos[0], false);
+  assert.ok(registro.despachos[0].limite > 0 && Number.isFinite(registro.despachos[0].hasta));
+});
+
+test("un tiempo restante no finito cuenta como sin presupuesto: no se despacha", async () => {
+  const { deps, registro } = desborde({ ahoraMs: Number.NaN });
+  await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, deps);
+  assert.equal(registro.despachos.length, 0);
+  assert.equal(registro.alertas.length, 1, "la alerta sigue encolada para el barrido");
+});
+
+test("si lo que queda no alcanza para el peor caso de un envío (TIMEOUT_ENVIO_MS + margen) no se despacha", async () => {
+  const { deps, registro } = desborde({ ahoraMs: LIMITE_FUNCION_MS - 30_500 });
+  await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, deps);
+  assert.equal(registro.despachos.length, 0);
+  const justo = desborde({ ahoraMs: LIMITE_FUNCION_MS - PRESUPUESTO_MINIMO_DESPACHO_MS });
+  await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, justo.deps);
+  assert.equal(justo.registro.despachos.length, 1);
 });
