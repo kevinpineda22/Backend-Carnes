@@ -2,8 +2,10 @@ import {
   sendEmail,
   destinatariosAdmin,
   destinatariosAnulacion,
+  destinatariosPreliquidacion,
   destinatariosProveedores,
 } from "./email.service.js";
+import { sandboxOn } from "../config/sandbox.js";
 import { armarConfirmacion } from "../shared/confirmacionRecepcion.js";
 import { armarAvisoProveedores } from "../shared/avisoRecepcionProveedor.js";
 
@@ -522,6 +524,298 @@ export async function notificarErrorEnvioSiesa(envio, { sede = null } = {}) {
     });
   } catch (e) {
     console.error(`[email] Aviso de error SIESA falló: ${e?.message}`);
+    return { success: false, error: e?.message || "Error al armar el aviso" };
+  }
+}
+
+/* =============================================
+   Preliquidación de talleres (res / cerdo)
+
+   Un solo correo parametrizado por tipo: cada tipo define el título, el texto que explica
+   qué pasó y los datos que se muestran. Los destinatarios salen de
+   `CARNES_MAIL_PRELIQUIDACION` (con respaldo al admin) y se leen por llamada; ninguna
+   dirección va en el código.
+   ============================================= */
+
+export { destinatariosPreliquidacion };
+
+const COP = new Intl.NumberFormat("es-CO", {
+  style: "currency",
+  currency: "COP",
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+const ENTERO = new Intl.NumberFormat("es-CO", { maximumFractionDigits: 0 });
+
+/** Cómo se muestra cada dato del contexto: etiqueta y formato. */
+const CAMPOS_PRELIQUIDACION = {
+  animales: ["Animales de la sede", "entero"],
+  solicitados: ["Animales solicitados por la sede", "entero"],
+  restantes: ["Animales restantes en la preliquidación", "entero"],
+  utilidad: ["Utilidad de la sede", "dinero"],
+  gasto_sede: ["Gasto de la sede", "dinero"],
+  motivo: ["Motivo", "texto"],
+  error: ["Detalle del error", "texto"],
+  intentos: ["Intentos de envío", "entero"],
+  ventana_fin: ["Fin de la ventana", "fecha"],
+  fecha_ingreso: ["Fecha de ingreso", "texto"],
+  recepcion_id: ["Recepción", "id"],
+  servicio_real: ["Servicio real", "dinero"],
+  servicio_aplicado: ["Servicio aplicado", "dinero"],
+  diferencia: ["Diferencia", "dinero"],
+  no_asignada: ["Diferencia no asignada a sedes", "dinero"],
+  monto_no_asignado: ["Monto no asignado (animales que no llegaron)", "dinero"],
+  por: ["Registrado por", "texto"],
+};
+
+/** Título, explicación y datos de cada tipo. `grave` pinta el recuadro en rojo; si no, en ámbar. */
+const AVISOS_PRELIQUIDACION = {
+  excede_animales: {
+    titulo: "Sede bloqueada: excede los animales de la preliquidación",
+    grave: true,
+    texto:
+      "La sede tiene más animales de los que quedan por asignar. No consume animales ni se envía a SIESA " +
+      "hasta que se corrija (editar cantidades, desvincular otras sedes o vincularla a mano).",
+    campos: ["solicitados", "restantes"],
+  },
+  utilidad_negativa: {
+    titulo: "Sede bloqueada: utilidad negativa",
+    grave: true,
+    texto: "La utilidad calculada de la sede es negativa. No se envía a SIESA hasta que se revise el costeo.",
+    campos: ["utilidad", "gasto_sede", "animales"],
+  },
+  servicio_cero: {
+    titulo: "Preliquidación bloqueada: servicio en cero",
+    grave: true,
+    texto: "No hay servicio cargado ni servicio por animal predeterminado: la preliquidación no se puede liquidar. Cargue el servicio.",
+    campos: ["motivo"],
+  },
+  costeo_invalido: {
+    titulo: "Sede bloqueada: el costeo no es válido",
+    grave: true,
+    texto: "No se pudo costear la sede con los datos actuales. No se envía a SIESA hasta corregirlo.",
+    campos: ["motivo", "error"],
+  },
+  armado_invalido: {
+    titulo: "Sede bloqueada: el armado del documento no es válido",
+    grave: true,
+    texto: "El documento de la sede no se puede armar con los datos actuales. No se envía a SIESA hasta corregirlo.",
+    campos: ["motivo", "error"],
+  },
+  sin_preliquidacion: {
+    titulo: "Recepción sin preliquidación abierta",
+    grave: false,
+    texto:
+      "Se finalizó una recepción de taller y no hay una preliquidación abierta de su especie. " +
+      "La sede queda sin vincular y sin enviar hasta que se cree o se vincule a mano.",
+    campos: ["recepcion_id", "fecha_ingreso"],
+  },
+  oficial_legacy: {
+    titulo: "Recepción con oficial del flujo anterior",
+    grave: false,
+    texto: "La recepción ya tiene un documento oficial del flujo anterior, por eso no se vinculó a la preliquidación.",
+    campos: ["recepcion_id", "fecha_ingreso", "motivo"],
+  },
+  fuera_ventana: {
+    titulo: "Recepción fuera de la ventana de la preliquidación",
+    grave: false,
+    texto: "La recepción llegó después de que venciera la ventana de la preliquidación abierta, por eso no se vinculó.",
+    campos: ["recepcion_id", "fecha_ingreso", "ventana_fin"],
+  },
+  ventana_vencida: {
+    titulo: "Ventana vencida con animales por asignar",
+    grave: false,
+    texto:
+      "La ventana de la preliquidación terminó y todavía quedan animales sin asignar. " +
+      "La preliquidación sigue abierta: cierre manualmente cuando corresponda.",
+    campos: ["restantes", "ventana_fin"],
+  },
+  envio_error: {
+    titulo: "Error al enviar la sede a SIESA",
+    grave: true,
+    texto: "El envío de la sede a SIESA falló. Se puede reintentar desde el panel.",
+    campos: ["error", "intentos"],
+  },
+  reintentos_agotados: {
+    titulo: "Reintentos agotados al enviar la sede a SIESA",
+    grave: true,
+    texto: "Se agotaron los reintentos automáticos. La sede solo se enviará de nuevo si el administrador lo pide desde el panel.",
+    campos: ["error", "intentos"],
+  },
+  sin_confirmar: {
+    titulo: "Envío a SIESA sin confirmar",
+    grave: true,
+    texto:
+      "SIESA no confirmó si recibió el documento. No se reenvía a ciegas: revise en SIESA y resuelva el envío desde el panel.",
+    campos: ["error"],
+  },
+  envio_en_vuelo: {
+    titulo: "Envío a SIESA en curso sin respuesta",
+    grave: false,
+    texto: "Hay un envío de la sede a SIESA que sigue en curso. Se revisará en la siguiente corrida.",
+    campos: ["error"],
+  },
+  inicial_pendiente: {
+    titulo: "Sede en espera de la entrada inicial",
+    grave: false,
+    texto: "La entrada inicial de la sede todavía no está confirmada en SIESA, por eso no se envía la oficial.",
+    campos: ["motivo"],
+  },
+  servicio_tardio: {
+    titulo: "Servicio cargado después de la liquidación",
+    grave: false,
+    texto:
+      "Se cargó un servicio distinto del aplicado cuando la preliquidación ya estaba liquidada. No se envió nada a SIESA: " +
+      "se generó la liquidación alterna informativa y el saldo pendiente para la siguiente preliquidación.",
+    campos: ["servicio_real", "servicio_aplicado", "diferencia", "no_asignada"],
+    porSede: true,
+  },
+  requiere_correccion: {
+    titulo: "Sede enviada que requiere corrección",
+    grave: true,
+    texto:
+      "Cambió algún dato de la preliquidación después de enviar esta sede a SIESA. Los montos enviados no cambian: " +
+      "revise si hay que anular y reenviar, o descarte la corrección desde el panel.",
+    campos: ["motivo", "por"],
+  },
+  corrida_perdida: {
+    titulo: "No hubo corrida programada",
+    grave: true,
+    texto:
+      "Pasó la hora de la liquidación y no hay una corrida exitosa de esta preliquidación. " +
+      "Ejecute el proceso manualmente desde el panel o desde el workflow.",
+    campos: [],
+  },
+  cerrada: {
+    titulo: "Preliquidación cerrada",
+    grave: false,
+    texto: "La preliquidación se cerró. El monto no asignado corresponde a los animales que nunca llegaron.",
+    campos: ["monto_no_asignado"],
+  },
+};
+
+/** Los tipos de aviso disponibles (los mismos de la cola de alertas). */
+export const TIPOS_AVISO_PRELIQUIDACION = Object.freeze(Object.keys(AVISOS_PRELIQUIDACION));
+
+function formatearCampo(valor, formato) {
+  if (valor === null || valor === undefined || valor === "") return null;
+  if (formato === "dinero") return Number.isFinite(Number(valor)) ? COP.format(Number(valor)) : String(valor);
+  if (formato === "entero") return Number.isFinite(Number(valor)) ? ENTERO.format(Number(valor)) : String(valor);
+  if (formato === "id") return `#${valor}`;
+  if (formato === "fecha") return hora(valor);
+  return String(valor);
+}
+
+/**
+ * Avisa por correo un evento de la preliquidación de talleres.
+ *
+ * Best-effort: NUNCA lanza. Sin destinatarios (G-S3) o con un fallo del transporte devuelve
+ * `{ success: false }` y lo deja en el log: el correo no puede tumbar un cálculo ni un envío.
+ * Con el sandbox encendido no sale nada y se informa como exitoso (la cola no acumula backlog).
+ *
+ * @param {string} tipo uno de `TIPOS_AVISO_PRELIQUIDACION`
+ * @param {object} ctx  `especie`, `preliquidacion_id`, `sede_id`, `sede_nombre` y los datos del tipo
+ * @param {{enviar?: Function, destinatarios?: () => string[], sandbox?: () => boolean, log?: object}} [opciones]
+ *   dependencias inyectables para pruebas
+ */
+export async function notificarPreliquidacion(
+  tipo,
+  ctx = {},
+  { enviar = sendEmail, destinatarios = () => destinatariosPreliquidacion(), sandbox = () => sandboxOn(), log = console } = {},
+) {
+  try {
+    const aviso = AVISOS_PRELIQUIDACION[tipo];
+    if (!aviso) {
+      log.error?.(`[email] Aviso de preliquidación desconocido: "${tipo}"`);
+      return { success: false, error: "Tipo de aviso desconocido" };
+    }
+    const datos = ctx && typeof ctx === "object" ? ctx : {};
+
+    const especie = datos.especie ? String(datos.especie) : null;
+    const idPreliq = Number(datos.preliquidacion_id) > 0 ? `#${datos.preliquidacion_id}` : null;
+    const sede = datos.sede_nombre
+      ? `${datos.sede_nombre}${Number(datos.sede_id) > 0 ? ` (#${datos.sede_id})` : ""}`
+      : Number(datos.sede_id) > 0
+        ? `#${datos.sede_id}`
+        : null;
+
+    const asunto = ["Carnes", ["Preliquidación", especie, idPreliq].filter(Boolean).join(" "), aviso.titulo, sede]
+      .filter(Boolean)
+      .join(" · ");
+
+    if (sandbox()) {
+      log.warn?.(`[email] SANDBOX - "${asunto}" NO se envió.`);
+      return { success: true, sandbox: true };
+    }
+
+    const para = destinatarios();
+    if (!para || para.length === 0) {
+      log.error?.(
+        `[email] CARNES_MAIL_PRELIQUIDACION no está definida (ni hay admin de respaldo): NO se envió "${asunto}".`,
+      );
+      return { success: false, error: "Sin destinatarios", sinDestinatarios: true };
+    }
+
+    const filas = [
+      especie ? ["Especie", especie] : null,
+      idPreliq ? ["Preliquidación", idPreliq] : null,
+      sede ? ["Sede", sede] : null,
+      ...aviso.campos.map((campo) => {
+        const [etiqueta, formato] = CAMPOS_PRELIQUIDACION[campo];
+        const valor = formatearCampo(datos[campo], formato);
+        return valor === null ? null : [etiqueta, valor];
+      }),
+    ].filter(Boolean);
+
+    const porSede =
+      aviso.porSede && Array.isArray(datos.por_sede) && datos.por_sede.length
+        ? `
+      <p style="margin:16px 0 6px;font-weight:bold;">Cambio por sede</p>
+      <table cellpadding="6" cellspacing="0" width="100%" style="border-collapse:collapse;font-size:14px;margin-bottom:16px;">
+        ${datos.por_sede
+          .map(
+            (s) =>
+              `<tr><td style="color:#6b7280;">Sede #${esc(s?.sede_id)}</td><td align="right"><strong>${esc(
+                formatearCampo(s?.diferencia, "dinero") ?? "-",
+              )}</strong></td></tr>`,
+          )
+          .join("")}
+      </table>`
+        : "";
+
+    const [fondo, borde, texto] = aviso.grave ? ["#fee2e2", "#b91c1c", "#7f1d1d"] : ["#fef3c7", "#b45309", "#78350f"];
+    const panel = process.env.CARNES_PANEL_URL || "https://merkahorro.com/carnes/admin";
+
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#111827;">
+      <h2 style="margin:0 0 4px;">${esc(aviso.titulo)}</h2>
+      <p style="margin:0 0 16px;color:#6b7280;">${esc(["Preliquidación", especie, idPreliq].filter(Boolean).join(" "))} · ${hora()}</p>
+
+      <div style="border-left:4px solid ${borde};background:${fondo};padding:12px 16px;margin:0 0 16px;">
+        <p style="margin:0;color:${texto};font-size:13px;">${esc(aviso.texto)}</p>
+      </div>
+
+      <table cellpadding="6" cellspacing="0" width="100%"
+             style="border-collapse:collapse;font-size:14px;margin-bottom:16px;">
+        ${filas
+          .map(
+            ([k, v]) =>
+              `<tr><td style="color:#6b7280;">${esc(k)}</td><td align="right"><strong>${esc(v)}</strong></td></tr>`,
+          )
+          .join("")}
+      </table>
+      ${porSede}
+      <p style="margin:0 0 16px;font-size:13px;color:#374151;">
+        Revise la preliquidación en el panel de administración:
+        <a href="${esc(panel)}">${esc(panel)}</a>
+      </p>
+
+      <p style="margin:24px 0 0;color:#9ca3af;font-size:12px;">Este correo es automático, no hace falta responderlo.</p>
+    </div>`;
+
+    return await enviar({ to: para, subject: asunto, html });
+  } catch (e) {
+    console.error(`[email] Aviso de preliquidación "${tipo}" falló: ${e?.message}`);
     return { success: false, error: e?.message || "Error al armar el aviso" };
   }
 }
