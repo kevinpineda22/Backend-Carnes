@@ -429,3 +429,47 @@ test("si registrar la alterna falla, el PATCH igual responde (se reintenta en la
   assert.equal(r.alterna ?? null, null);
   assert.equal(r.aviso.codigo, "servicio_tardio");
 });
+
+// ─── Aviso según el resultado de la alterna ────────────────────────────────
+
+function prepararPatchLiquidada(servicioFinal = 700000) {
+  tablas.carnes_preliquidaciones = [liquidada()];
+  tablas.carnes_preliquidacion_sedes = [
+    sedeVinculada({ id: 11, recepcion_id: 101, animales: 4, orden: 1, estado: "calculada", gasto_sede: "3800000.00" }),
+    sedeVinculada({ id: 12, recepcion_id: 102, animales: 6, orden: 2, estado: "calculada", gasto_sede: "5700000.00" }),
+  ];
+  manejadores.carnes_preliq_actualizar_servicio = (a) => {
+    Object.assign(tablas.carnes_preliquidaciones[0], { servicio: String(a.p_servicio), servicio_at: A_LAS_2140 });
+    return { resultado: "tardio", congelada: true, desbloqueo: false };
+  };
+  return () => Modelo.actualizar(1, { servicio: servicioFinal }, { por: "ana", log: silencio, encolar: async () => ({ ok: true }) });
+}
+
+test("aviso: alterna generada -> texto de alterna y saldo", async () => {
+  const patch = prepararPatchLiquidada();
+  const r = await patch();
+  assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO);
+});
+
+test("aviso: sin diferencia (servicio igual al aplicado) -> no promete alterna ni saldo", async () => {
+  const patch = prepararPatchLiquidada(500000);
+  const r = await patch();
+  assert.equal(r.alterna ?? null, null);
+  assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA);
+  assert.doesNotMatch(r.aviso.mensaje, /se generó la liquidación alterna/i);
+});
+
+for (const [nombre, manejador] of [
+  ["falla de la RPC", () => { throw new Error("RPC caída"); }],
+  ["version_cambiada agotada", () => ({ resultado: "version_cambiada" })],
+  ["destino_invalido agotado", () => ({ resultado: "destino_invalido" })],
+]) {
+  test(`aviso: ${nombre} -> servicio guardado y alterna reintentada en la próxima corrida`, async () => {
+    const patch = prepararPatchLiquidada();
+    manejadores.carnes_preliq_registrar_alterna = manejador;
+    const r = await patch();
+    assert.equal(r.alterna ?? null, null);
+    assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_REINTENTO);
+    assert.match(r.aviso.mensaje, /próxima corrida/);
+  });
+}

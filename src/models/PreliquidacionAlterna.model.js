@@ -26,6 +26,22 @@ export const AVISO_SERVICIO_TARDIO = Object.freeze({
     "Se generó la liquidación alterna informativa y el saldo pendiente para la siguiente preliquidación.",
 });
 
+/** Variante cuando el servicio tardío coincide con el aplicado: no hay diferencia ni saldo nuevo. */
+export const AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA = Object.freeze({
+  codigo: "servicio_tardio",
+  mensaje:
+    "El servicio se cargó después de la liquidación y coincide con el aplicado: " +
+    "no hay diferencia, no se generó liquidación alterna ni saldo pendiente nuevo.",
+});
+
+/** Variante cuando la alterna no se pudo registrar: el servicio quedó guardado y la próxima corrida la reintenta. */
+export const AVISO_SERVICIO_TARDIO_REINTENTO = Object.freeze({
+  codigo: "servicio_tardio",
+  mensaje:
+    "El servicio se cargó después de la liquidación y quedó guardado, pero la liquidación alterna " +
+    "no se pudo generar ahora: se reintentará en la próxima corrida.",
+});
+
 /** Variante cuando todavía no hay liquidación: la alterna sale cuando se liquide. */
 export const AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR = Object.freeze({
   codigo: "servicio_tardio",

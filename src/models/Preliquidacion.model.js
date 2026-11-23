@@ -15,6 +15,8 @@ import { encolarAlerta } from "../services/preliquidacionAlertas.js";
 import {
   AVISO_SERVICIO_DESBLOQUEO,
   AVISO_SERVICIO_TARDIO,
+  AVISO_SERVICIO_TARDIO_REINTENTO,
+  AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA,
   AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR,
   registrarAlterna,
   registrarAlternaTardia,
@@ -544,10 +546,18 @@ export async function actualizar(id, cambios = {}, { por = null, encolar = encol
   let aviso = null;
   if (respuesta.resultado === "tardio") {
     if (respuesta.congelada) {
-      aviso = AVISO_SERVICIO_TARDIO;
+      // El aviso depende de lo que pasó de verdad con la alterna, no de que el servicio sea tardío.
+      aviso = AVISO_SERVICIO_TARDIO_REINTENTO;
       try {
         const r = await registrarAlterna(id, { por, encolar, log });
-        if (r.resultado === "ok") alterna = r.alterna;
+        if (r.resultado === "ok") {
+          alterna = r.alterna;
+          aviso = Number(r.alterna.diferencia) === 0 ? AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA : AVISO_SERVICIO_TARDIO;
+        } else if (r.resultado === "ya_registrada") {
+          aviso = AVISO_SERVICIO_TARDIO;
+        } else if (r.resultado === "sin_diferencia") {
+          aviso = AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA;
+        }
       } catch (error) {
         // El servicio ya quedó guardado: la próxima corrida reintenta la alterna.
         log.error?.(`No se pudo registrar la alterna de la preliquidación ${id}: ${error?.message}`);
