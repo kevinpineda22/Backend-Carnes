@@ -8,12 +8,16 @@
 -- de negocio aquí (R8): una prueba estática (test/preliquidacion-rpc-correcciones.test.js)
 -- lo verifica.
 --
--- Parte A (este bloque):
+-- Parte A:
 --   * carnes_preliq_registrar_alterna  alterna informativa idempotente + acción de saldo
 --   * carnes_preliq_saldo_editar       edita el valor de un saldo pendiente
 --   * carnes_preliq_saldo_descartar    descarta un saldo pendiente
 --   * carnes_preliq_saldo_mover        mueve un saldo pendiente a otra preliquidación de la
 --                                      misma especie (fila vieja `movido`, fila nueva pendiente)
+-- Parte B:
+--   * carnes_preliq_recalcular_no_enviadas  cambios de cabecera tras liquidar; marca las
+--                                           sedes enviadas con requiere_correccion
+--   * carnes_preliq_anular                  anula la preliquidación completa (nada enviado)
 --
 -- Contrato de retorno: JSONB `{resultado: ...}`; los resultados de negocio no son
 -- excepciones. Orden de bloqueo: cabecera origen -> cabecera(s) destino (por id
@@ -389,13 +393,304 @@ BEGIN
 END;
 $fn$ LANGUAGE plpgsql;
 
+-- =============================================================================
+-- Parte B: recalcular no enviadas y anular la preliquidación
+-- =============================================================================
+
+
+-- -----------------------------------------------------------------------------
+-- carnes_preliq_recalcular_no_enviadas(p_id, p_version, p_cambios, p_plan, p_por, p_motivo)
+--
+-- "Recalcular no enviadas": aplica cambios a la cabecera YA liquidada y prepara el
+-- recosteo de las sedes que aún no salieron. JS decidió todo (gastoTotal, planearVinculacion);
+-- aquí solo se bloquea, se valida la versión y se escribe.
+--
+-- p_cambios (puede ser '{}' = recosteo puro, T1): animales, animal_en_pie, servicio_por_animal,
+--   tercero_id, gastos [{concepto, valor, signo}] (reemplaza la lista), retomas
+--   [{vicera_item_id?, nombre, unidad, kilos, precio, precio_catalogo}] (reemplaza la lista).
+--   Cualquier otra clave se rechaza (`cambios_invalidos`); con cambios el motivo es obligatorio.
+-- p_plan: {orden_version (la que leyó JS), gasto_total?, servicio_aplicado?, costo_por_animal?,
+--   reordenar / excede / liberadas (ver carnes_preliq_validar_plan_sedes), restantes}
+--
+-- Efectos: SIEMPRE sube `orden_version` (cambia el conjunto/orden de sedes o sus insumos de
+-- costeo); sube `version` SOLO si hay cambios. Las sedes ya enviadas (enviando, enviada,
+-- sin_confirmar) quedan con `requiere_correccion` y `correccion_orden_version` = la nueva
+-- `orden_version` (M2): un envío con montos anteriores no limpia el aviso. Las sedes no
+-- enviadas NO se recostean aquí: JS las recostea una a una con carnes_preliq_congelar_sede.
+-- Devuelve las sedes marcadas con su nueva versión para que JS encole el aviso. `p_por` se
+-- devuelve en la respuesta para el aviso; no hay columna de auditoría.
+--
+-- Resultados: ok | no_encontrada | no_abierta | no_liquidada | version_cambiada |
+--             cambios_invalidos | motivo_requerido | datos_invalidos
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION carnes_preliq_recalcular_no_enviadas(
+  p_id      BIGINT,
+  p_version INTEGER,
+  p_cambios JSONB,
+  p_plan    JSONB,
+  p_por     TEXT,
+  p_motivo  TEXT
+) RETURNS JSONB AS $fn$
+DECLARE
+  v_header      carnes_preliquidaciones%ROWTYPE;
+  v_cambios     JSONB;
+  v_hay_cambios BOOLEAN;
+  v_clave       TEXT;
+  v_invalido    TEXT;
+  v_orden_nueva INTEGER;
+  v_version     INTEGER;
+  v_marcadas    JSONB;
+BEGIN
+  v_cambios := COALESCE(p_cambios, '{}'::jsonb);
+  IF jsonb_typeof(v_cambios) <> 'object' THEN
+    RETURN jsonb_build_object('resultado', 'datos_invalidos');
+  END IF;
+  FOR v_clave IN SELECT jsonb_object_keys(v_cambios) LOOP
+    IF v_clave NOT IN ('animales', 'animal_en_pie', 'servicio_por_animal', 'tercero_id', 'gastos', 'retomas') THEN
+      RETURN jsonb_build_object('resultado', 'cambios_invalidos', 'campo', v_clave);
+    END IF;
+  END LOOP;
+  v_hay_cambios := v_cambios <> '{}'::jsonb;
+  IF v_hay_cambios AND NULLIF(btrim(COALESCE(p_motivo, '')), '') IS NULL THEN
+    RETURN jsonb_build_object('resultado', 'motivo_requerido');
+  END IF;
+
+  SELECT * INTO v_header FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('resultado', 'no_encontrada');
+  END IF;
+  IF v_header.estado <> 'abierta' THEN
+    RETURN jsonb_build_object('resultado', 'no_abierta');
+  END IF;
+  IF v_header.liquidada_at IS NULL THEN
+    RETURN jsonb_build_object('resultado', 'no_liquidada');
+  END IF;
+
+  IF v_header.version <> p_version
+     OR v_header.orden_version IS DISTINCT FROM NULLIF(p_plan->>'orden_version', '')::INTEGER
+  THEN
+    RETURN jsonb_build_object('resultado', 'version_cambiada');
+  END IF;
+
+  v_invalido := carnes_preliq_validar_plan_sedes(p_id, p_plan);
+  IF v_invalido IS NOT NULL THEN
+    RETURN jsonb_build_object('resultado', 'version_cambiada', 'motivo', v_invalido);
+  END IF;
+
+  -- Orden de bloqueo: cabecera (ya tomada) -> sedes.
+  PERFORM 1 FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id FOR UPDATE;
+
+  UPDATE carnes_preliquidaciones
+     SET animales = CASE WHEN v_cambios ? 'animales' THEN (v_cambios->>'animales')::INTEGER ELSE animales END,
+         animal_en_pie = CASE WHEN v_cambios ? 'animal_en_pie' THEN (v_cambios->>'animal_en_pie')::NUMERIC ELSE animal_en_pie END,
+         servicio_por_animal = CASE WHEN v_cambios ? 'servicio_por_animal' THEN (v_cambios->>'servicio_por_animal')::NUMERIC ELSE servicio_por_animal END,
+         tercero_id = CASE WHEN v_cambios ? 'tercero_id' THEN COALESCE(NULLIF(v_cambios->>'tercero_id', ''), tercero_id) ELSE tercero_id END,
+         servicio_aplicado = CASE WHEN p_plan ? 'servicio_aplicado' THEN (p_plan->>'servicio_aplicado')::NUMERIC ELSE servicio_aplicado END,
+         gasto_total_aplicado = CASE WHEN p_plan ? 'gasto_total' THEN (p_plan->>'gasto_total')::NUMERIC ELSE gasto_total_aplicado END,
+         costo_por_animal = CASE WHEN p_plan ? 'costo_por_animal' THEN (p_plan->>'costo_por_animal')::NUMERIC ELSE costo_por_animal END,
+         version = CASE WHEN v_hay_cambios THEN version + 1 ELSE version END,
+         orden_version = orden_version + 1
+   WHERE id = p_id
+  RETURNING orden_version, version INTO v_orden_nueva, v_version;
+
+  IF v_cambios ? 'gastos' THEN
+    DELETE FROM carnes_preliquidacion_gastos WHERE preliquidacion_id = p_id;
+    INSERT INTO carnes_preliquidacion_gastos (preliquidacion_id, concepto, valor, signo, orden)
+    SELECT p_id,
+           g.valor->>'concepto',
+           (g.valor->>'valor')::NUMERIC,
+           COALESCE((g.valor->>'signo')::SMALLINT, 1),
+           g.n::INTEGER
+      FROM jsonb_array_elements(v_cambios->'gastos') WITH ORDINALITY AS g(valor, n);
+  END IF;
+
+  IF v_cambios ? 'retomas' THEN
+    DELETE FROM carnes_preliquidacion_retomas WHERE preliquidacion_id = p_id;
+    INSERT INTO carnes_preliquidacion_retomas (
+      preliquidacion_id, vicera_item_id, nombre, unidad, kilos, precio, precio_catalogo, orden
+    )
+    SELECT p_id,
+           NULLIF(r.valor->>'vicera_item_id', '')::BIGINT,
+           r.valor->>'nombre',
+           COALESCE(NULLIF(r.valor->>'unidad', ''), 'KL'),
+           COALESCE(NULLIF(r.valor->>'kilos', '')::NUMERIC, 0),
+           COALESCE(NULLIF(r.valor->>'precio', '')::NUMERIC, 0),
+           COALESCE(NULLIF(r.valor->>'precio_catalogo', '')::NUMERIC, 0),
+           r.n::INTEGER
+      FROM jsonb_array_elements(v_cambios->'retomas') WITH ORDINALITY AS r(valor, n);
+  END IF;
+
+  PERFORM carnes_preliq_aplicar_plan_sedes(p_id, p_plan);
+
+  -- Las sedes ya enviadas conservan sus montos: solo se marcan para revisión.
+  WITH marcadas AS (
+    UPDATE carnes_preliquidacion_sedes
+       SET requiere_correccion = true,
+           correccion_orden_version = v_orden_nueva,
+           version = version + 1
+     WHERE preliquidacion_id = p_id
+       AND estado IN ('enviando', 'enviada', 'sin_confirmar')
+    RETURNING id, version
+  )
+  SELECT COALESCE(jsonb_agg(jsonb_build_object('sede_id', id, 'sede_version', version) ORDER BY id), '[]'::jsonb)
+    INTO v_marcadas
+    FROM marcadas;
+
+  RETURN jsonb_build_object(
+    'resultado', 'ok',
+    'version', v_version,
+    'orden_version', v_orden_nueva,
+    'sedes_marcadas', v_marcadas,
+    'por', p_por
+  );
+EXCEPTION
+  WHEN check_violation OR not_null_violation OR invalid_text_representation OR numeric_value_out_of_range THEN
+    RETURN jsonb_build_object('resultado', 'datos_invalidos', 'detalle', SQLERRM);
+END;
+$fn$ LANGUAGE plpgsql;
+
+
+-- -----------------------------------------------------------------------------
+-- carnes_preliq_anular(p_id, p_version, p_orden_version, p_por, p_motivo)  (R12)
+--
+-- Anula la preliquidación COMPLETA mientras no haya salido nada a SIESA. JS decide las
+-- guardas y aquí se revalidan bajo el lock:
+--   * estado = 'abierta';
+--   * ninguna sede enviando/enviada/sin_confirmar/anulada, ningún envío vinculado
+--     ok/enviando/sin_confirmar y ninguna recepción vinculada ya Enviado_SIESA;
+--   * ningún saldo ORIGINADO por ella `aplicado` en otra preliquidación.
+--
+-- Efectos en una transacción: cabecera -> `anulada` (anulada_at/por, motivo); borra sus
+-- sedes y desvincula cada recepción como `carnes_preliq_desvincular` (costos limpios,
+-- Costeado -> Aprobado, preliquidacion_id NULL); los saldos que ELLA consumió
+-- (aplicado) o tenía dirigidos (pendiente) vuelven a `pendiente` sin destino; sus propios
+-- saldos pendientes pasan a `descartado` y suben la versión de su destino; borra los avisos
+-- sin enviar. La anulada libera el índice parcial de "sin iniciar".
+--
+-- Resultados: ok | no_anulable(motivo) | version_cambiada | no_encontrada | motivo_requerido
+--   motivos de no_anulable: no_abierta | sede_enviada | saldo_aplicado
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION carnes_preliq_anular(
+  p_id            BIGINT,
+  p_version       INTEGER,
+  p_orden_version INTEGER,
+  p_por           TEXT,
+  p_motivo        TEXT
+) RETURNS JSONB AS $fn$
+DECLARE
+  v_header      carnes_preliquidaciones%ROWTYPE;
+  v_recepciones JSONB;
+  v_destinos    BIGINT[];
+  v_sedes       INTEGER;
+BEGIN
+  IF NULLIF(btrim(COALESCE(p_motivo, '')), '') IS NULL THEN
+    RETURN jsonb_build_object('resultado', 'motivo_requerido');
+  END IF;
+
+  SELECT * INTO v_header FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE;
+  IF NOT FOUND THEN
+    RETURN jsonb_build_object('resultado', 'no_encontrada');
+  END IF;
+  IF v_header.estado <> 'abierta' THEN
+    RETURN jsonb_build_object('resultado', 'no_anulable', 'motivo', 'no_abierta');
+  END IF;
+
+  PERFORM 1 FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id FOR UPDATE;
+
+  IF EXISTS (
+    SELECT 1 FROM carnes_preliquidacion_sedes s
+     WHERE s.preliquidacion_id = p_id
+       AND (
+         s.estado IN ('enviando', 'enviada', 'sin_confirmar', 'anulada')
+         OR (
+           s.envio_id IS NOT NULL AND EXISTS (
+             SELECT 1 FROM carnes_siesa_envios e
+              WHERE e.id = s.envio_id AND e.estado IN ('ok', 'enviando', 'sin_confirmar')
+           )
+         )
+         OR EXISTS (
+           SELECT 1 FROM carnes_recepciones r WHERE r.id = s.recepcion_id AND r.estado = 'Enviado_SIESA'
+         )
+       )
+  ) THEN
+    RETURN jsonb_build_object('resultado', 'no_anulable', 'motivo', 'sede_enviada');
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM carnes_preliquidacion_saldos
+     WHERE origen_preliquidacion_id = p_id AND estado = 'aplicado'
+  ) THEN
+    RETURN jsonb_build_object('resultado', 'no_anulable', 'motivo', 'saldo_aplicado');
+  END IF;
+
+  IF v_header.version <> p_version OR v_header.orden_version <> p_orden_version THEN
+    RETURN jsonb_build_object('resultado', 'version_cambiada');
+  END IF;
+
+  -- Cabeceras destino de sus saldos pendientes, por id ascendente (sin bloqueos cruzados).
+  SELECT COALESCE(array_agg(DISTINCT destino_preliquidacion_id), '{}'::BIGINT[]) INTO v_destinos
+    FROM carnes_preliquidacion_saldos
+   WHERE origen_preliquidacion_id = p_id AND estado = 'pendiente' AND destino_preliquidacion_id IS NOT NULL;
+  PERFORM 1 FROM carnes_preliquidaciones WHERE id = ANY (v_destinos) ORDER BY id FOR UPDATE;
+
+  SELECT COALESCE(jsonb_agg(recepcion_id ORDER BY recepcion_id), '[]'::jsonb) INTO v_recepciones
+    FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id;
+
+  -- Desvincular las recepciones al flujo legado (igual que carnes_preliq_desvincular).
+  UPDATE carnes_recepcion_items
+     SET costo_ajustado = NULL, costo_total = NULL
+   WHERE recepcion_id IN (SELECT recepcion_id FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id);
+  UPDATE carnes_recepciones
+     SET estado = 'Aprobado', costeado_at = NULL
+   WHERE id IN (SELECT recepcion_id FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id)
+     AND estado = 'Costeado';
+  UPDATE carnes_recepciones
+     SET preliquidacion_id = NULL
+   WHERE id IN (SELECT recepcion_id FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id);
+
+  DELETE FROM carnes_preliquidacion_alertas
+   WHERE enviado_ok = false
+     AND (preliquidacion_id = p_id OR sede_id IN (SELECT id FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id));
+  DELETE FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id;
+  GET DIAGNOSTICS v_sedes = ROW_COUNT;
+
+  -- Saldos que consumió o tenía dirigidos: vuelven a esperar una preliquidación de su especie.
+  UPDATE carnes_preliquidacion_saldos
+     SET estado = 'pendiente', destino_preliquidacion_id = NULL, updated_at = now()
+   WHERE destino_preliquidacion_id = p_id AND estado IN ('aplicado', 'pendiente');
+
+  -- Sus propios saldos pendientes ya no tienen sentido; el destino cambia su gasto total.
+  UPDATE carnes_preliquidacion_saldos
+     SET estado = 'descartado', editado_por = COALESCE(NULLIF(p_por, ''), editado_por), updated_at = now()
+   WHERE origen_preliquidacion_id = p_id AND estado = 'pendiente';
+  UPDATE carnes_preliquidaciones SET version = version + 1 WHERE id = ANY (v_destinos);
+
+  UPDATE carnes_preliquidaciones
+     SET estado = 'anulada',
+         anulada_at = now(),
+         anulada_por = NULLIF(p_por, ''),
+         motivo_anulacion = btrim(p_motivo),
+         version = version + 1,
+         orden_version = orden_version + 1
+   WHERE id = p_id;
+
+  RETURN jsonb_build_object(
+    'resultado', 'ok',
+    'preliquidacion_id', p_id,
+    'sedes_desvinculadas', v_sedes,
+    'recepciones', v_recepciones
+  );
+END;
+$fn$ LANGUAGE plpgsql;
+
 COMMIT;
 
--- Verificación: deben aparecer las cuatro funciones de la parte A.
+-- Verificación: deben aparecer las seis funciones de 041.
 SELECT proname
   FROM pg_proc
  WHERE proname IN (
    'carnes_preliq_registrar_alterna', 'carnes_preliq_saldo_editar',
-   'carnes_preliq_saldo_descartar', 'carnes_preliq_saldo_mover'
+   'carnes_preliq_saldo_descartar', 'carnes_preliq_saldo_mover',
+   'carnes_preliq_recalcular_no_enviadas', 'carnes_preliq_anular'
  )
  ORDER BY proname;

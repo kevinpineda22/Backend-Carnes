@@ -18,6 +18,8 @@
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 
+DROP FUNCTION IF EXISTS carnes_preliq_anular(BIGINT, INTEGER, INTEGER, TEXT, TEXT);
+DROP FUNCTION IF EXISTS carnes_preliq_recalcular_no_enviadas(BIGINT, INTEGER, JSONB, JSONB, TEXT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_mover(BIGINT, BIGINT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_descartar(BIGINT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_editar(BIGINT, NUMERIC, TEXT);
@@ -30,6 +32,7 @@ SELECT proname
   FROM pg_proc
  WHERE proname IN (
    'carnes_preliq_registrar_alterna', 'carnes_preliq_saldo_editar',
-   'carnes_preliq_saldo_descartar', 'carnes_preliq_saldo_mover'
+   'carnes_preliq_saldo_descartar', 'carnes_preliq_saldo_mover',
+   'carnes_preliq_recalcular_no_enviadas', 'carnes_preliq_anular'
  )
  ORDER BY proname;

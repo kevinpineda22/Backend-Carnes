@@ -47,6 +47,17 @@ const FUNCIONES = {
       "destino_liquidada", "version_cambiada",
     ],
   },
+  carnes_preliq_recalcular_no_enviadas: {
+    parametros: ["p_id", "p_version", "p_cambios", "p_plan", "p_por", "p_motivo"],
+    codigos: [
+      "ok", "no_encontrada", "no_abierta", "no_liquidada", "version_cambiada", "cambios_invalidos",
+      "motivo_requerido", "datos_invalidos",
+    ],
+  },
+  carnes_preliq_anular: {
+    parametros: ["p_id", "p_version", "p_orden_version", "p_por", "p_motivo"],
+    codigos: ["ok", "no_anulable", "version_cambiada", "no_encontrada", "motivo_requerido"],
+  },
 };
 
 test("el archivo 041 existe, es una transacción con lock_timeout y todo es CREATE OR REPLACE", () => {
@@ -146,6 +157,102 @@ test("saldo_descartar: la fila queda descartada, no se borra", () => {
   assert.doesNotMatch(f, /\bDELETE\b/i);
 });
 
+test("recalcular_no_enviadas: bloquea cabecera y sedes, exige abierta, liquidada y las dos versiones", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  const cabecera = "FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE";
+  const sedes = "FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id FOR UPDATE";
+  assert.ok(f.includes(cabecera));
+  assert.ok(f.includes(sedes));
+  assert.ok(f.indexOf(cabecera) < f.indexOf(sedes), "orden de bloqueo: cabecera -> sedes");
+  assert.match(f, /v_header\.estado <> 'abierta'/);
+  assert.match(f, /v_header\.liquidada_at IS NULL/);
+  assert.match(f, /v_header\.version <> p_version/);
+  assert.match(f, /v_header\.orden_version IS DISTINCT FROM NULLIF\(p_plan->>'orden_version', ''\)::INTEGER/);
+  assert.match(f, /carnes_preliq_validar_plan_sedes\(p_id, p_plan\)/);
+  assert.match(f, /PERFORM carnes_preliq_aplicar_plan_sedes\(p_id, p_plan\)/);
+});
+
+test("recalcular_no_enviadas: siempre sube orden_version y version solo con cambios (T1)", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  assert.match(f, /orden_version = orden_version \+ 1/);
+  assert.match(f, /version = CASE WHEN v_hay_cambios THEN version \+ 1 ELSE version END/);
+  assert.match(f, /v_hay_cambios := v_cambios <> '\{\}'::jsonb/);
+  assert.match(f, /v_hay_cambios AND NULLIF\(btrim\(COALESCE\(p_motivo, ''\)\), ''\) IS NULL/);
+});
+
+test("recalcular_no_enviadas: solo cambia columnas de una lista permitida", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  assert.match(f, /NOT IN \('animales', 'animal_en_pie', 'servicio_por_animal', 'tercero_id', 'gastos', 'retomas'\)/);
+  for (const c of ["animales", "animal_en_pie", "servicio_por_animal", "tercero_id"]) {
+    assert.ok(f.includes(`v_cambios ? '${c}'`), `cambio permitido ${c}`);
+  }
+  // Los valores calculados llegan en el plan de JS; no se recalculan aquí.
+  for (const c of ["servicio_aplicado", "gasto_total", "costo_por_animal"]) {
+    assert.ok(f.includes(`p_plan ? '${c}'`), `plan de JS: ${c}`);
+  }
+});
+
+test("recalcular_no_enviadas (M2): marca las sedes enviadas con requiere_correccion y la nueva orden_version", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  assert.match(f, /estado IN \('enviando', 'enviada', 'sin_confirmar'\)/);
+  assert.match(f, /requiere_correccion = true/);
+  assert.match(f, /correccion_orden_version = v_orden_nueva/);
+  assert.match(f, /'sedes_marcadas'/);
+  // No recostea: ninguna escritura de montos de sede aquí.
+  assert.doesNotMatch(f, /gasto_sede\s*=/);
+});
+
+test("recalcular_no_enviadas: gastos y retomas se reemplazan dentro del mismo bloque atómico", () => {
+  const f = cuerpoFuncion("carnes_preliq_recalcular_no_enviadas");
+  assert.match(f, /DELETE FROM carnes_preliquidacion_gastos WHERE preliquidacion_id = p_id/);
+  assert.match(f, /INSERT INTO carnes_preliquidacion_gastos/);
+  assert.match(f, /DELETE FROM carnes_preliquidacion_retomas WHERE preliquidacion_id = p_id/);
+  assert.match(f, /INSERT INTO carnes_preliquidacion_retomas/);
+  assert.match(f, /EXCEPTION\s+WHEN check_violation/);
+});
+
+test("anular (R12): guardas revalidadas bajo el lock y orden de bloqueo cabecera -> sedes -> recepciones", () => {
+  const f = cuerpoFuncion("carnes_preliq_anular");
+  assert.match(f, /FROM carnes_preliquidaciones WHERE id = p_id FOR UPDATE/);
+  assert.match(f, /FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id FOR UPDATE/);
+  assert.match(f, /v_header\.estado <> 'abierta'/);
+  assert.match(f, /'enviando', 'enviada', 'sin_confirmar', 'anulada'/);
+  assert.match(f, /e\.estado IN \('ok', 'enviando', 'sin_confirmar'\)/);
+  assert.match(f, /r\.estado = 'Enviado_SIESA'/);
+  assert.match(f, /origen_preliquidacion_id = p_id AND estado = 'aplicado'/);
+  for (const m of ["no_abierta", "sede_enviada", "saldo_aplicado"]) assert.ok(f.includes(`'${m}'`), m);
+  assert.match(f, /v_header\.version <> p_version OR v_header\.orden_version <> p_orden_version/);
+  // Las guardas van antes de cualquier escritura.
+  const primeraEscritura = f.indexOf("UPDATE carnes_recepcion_items");
+  for (const g of ["'sede_enviada'", "'saldo_aplicado'", "'version_cambiada'"]) {
+    assert.ok(f.indexOf(g) < primeraEscritura, `${g} antes de escribir`);
+  }
+});
+
+test("anular (R12): desvincula como desvincular, devuelve saldos consumidos y descarta los propios", () => {
+  const f = cuerpoFuncion("carnes_preliq_anular");
+  assert.match(f, /SET costo_ajustado = NULL, costo_total = NULL/);
+  assert.match(f, /SET estado = 'Aprobado', costeado_at = NULL/);
+  assert.match(f, /AND estado = 'Costeado'/);
+  assert.match(f, /SET preliquidacion_id = NULL/);
+  assert.match(f, /DELETE FROM carnes_preliquidacion_sedes WHERE preliquidacion_id = p_id/);
+  assert.match(f, /DELETE FROM carnes_preliquidacion_alertas/);
+  assert.match(f, /enviado_ok = false/);
+  // Saldos consumidos/dirigidos vuelven a pendiente sin destino.
+  assert.match(f, /SET estado = 'pendiente', destino_preliquidacion_id = NULL/);
+  assert.match(f, /destino_preliquidacion_id = p_id AND estado IN \('aplicado', 'pendiente'\)/);
+  // Saldos propios pendientes se descartan y el destino sube su versión.
+  assert.match(f, /SET estado = 'descartado'/);
+  assert.match(f, /UPDATE carnes_preliquidaciones SET version = version \+ 1 WHERE id = ANY \(v_destinos\)/);
+  assert.match(f, /estado = 'anulada'/);
+  for (const c of ["anulada_at = now()", "anulada_por", "motivo_anulacion"]) assert.ok(f.includes(c), c);
+});
+
+test("anular: el motivo es obligatorio y se valida antes de tocar nada", () => {
+  const f = cuerpoFuncion("carnes_preliq_anular");
+  assert.ok(f.indexOf("'motivo_requerido'") < f.indexOf("FOR UPDATE"));
+});
+
 test("sin fórmulas de negocio en plpgsql (R8)", () => {
   const prohibido = [
     /\bround\s*\(/i,
@@ -162,12 +269,17 @@ test("sin fórmulas de negocio en plpgsql (R8)", () => {
   for (const re of prohibido) assert.doesNotMatch(sql, re, `fórmula de negocio prohibida: ${re}`);
 });
 
-test("existe el script manual de la parte A en test/sql, envuelto en BEGIN ... ROLLBACK", () => {
-  const ruta = join(RAIZ, "test", "sql", "041a_rpc_alterna_saldos.sql");
-  assert.ok(existsSync(ruta), "falta test/sql/041a_rpc_alterna_saldos.sql");
-  const t = limpiar(readFileSync(ruta, "utf8"));
-  assert.match(t, /^\s*BEGIN;/m);
-  assert.match(t, /^\s*ROLLBACK;/m);
-  assert.doesNotMatch(t, /^\s*COMMIT;/m);
-  for (const f of Object.keys(FUNCIONES)) assert.ok(t.includes(f), `el script no ejercita ${f}`);
-});
+for (const [archivo, funciones] of [
+  ["041a_rpc_alterna_saldos.sql", ["carnes_preliq_registrar_alterna", "carnes_preliq_saldo_editar", "carnes_preliq_saldo_descartar", "carnes_preliq_saldo_mover"]],
+  ["041b_rpc_recalcular_anular.sql", ["carnes_preliq_recalcular_no_enviadas", "carnes_preliq_anular"]],
+]) {
+  test(`existe el script manual ${archivo} en test/sql, envuelto en BEGIN ... ROLLBACK`, () => {
+    const ruta = join(RAIZ, "test", "sql", archivo);
+    assert.ok(existsSync(ruta), `falta test/sql/${archivo}`);
+    const t = limpiar(readFileSync(ruta, "utf8"));
+    assert.match(t, /^\s*BEGIN;/m);
+    assert.match(t, /^\s*ROLLBACK;/m);
+    assert.doesNotMatch(t, /^\s*COMMIT;/m);
+    for (const f of funciones) assert.ok(t.includes(f), `el script no ejercita ${f}`);
+  });
+}

@@ -107,6 +107,8 @@ END $$;
 
 -- 3a0. Funciones de sql/041 (alterna, saldos y correcciones), si esa migración se aplicó. Lo
 --      normal es correr antes sql/041_rollback.sql. Con IF EXISTS es inocuo si 041 no se aplicó.
+DROP FUNCTION IF EXISTS carnes_preliq_anular(BIGINT, INTEGER, INTEGER, TEXT, TEXT);
+DROP FUNCTION IF EXISTS carnes_preliq_recalcular_no_enviadas(BIGINT, INTEGER, JSONB, JSONB, TEXT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_mover(BIGINT, BIGINT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_descartar(BIGINT, TEXT);
 DROP FUNCTION IF EXISTS carnes_preliq_saldo_editar(BIGINT, NUMERIC, TEXT);

@@ -240,7 +240,7 @@ test("040_rollback restaura carnes_preliq_transicionar_sede idéntica a la de 03
 
 test("041 solo crea funciones nuevas: ninguna redefine una de 039/040", () => {
   const previas = [...funciones039, ...funciones040].map((f) => f.nombre);
-  assert.ok(funciones041.length >= 4, `funciones de 041: ${funciones041.length}`);
+  assert.equal(funciones041.length, 6, `funciones de 041: ${funciones041.length}`);
   for (const f of funciones041) assert.ok(!previas.includes(f.nombre), `${f.nombre} ya existe en 039/040`);
 });
 
