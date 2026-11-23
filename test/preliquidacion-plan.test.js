@@ -61,17 +61,26 @@ test("porCorregir: vacío mientras la preliquidación no está liquidada", () =>
   assert.equal(r.pendientes, 0);
 });
 
-test("porReevaluar: bloqueada(armado_invalido|costeo_invalido) no reevaluada en esta corrida", () => {
+test("porReevaluar: bloqueada(armado_invalido|costeo_invalido) no reevaluada, armado solo por el admin", () => {
   const a = sede({ estado: "bloqueada", motivo_bloqueo: "armado_invalido" });
   const c = sede({ estado: "bloqueada", motivo_bloqueo: "costeo_invalido" });
-  const r = plan([a, c]);
-  assert.deepEqual(ids(r.porReevaluar), [a.id, c.id].sort((x, y) => x - y));
+  assert.deepEqual(ids(plan([a, c], { origen: "admin" }).porReevaluar), [a.id, c.id].sort((x, y) => x - y));
+});
+
+test("JD S2: armado_invalido NO se reevalúa en corridas automáticas (el costeo hipotético ignora el armado y entra en bucle)", () => {
+  const a = sede({ estado: "bloqueada", motivo_bloqueo: "armado_invalido" });
+  const c = sede({ estado: "bloqueada", motivo_bloqueo: "costeo_invalido" });
+  for (const origen of ["schedule", "sweep", "dispatch", "inmediato"]) {
+    const r = plan([a, c], { origen });
+    assert.deepEqual(ids(r.porReevaluar), [c.id], origen);
+  }
+  assert.equal(plan([a], { origen: "sweep" }).pendientes, 0);
 });
 
 test("porReevaluar: una sede ya reevaluada en la corrida no vuelve a entrar", () => {
   const a = sede({ estado: "bloqueada", motivo_bloqueo: "armado_invalido" });
   const b = sede({ estado: "bloqueada", motivo_bloqueo: "costeo_invalido" });
-  const r = plan([a, b], { corrida: { id: 50, resumen: { reevaluadas: [a.id] } } });
+  const r = plan([a, b], { origen: "admin", corrida: { id: 50, resumen: { reevaluadas: [a.id] } } });
   assert.deepEqual(ids(r.porReevaluar), [b.id]);
   assert.equal(r.pendientes, 1);
 });
@@ -211,7 +220,7 @@ test("pendientes cuenta la unión de los buckets sin duplicar sedes", () => {
   const sim = obsoleta({ estado: "simulada" });
   // v: porCalcular+porEnviar (1), c: porEnviar (1), cero: porCorregir (1), arm: porReevaluar (1),
   // sim: porCalcular, y tras recostear queda `calculada` y se reclama (1)
-  assert.equal(plan([v, c, cero, arm, sim]).pendientes, 5);
+  assert.equal(plan([v, c, cero, arm, sim], { origen: "admin" }).pendientes, 5);
 });
 
 test("pendientes excluye lista_para_enviar y error permanente para orígenes automáticos", () => {

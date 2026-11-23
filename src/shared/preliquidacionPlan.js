@@ -7,7 +7,7 @@
  *
  * Buckets (todos arreglos de filas de sede, salvo `porEnviar` y `pendientes`):
  *   porCorregir     bloqueada(servicio_cero) con la preliquidación ya liquidada -> evento `corregida`
- *   porReevaluar    bloqueada(armado_invalido|costeo_invalido) aún no reevaluada en esta corrida
+ *   porReevaluar    bloqueada(costeo_invalido; armado_invalido solo con origen admin) aún no reevaluada en esta corrida
  *   porCalcular     sedes que requieren congelar (costeo) antes de cualquier envío
  *   porEnviar       [{sede, resetIntentos, requiereCosteo}] sedes reclamables (puedeReclamar);
  *                   `requiereCosteo` = solo se reclaman después de congelar con éxito (T2)
@@ -107,11 +107,11 @@ export function planearEnvios(sedes, { header, origen, corrida, siesaActivo, aho
     if (sede.estado === "lista_para_enviar") listasParaEnviar.push(sede);
 
     if (sede.estado === "bloqueada" && sede.motivo_bloqueo === "servicio_cero" && liquidada) porCorregir.push(sede);
-    if (
-      sede.estado === "bloqueada" &&
-      ["armado_invalido", "costeo_invalido"].includes(sede.motivo_bloqueo) &&
-      !reevaluadas.has(sede.id)
-    ) {
+    // `armado_invalido` solo lo reevalúa el admin (procesar sede / recalcular): el costeo hipotético
+    // ignora el armado, así que en cada barrido automático la desbloquearía, fallaría de nuevo el
+    // armado y repetiría el envío con error y el correo al admin cada hora.
+    const motivosReevaluables = esAdmin ? ["armado_invalido", "costeo_invalido"] : ["costeo_invalido"];
+    if (sede.estado === "bloqueada" && motivosReevaluables.includes(sede.motivo_bloqueo) && !reevaluadas.has(sede.id)) {
       porReevaluar.push(sede);
     }
 

@@ -309,7 +309,7 @@ test("preliquidación que no está abierta no se procesa", async () => {
 test("porReevaluar: si el costeo sigue bloqueado no escribe y la sede se anota como reevaluada", async () => {
   tablas.carnes_preliquidaciones = [liquidada({ orden_version: 6, gasto_total_aplicado: "99999999.00" })];
   tablas.carnes_preliquidacion_sedes = [
-    sede({ id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "bloqueada", motivo_bloqueo: "armado_invalido" }),
+    sede({ id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "bloqueada", motivo_bloqueo: "costeo_invalido" }),
   ];
   const corrida = { id: 90, resumen: { reevaluadas: [] } };
   await procesar({ corrida });
@@ -317,22 +317,42 @@ test("porReevaluar: si el costeo sigue bloqueado no escribe y la sede se anota c
   assert.deepEqual(corrida.resumen.reevaluadas, [11]);
 });
 
-test("armado_invalido se reevalúa una vez por corrida: vuelve a vinculada y se recosteo", async () => {
+test("armado_invalido se reevalúa una vez por corrida SOLO por el admin: vuelve a vinculada y se recosteo", async () => {
   tablas.carnes_preliquidaciones = [liquidada({ orden_version: 6 })];
   tablas.carnes_preliquidacion_sedes = [
     sede({ id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "bloqueada", motivo_bloqueo: "armado_invalido" }),
   ];
   tablas.carnes_recepcion_items[0].costo_base = "30000";
   const corrida = { id: 90, resumen: { reevaluadas: [] } };
-  await procesar({ corrida });
+  await procesar({ corrida, origen: "admin" });
   assert.equal(rpcDe("carnes_preliq_transicionar_sede")[0].args.p_hacia, "vinculada");
   assert.deepEqual(corrida.resumen.reevaluadas, [11]);
   // segunda pasada en la misma corrida: ya no se reevalúa
   rpcs = [];
   tablas.carnes_preliquidacion_sedes[0].estado = "bloqueada";
   tablas.carnes_preliquidacion_sedes[0].motivo_bloqueo = "armado_invalido";
-  await procesar({ corrida });
+  await procesar({ corrida, origen: "admin" });
   assert.equal(rpcDe("carnes_preliq_transicionar_sede").length, 0);
+});
+
+test("JD S2: una corrida automática deja intacta la sede armado_invalido: sin transición, sin envío, sin alerta", async () => {
+  tablas.carnes_preliquidaciones = [liquidada({ orden_version: 6 })];
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, recepcion_id: 101, animales: 10, orden: 1, estado: "bloqueada", motivo_bloqueo: "armado_invalido" }),
+  ];
+  tablas.carnes_recepcion_items[0].costo_base = "30000"; // el costeo hipotético la desbloquearía
+  const alertas = [];
+  for (const origen of ["schedule", "sweep", "dispatch"]) {
+    const corrida = { id: 90, resumen: { reevaluadas: [] } };
+    const r = await procesar({ corrida, origen, encolar: async (a) => alertas.push(a) });
+    assert.equal(rpcDe("carnes_preliq_transicionar_sede").length, 0, origen);
+    assert.equal(rpcDe("carnes_preliq_congelar_sede").length, 0, origen);
+    assert.equal(llamadas.length, 0, origen);
+    assert.equal(r.pendientes, 0, origen);
+    assert.deepEqual(corrida.resumen.reevaluadas, [], origen);
+  }
+  assert.equal(alertas.length, 0);
+  assert.equal(tablas.carnes_preliquidacion_sedes[0].estado, "bloqueada");
 });
 
 test("M1: un enviando abandonado se libera (transicionar) y se recosteo (congelar) antes de reclamar", async () => {
