@@ -353,7 +353,7 @@ test("obsolescencia: desvincular borra las alertas sin enviar de la sede que se 
 test("obsolescencia: cerrar borra solo las alertas de estado pendiente, sin reclamar (la cerrada se encola después)", () => {
   const c = cuerpoVigente("carnes_preliq_cerrar", ORDEN);
   assert.ok(c.includes(BORRA), "cerrar debe borrar las alertas obsoletas");
-  assert.match(c, /WHERE preliquidacion_id = p_id AND enviado_ok = false\s+AND reclamada_at IS NULL/);
+  assert.match(c, /WHERE preliquidacion_id = p_id AND enviado_ok = false\s+AND \(reclamada_at IS NULL OR reclamada_at < now\(\) - interval '5 minutes'\)/);
   const lista = c.match(/AND evento IN \(([^)]*)\)/);
   assert.ok(lista, "cerrar debe restringir los eventos que borra");
   const borra = [...lista[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1]);

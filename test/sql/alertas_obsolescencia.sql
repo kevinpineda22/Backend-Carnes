@@ -179,6 +179,10 @@ BEGIN
   PERFORM pg_temp.sembrar('ventana_vencida', pre_liq, 0, 5, false);
   UPDATE carnes_preliquidacion_alertas SET reclamada_at = now()
    WHERE evento = 'ventana_vencida' AND preliquidacion_id = pre_liq AND ocurrencia = 5;  -- reclamada: no se toca
+  -- En backoff tras un envío fallido (intentos > 0, reclamada hace más del vencimiento): obsoleta, se borra.
+  PERFORM pg_temp.sembrar('servicio_cero', pre_liq, 0, 10, false);
+  UPDATE carnes_preliquidacion_alertas SET reclamada_at = now() - interval '10 minutes', intentos_envio = 2
+   WHERE evento = 'servicio_cero' AND preliquidacion_id = pre_liq AND ocurrencia = 10;
   SELECT orden_version INTO ov FROM carnes_preliquidaciones WHERE id = pre_liq;
   r := carnes_preliq_cerrar(pre_liq, ov, 0);
   IF r->>'resultado' <> 'ok' THEN RAISE EXCEPTION 'cerrar debía ser ok: %', r; END IF;
@@ -189,7 +193,8 @@ BEGIN
   IF pg_temp.existe('inicial_pendiente', pre_liq, 78, 2) THEN RAISE EXCEPTION 'cerrar no borró inicial_pendiente'; END IF;
   IF pg_temp.existe('corrida_perdida', pre_liq, 0, 0) THEN RAISE EXCEPTION 'cerrar no borró corrida_perdida'; END IF;
   IF pg_temp.existe('servicio_cero', pre_liq, 0, 9) THEN RAISE EXCEPTION 'cerrar no borró servicio_cero'; END IF;
-  IF NOT pg_temp.existe('ventana_vencida', pre_liq, 0, 5) THEN RAISE EXCEPTION 'cerrar borró una alerta reclamada'; END IF;
+  IF pg_temp.existe('servicio_cero', pre_liq, 0, 10) THEN RAISE EXCEPTION 'cerrar no borró una alerta en backoff (reclamada hace más del vencimiento)'; END IF;
+  IF NOT pg_temp.existe('ventana_vencida', pre_liq, 0, 5) THEN RAISE EXCEPTION 'cerrar borró una alerta en vuelo'; END IF;
   IF NOT pg_temp.existe('cerrada', pre_liq, 0, 0) THEN RAISE EXCEPTION 'cerrar borró una alerta ya enviada'; END IF;
 
   -- Un cierre RECHAZADO no puede borrar nada (la guarda va antes del borrado).

@@ -358,11 +358,12 @@ BEGIN
 
   -- Cerrada, los avisos de ESTADO pendiente (en vuelo, inicial, ventana, corrida perdida, servicio cero) quedan
   -- obsoletos. Las accionables (envio_error, sin_confirmar, reintentos_agotados, requiere_correccion,
-  -- servicio_tardio...) NO se borran: el admin aún debe verlas. Tampoco una fila reclamada por el despacho.
+  -- servicio_tardio...) NO se borran: el admin aún debe verlas. Tampoco una fila EN VUELO (reclamada hace menos de 5 min = VENCIMIENTO_RECLAMO_MS); una reclamada hace más
+  -- (en backoff tras un envío fallido, o abandonada) sí es obsoleta y se borra.
   -- La alerta `cerrada` la encola JS DESPUÉS de este cierre, así que no se la lleva este borrado.
   DELETE FROM carnes_preliquidacion_alertas
    WHERE preliquidacion_id = p_id AND enviado_ok = false
-     AND reclamada_at IS NULL
+     AND (reclamada_at IS NULL OR reclamada_at < now() - interval '5 minutes')
      AND evento IN ('envio_en_vuelo', 'inicial_pendiente', 'ventana_vencida', 'corrida_perdida', 'servicio_cero');
 
   RETURN jsonb_build_object('resultado', 'ok', 'monto_no_asignado', p_monto_no_asignado);
