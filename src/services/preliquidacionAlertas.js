@@ -209,7 +209,8 @@ function contextoDeEnvio(fila) {
 /**
  * Despacha el backlog de alertas sin enviar.
  *
- * @param {{ahora?: Date, preliquidacionId?: number, limite?: number}} [contexto]
+ * @param {{ahora?: Date, preliquidacionId?: number, limite?: number, hasta?: number}} [contexto]
+ *   `hasta` (ms epoch) es la fecha límite: pasada, deja de reclamar filas nuevas.
  * @param {{enviar?: (evento: string, contexto: object) => Promise<{success: boolean, sandbox?: boolean, error?: string}>,
  *   notificar?: Function, db?: object, env?: object, log?: object, destinatarios?: () => string[], sandbox?: () => boolean}} [opciones]
  *   `enviar` es el transporte; por defecto completa el contexto desde la base y manda el correo de
@@ -226,10 +227,12 @@ export async function despacharAlertas(contexto, opciones = {}) {
     destinatarios = () => destinatariosPreliquidacion(env),
     sandbox = () => sandboxOn(),
     // Con transporte o notificador inyectado no se exige el SMTP real; por defecto sí.
+    // Reloj para la fecha límite (`hasta`, ms epoch); inyectable en pruebas.
+    reloj = () => Date.now(),
     emailListo = () => (typeof enviar === "function" || typeof notificar === "function" ? true : emailConfigurado()),
   } = opciones ?? {};
   try {
-    const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO } = contexto && typeof contexto === "object" ? contexto : {};
+    const { ahora = new Date(), preliquidacionId, limite = LIMITE_POR_DEFECTO, hasta } = contexto && typeof contexto === "object" ? contexto : {};
     if (motivoApagado(env) !== null) return { ok: true, enviadas: 0 };
 
     if (!sandbox() && destinatarios().length === 0) {
@@ -263,6 +266,8 @@ export async function despacharAlertas(contexto, opciones = {}) {
     let enviadas = 0;
     let fallidas = 0;
     for (const candidata of candidatas) {
+      // Presupuesto agotado: no se reclama nada nuevo (lo que falte lo toma la siguiente corrida).
+      if (Number.isFinite(hasta) && reloj() >= hasta) break;
       let reclamada = null;
       try {
         reclamada = await reclamar(cliente, candidata, ahora);

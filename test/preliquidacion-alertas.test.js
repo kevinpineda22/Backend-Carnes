@@ -442,6 +442,26 @@ test("el límite acota cuántas filas se despachan por invocación", async () =>
   assert.equal(t.enviados.length, 2);
 });
 
+test("la fecha límite (`hasta`) detiene el reclamo de filas nuevas cuando el presupuesto se agota", async () => {
+  const alertas = [1, 2, 3, 4].map((n) => ({ evento: "cerrada", preliquidacionId: n }));
+  const { almacen, t, despachar } = await conCola(alertas);
+  // El reloj avanza 100 ms en cada consulta; el límite deja pasar solo dos filas.
+  let lecturas = 0;
+  const reloj = () => 1000 + 100 * lecturas++;
+  const r = await despachar({ ahora: AHORA, hasta: 1200 }, { reloj });
+  assert.equal(r.enviadas, 2);
+  assert.equal(t.enviados.length, 2);
+  assert.equal(almacen.tabla.filter((f) => f.reclamada_at != null).length, 2, "las demás ni se reclamaron");
+});
+
+test("con la fecha límite ya vencida no se reclama nada", async () => {
+  const { almacen, t, despachar } = await conCola([ALERTA]);
+  const r = await despachar({ ahora: AHORA, hasta: 500 }, { reloj: () => 1000 });
+  assert.equal(r.enviadas, 0);
+  assert.equal(t.enviados.length, 0);
+  assert.equal(almacen.tabla[0].intentos_envio, 0);
+});
+
 test("despacharAlertas nunca lanza, ni con la base caída ni con contexto indefinido", async () => {
   const caida = baseFalsa({ falla: "base caída" });
   const t = transporte();

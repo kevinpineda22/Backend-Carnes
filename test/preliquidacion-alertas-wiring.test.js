@@ -269,7 +269,9 @@ test("despacharTrasAccion despacha con un límite acotado y nunca lanza", async 
   const llamadas = [];
   await despacharTrasAccion({ despachar: async (c) => llamadas.push(c) });
   assert.equal(llamadas.length, 1);
-  assert.ok(llamadas[0].limite > 0 && llamadas[0].limite <= 25);
+  assert.ok(llamadas[0].limite > 0 && llamadas[0].limite <= 3, "desde los controladores el límite es pequeño");
+  const margen = llamadas[0].hasta - Date.now();
+  assert.ok(margen > 0 && margen < 5000, "la fecha límite del despacho queda por debajo de la espera máxima");
   await despacharTrasAccion({ despachar: async () => { throw new Error("boom"); } });
 });
 
@@ -277,6 +279,13 @@ test("despacharTrasAccion no retiene la respuesta más allá de la espera máxim
   const inicio = Date.now();
   await despacharTrasAccion({ despachar: () => new Promise(() => {}), esperaMaximaMs: 30 });
   assert.ok(Date.now() - inicio < 1000);
+});
+
+test("el transportador SMTP tiene timeouts de conexión, saludo y socket", () => {
+  const fuente = leer("../src/services/email.service.js");
+  for (const clave of ["connectionTimeout", "greetingTimeout", "socketTimeout"]) {
+    assert.match(fuente, new RegExp(`${clave}:\\s*\\d`), clave);
+  }
 });
 
 test("los handlers que pueden generar alertas despachan antes de responder", () => {

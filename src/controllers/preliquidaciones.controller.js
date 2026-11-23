@@ -9,7 +9,9 @@ import { revisarCorridasPerdidas } from "../models/PreliquidacionVigilancia.mode
 import { despacharAlertas } from "../services/preliquidacionAlertas.js";
 
 /** Alertas que se despachan tras una acción del admin (el resto lo drena el barrido del cron). */
-const LIMITE_DESPACHO_ADMIN = 10;
+const LIMITE_DESPACHO_ADMIN = 3;
+/** Presupuesto del despacho: por debajo de la espera máxima, para que deje de reclamar antes de que se corte la espera. */
+const PRESUPUESTO_DESPACHO_MS = 3000;
 /** Espera máxima del despacho: el correo nunca debe retener la respuesta del admin. */
 const ESPERA_MAXIMA_DESPACHO_MS = 5000;
 
@@ -27,7 +29,7 @@ export async function despacharTrasAccion({
     const limite = new Promise((resolver) => {
       temporizador = setTimeout(resolver, esperaMaximaMs);
     });
-    await Promise.race([Promise.resolve(despachar({ limite: LIMITE_DESPACHO_ADMIN })).catch(() => {}), limite]);
+    await Promise.race([Promise.resolve(despachar({ limite: LIMITE_DESPACHO_ADMIN, hasta: Date.now() + PRESUPUESTO_DESPACHO_MS })).catch(() => {}), limite]);
   } catch (error) {
     console.error("Despacho de alertas tras la acción falló:", error?.message);
   } finally {

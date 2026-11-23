@@ -36,6 +36,10 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
   tls: { ciphers: "TLSv1.2" },
+  // Sin esto un SMTP colgado retiene la función serverless hasta que la congelan (reclamos huérfanos, correos duplicados).
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 10_000,
 });
 
 /**
