@@ -279,6 +279,50 @@ test("B5: si la acción lanza tras encolar, igual se despacha y la respuesta de 
   }
 });
 
+test("B5: un rechazo de validación previo (400/404/422) no despacha; un error sin estado o un 5xx sí", async () => {
+  encendida();
+  const casos = [
+    [400, false],
+    [404, false],
+    [422, false],
+    [409, true],
+    [500, true],
+    [503, true],
+  ];
+  for (const [estado, despacha] of casos) {
+    despachos = [];
+    respuestas.cerrar = createError(estado, "fallo", "codigo_test");
+    const r = await llamar("POST", "/5/cerrar", {});
+    assert.equal(r.estado, estado);
+    assert.equal(despachos.length, despacha ? 1 : 0, `estado ${estado}`);
+  }
+  despachos = [];
+  respuestas.cerrar = new Error("inesperado");
+  await llamar("POST", "/5/cerrar", {});
+  assert.equal(despachos.length, 1, "error sin estado: puede seguir a un encolado");
+});
+
+test("B5: vincular despacha una sola vez por petición y no despacha ante un rechazo previo total", async () => {
+  encendida();
+  despachos = [];
+  respuestas.vincularRecepcion = createError(404, "no existe", "recepcion_no_encontrada");
+  const r404 = await llamar("POST", "/3/recepciones", { recepcion_ids: [10] });
+  assert.equal(r404.estado, 404);
+  assert.equal(despachos.length, 0, "404 de validación: nada que despachar");
+
+  despachos = [];
+  respuestas.vincularRecepcion = createError(409, "fuera de ventana", "fuera_ventana");
+  const r409 = await llamar("POST", "/3/recepciones", { recepcion_ids: [10, 11] });
+  assert.equal(r409.estado, 409);
+  assert.equal(despachos.length, 1, "un solo despacho aunque fallen varias");
+
+  despachos = [];
+  respuestas.vincularRecepcion = new Error("inesperado");
+  await llamar("POST", "/3/recepciones", { recepcion_ids: [10] });
+  assert.equal(despachos.length, 1, "error inesperado: un solo despacho en el catch");
+  delete respuestas.vincularRecepcion;
+});
+
 // ─── Interruptor ───────────────────────────────────────────────────────────
 
 test("config: el interruptor está apagado por defecto y se lee en cada llamada", () => {

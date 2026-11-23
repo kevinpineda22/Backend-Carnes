@@ -37,6 +37,23 @@ export async function despacharTrasAccion({
   }
 }
 
+/** Rechazos de validación previa: ocurren antes de cualquier escritura, no hay alertas que despachar. */
+const ESTADOS_PREVALIDACION = [400, 404, 422];
+
+/**
+ * ¿Puede el error haber llegado DESPUÉS de encolar alertas? Los rechazos de validación previa (400, 404, 422)
+ * no; los conflictos (409...), los 5xx y los errores sin estado (fallos inesperados a mitad de la acción) sí.
+ */
+export function errorPuedeHaberEncolado(error) {
+  const estado = Number(error?.statusCode ?? error?.status);
+  return !ESTADOS_PREVALIDACION.includes(estado);
+}
+
+/** Despacho en el `catch` de una acción: solo si el error puede haber seguido a un encolado. */
+async function despacharTrasError(error) {
+  if (errorPuedeHaberEncolado(error)) await despacharTrasAccion();
+}
+
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
 
@@ -155,7 +172,7 @@ export async function actualizar(req, res, next) {
     res.json({ ok: true, data });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    await despacharTrasError(error);
     next(error);
   }
 }
@@ -178,6 +195,8 @@ export async function guardarGastos(req, res, next) {
  * Si NINGUNA entra se responde con el estado HTTP del primer error.
  */
 export async function vincular(req, res, next) {
+  // Un único despacho por petición: tras el bucle (éxito o rechazo total) o, si algo lanza antes, en el catch.
+  let despachado = false;
   try {
     const resultados = [];
     let primerError = null;
@@ -195,14 +214,16 @@ export async function vincular(req, res, next) {
       }
     }
     if (primerError && resultados.every((r) => !r.ok)) {
-      await despacharTrasAccion();
+      despachado = true;
+      await despacharTrasError(primerError);
       return next(primerError);
     }
+    despachado = true;
     await despacharTrasAccion();
     res.json({ ok: true, data: resultados });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    if (!despachado) await despacharTrasError(error);
     next(error);
   }
 }
@@ -272,7 +293,7 @@ export async function procesar(req, res, next) {
     res.json({ ok: true, data });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    await despacharTrasError(error);
     next(error);
   }
 }
@@ -285,7 +306,7 @@ export async function procesarSede(req, res, next) {
     res.json({ ok: true, data });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    await despacharTrasError(error);
     next(error);
   }
 }
@@ -299,7 +320,7 @@ export async function recalcular(req, res, next) {
     res.json({ ok: true, data });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    await despacharTrasError(error);
     next(error);
   }
 }
@@ -363,7 +384,7 @@ export async function cerrar(req, res, next) {
     res.json({ ok: true, data });
   } catch (error) {
     // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasAccion();
+    await despacharTrasError(error);
     next(error);
   }
 }
