@@ -98,6 +98,8 @@ const ERRORES_RESULTADO = {
   retomas_solo_cerdo: [422, "Las retomas solo aplican a la preliquidación de cerdo."],
   no_cerrable: [409, "La preliquidación tiene sedes pendientes o por corregir y no se puede cerrar."],
   monto_invalido: [422, "El monto no asignado no es válido."],
+  sede_no_enviada: [409, "Solo se puede anular una sede que ya se envió a SIESA (estado enviada)."],
+  sin_correccion: [409, "La sede no tiene una corrección pendiente."],
   no_encontrada: [404, "No se encontró el registro."],
   sin_recepcion: [404, "Recepción no encontrada."],
 };

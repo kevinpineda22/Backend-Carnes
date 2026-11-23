@@ -1919,6 +1919,84 @@ export async function anularOficiales(liquidacionId, { por, motivo, inicialesAnu
 }
 
 /**
+ * La oficial de UNA recepción (sede de preliquidación) se anuló en SIESA: se refleja acá.
+ *
+ * Es la misma regla de `anularOficiales`, acotada a una recepción y sin tocar la liquidación (la
+ * sede de una preliquidación no tiene `carnes_liquidaciones`): la oficial vigente (ok, duplicado o
+ * sin_confirmar) pasa a `anulado`, lo que libera el índice único de sql/010. El estado de la
+ * recepción y de la sede lo escribe quien llama, con el CAS de la sede.
+ *
+ * Idempotente: sin oficial vigente no hace nada y devuelve `anulados: []`. NO toca SIESA (la
+ * anulación allá la hace una persona) y un `enviando` vivo se rechaza con 409: SIESA puede estar
+ * creándolo en este momento.
+ *
+ * @param {number|string} recepcionId
+ * @param {{ por?: string, motivo?: string }} [p]
+ * @returns {Promise<{anulados: Array<{id: number, tipo: string, referencia: string}>}>}
+ */
+export async function anularOficialRecepcion(recepcionId, { por, motivo } = {}) {
+  const { data: enCurso, error: e0 } = await supabase
+    .from(TABLA)
+    .select("id, referencia, enviado_at")
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .eq("estado", "enviando");
+  if (e0) fallarSiFaltaMigracion(e0, "Error al leer los envíos", MIGRACIONES);
+  const vivos = (enCurso || []).filter(
+    (e) => Date.now() - new Date(e.enviado_at).getTime() <= ENVIANDO_ABANDONADO_MS,
+  );
+  if (vivos.length) {
+    throw createError(
+      409,
+      `Hay envíos en curso (${vivos.map((e) => e.referencia).join(", ")}). Espere a que terminen.`,
+    );
+  }
+
+  const marca = {
+    estado: "anulado",
+    anulado_por: por || null,
+    anulado_at: new Date().toISOString(),
+    motivo_anulacion: String(motivo ?? "").trim() || null,
+  };
+  const { data: cerrados, error: e1 } = await supabase
+    .from(TABLA)
+    .update(marca)
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .in("estado", ["ok", "duplicado", "sin_confirmar"])
+    .select("id, tipo, referencia");
+  if (e1) {
+    // Sin sql/011, el CHECK no conoce `anulado`.
+    if (e1.code === "23514") {
+      throw createError(503, "A la base le falta sql/011_siesa_anulacion.sql. Corra el script en Supabase y vuelva a intentar.");
+    }
+    fallarSiFaltaMigracion(e1, "No se pudo anular la oficial de la recepción", MIGRACIONES);
+  }
+  // Un `enviando` solo se anula si ya está ABANDONADO; la condición va en la misma consulta que lo cambia.
+  const limite = new Date(Date.now() - ENVIANDO_ABANDONADO_MS).toISOString();
+  const { data: abandonados, error: e2 } = await supabase
+    .from(TABLA)
+    .update(marca)
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .eq("estado", "enviando")
+    .lt("enviado_at", limite)
+    .select("id, tipo, referencia");
+  if (e2) fallarSiFaltaMigracion(e2, "No se pudo anular la oficial de la recepción", MIGRACIONES);
+
+  const { error: e3 } = await supabase.from("carnes_recepciones").update({ siesa_at: null }).eq("id", recepcionId);
+  if (e3) fallarSiFaltaMigracion(e3, "No se pudo limpiar la fecha de SIESA de la recepción", MIGRACIONES);
+
+  const anulados = [...(cerrados || []), ...(abandonados || [])].map((e) => ({
+    id: e.id,
+    tipo: e.tipo,
+    referencia: e.referencia,
+  }));
+  console.log(`↩️  Recepción #${recepcionId}: ${anulados.length} oficial(es) anulada(s) por ${por || "—"}.`);
+  return { anulados };
+}
+
+/**
  * El ADMIN borra un envío que quedó en `error`.
  *
  * Solo ese estado: ver `puedeEliminarEnvio` en `shared/eliminacionAdmin.js`.

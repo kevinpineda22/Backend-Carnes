@@ -45,6 +45,7 @@ class Q {
   update(p) { this.op = "update"; this.pay = p; return this; }
   eq(c, v) { this.f.push((r) => String(r[c]) === String(v) && r[c] != null); return this; }
   in(c, a) { this.f.push((r) => r[c] != null && a.map(String).includes(String(r[c]))); return this; }
+  lt(c, v) { this.f.push((r) => r[c] != null && r[c] < v); return this; }
   order(c, o) { this.ord.push([c, o?.ascending !== false]); return this; }
   limit(n) { this.lim = n; return this; }
   maybeSingle() { this.one = true; return this; }
@@ -303,4 +304,67 @@ test("resolver: version_cambiada se reintenta releyendo la sede (máx. 3)", asyn
   rpcRespuesta = { resultado: "version_cambiada" };
   await M.resolver(50, { resultado: "ok" });
   assert.equal(rpcLlamadas.length, 3);
+});
+
+// ─── anularOficialRecepcion (3.6: anulación de la oficial de UNA sede) ─────
+
+const oficialOk = (extra = {}) => ({
+  id: 70, tipo: "oficial", estado: "ok", recepcion_id: 2, liquidacion_id: null, referencia: "R2O",
+  enviado_at: "2026-11-20T02:00:00Z", ...extra,
+});
+
+test("anularOficialRecepcion: la oficial ok pasa a anulado con quién y por qué, y la inicial no se toca", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(oficialOk());
+  const r = await M.anularOficialRecepcion(2, { por: "ana@merka.co", motivo: "error de pesos" });
+  assert.deepEqual(r.anulados.map((e) => e.id), [70]);
+  const of = db.carnes_siesa_envios.find((e) => e.id === 70);
+  assert.equal(of.estado, "anulado");
+  assert.equal(of.anulado_por, "ana@merka.co");
+  assert.equal(of.motivo_anulacion, "error de pesos");
+  assert.ok(of.anulado_at);
+  assert.equal(db.carnes_siesa_envios.find((e) => e.id === 1).estado, "ok", "la inicial queda igual");
+  assert.equal(llamadas.length, 0, "no sale nada a SIESA");
+});
+
+test("anularOficialRecepcion: libera el candado de sql/010 (se puede reservar otra oficial)", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(oficialOk());
+  await M.anularOficialRecepcion(2, { por: "x" });
+  assert.equal(oficiales().filter((f) => ["enviando", "ok", "sin_confirmar"].includes(f.estado)).length, 0);
+});
+
+test("anularOficialRecepcion es idempotente: repetirla no encuentra nada que anular y no falla", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(oficialOk());
+  await M.anularOficialRecepcion(2, { por: "x" });
+  const otra = await M.anularOficialRecepcion(2, { por: "x" });
+  assert.deepEqual(otra.anulados, []);
+  assert.equal(db.carnes_siesa_envios.find((e) => e.id === 70).estado, "anulado");
+});
+
+test("anularOficialRecepcion no toca la oficial de otra recepción ni las consolidadas", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(
+    oficialOk(),
+    oficialOk({ id: 71, recepcion_id: 3, referencia: "R3O" }),
+    oficialOk({ id: 72, recepcion_id: null, liquidacion_id: 9, referencia: "L9O" }),
+  );
+  await M.anularOficialRecepcion(2, { por: "x" });
+  assert.equal(db.carnes_siesa_envios.find((e) => e.id === 71).estado, "ok");
+  assert.equal(db.carnes_siesa_envios.find((e) => e.id === 72).estado, "ok");
+});
+
+test("anularOficialRecepcion: un envío en curso vivo (no abandonado) no se anula: 409", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(oficialOk({ estado: "enviando", enviado_at: new Date().toISOString() }));
+  await assert.rejects(M.anularOficialRecepcion(2, { por: "x" }), (e) => e.statusCode === 409);
+  assert.equal(db.carnes_siesa_envios.find((e) => e.id === 70).estado, "enviando");
+});
+
+test("anularOficialRecepcion: un enviando ABANDONADO sí se anula", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(oficialOk({ estado: "enviando", enviado_at: "2020-01-01T00:00:00Z" }));
+  const r = await M.anularOficialRecepcion(2, { por: "x" });
+  assert.deepEqual(r.anulados.map((e) => e.id), [70]);
 });

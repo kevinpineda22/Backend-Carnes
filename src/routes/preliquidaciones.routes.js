@@ -57,6 +57,15 @@ router.post("/sedes/:sedeId/procesar", PreliquidacionesController.procesarSede);
 router.post("/:id/procesar", PreliquidacionesController.procesar);
 router.post("/:id/cerrar", PreliquidacionesController.cerrar);
 
+// Correcciones de una sede ya enviada. Anular confirma lo hecho a mano en SIESA (drenaje: sigue con el
+// interruptor apagado); descartar la corrección es una escritura normal.
+router.post("/sedes/:sedeId/anular", validators.anularSedePreliquidacion, PreliquidacionesController.anularSede);
+router.post(
+  "/sedes/:sedeId/descartar-correccion",
+  validators.descartarCorreccionPreliquidacion,
+  PreliquidacionesController.descartarCorreccion,
+);
+
 // Previsualizar es GET porque no escribe nada.
 router.get("/:id/previsualizar", PreliquidacionesController.previsualizar);
 

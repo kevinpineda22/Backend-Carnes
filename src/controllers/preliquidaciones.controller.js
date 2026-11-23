@@ -1,5 +1,6 @@
 import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
+import * as CorreccionesModel from "../models/PreliquidacionCorrecciones.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
@@ -39,7 +40,13 @@ function exigirEncendida({ drenaje = false } = {}) {
  * vinculado. La compuerta de auth (503) se evalúa antes y las alcanza igual: producción sin
  * CARNES_AUTH=exigir no deja operar ninguna, esté el interruptor encendido o no.
  */
-const RUTAS_DRENAJE = [/^\/\d+\/procesar\/?$/, /^\/sedes\/\d+\/procesar\/?$/, /^\/\d+\/cerrar\/?$/];
+const RUTAS_DRENAJE = [
+  /^\/\d+\/procesar\/?$/,
+  /^\/sedes\/\d+\/procesar\/?$/,
+  /^\/\d+\/cerrar\/?$/,
+  // Confirmar la anulación hecha en SIESA solo registra algo que ya pasó: no abre trabajo nuevo.
+  /^\/sedes\/\d+\/anular\/?$/,
+];
 
 /** Middleware: con el interruptor apagado corta toda escritura con 409, antes de validar y de tocar la base. */
 export function exigirEscrituraHabilitada(req, _res, next) {
@@ -236,6 +243,29 @@ export async function recalcular(req, res, next) {
     const { cambios = {}, motivo = null } = req.body ?? {};
     const data = await PreliquidacionModel.recalcular(req.idPreliquidacion, { cambios, motivo }, { por: quien(req) });
     res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/preliquidaciones/sedes/:sedeId/anular — Body: { confirmado_en_siesa: true, motivo? }.
+ * El admin confirma que la entrada oficial ya se anuló a mano en SIESA (REQ-F2); idempotente (F-S3).
+ */
+export async function anularSede(req, res, next) {
+  try {
+    const { motivo = null } = req.body ?? {};
+    res.json({ ok: true, data: await CorreccionesModel.anularSede(req.idSede, { por: quien(req), motivo }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** POST /api/preliquidaciones/sedes/:sedeId/descartar-correccion — Body: { motivo }. */
+export async function descartarCorreccion(req, res, next) {
+  try {
+    const { motivo } = req.body;
+    res.json({ ok: true, data: await CorreccionesModel.descartarCorreccion(req.idSede, { por: quien(req), motivo }) });
   } catch (error) {
     next(error);
   }

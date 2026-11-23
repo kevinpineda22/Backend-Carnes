@@ -1196,6 +1196,31 @@ export const validators = {
     }),
   ),
 
+  // Anular una sede enviada: la anulación en SIESA la hace una persona; el admin confirma que ya pasó.
+  anularSedePreliquidacion: validar(
+    z
+      .object({
+        confirmado_en_siesa: z.literal(true, {
+          errorMap: () => ({ message: "Confirme que la entrada oficial ya se anuló en SIESA." }),
+        }),
+        motivo: z.string().trim().max(500, "El motivo no puede pasar de 500 caracteres.").optional(),
+      })
+      .strict(),
+  ),
+
+  // Descartar el aviso "requiere corrección": decisión humana, queda el motivo en el log.
+  descartarCorreccionPreliquidacion: validar(
+    z
+      .object({
+        motivo: z
+          .string({ required_error: "Escriba el motivo.", invalid_type_error: "El motivo no es válido." })
+          .trim()
+          .min(3, "Escriba el motivo.")
+          .max(500, "El motivo no puede pasar de 500 caracteres."),
+      })
+      .strict(),
+  ),
+
   guardarConfigPreliquidacion: validar(
     z.object({ servicio_por_animal: preliqDinero }),
   ),

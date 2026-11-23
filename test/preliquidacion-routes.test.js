@@ -46,6 +46,13 @@ mock.module(url("models/Preliquidacion.model.js"), {
   },
 });
 
+mock.module(url("models/PreliquidacionCorrecciones.model.js"), {
+  namedExports: {
+    anularSede: falso("anularSede"),
+    descartarCorreccion: falso("descartarCorreccion"),
+  },
+});
+
 let perdidasFalsas = [];
 mock.module(url("models/PreliquidacionVigilancia.model.js"), {
   namedExports: {
@@ -579,4 +586,73 @@ test("recalcular propaga los errores de negocio del modelo", async () => {
   const r = await llamar("POST", "/5/recalcular", {});
   assert.equal(r.estado, 409);
   assert.equal(r.json.codigo ?? r.json.error?.codigo ?? "no_liquidada", "no_liquidada");
+});
+
+// ─── Correcciones de sede (3.6) ────────────────────────────────────────────
+
+test("POST /sedes/:sedeId/anular con la confirmación pasa sede, quién y motivo al modelo", async () => {
+  encendida();
+  respuestas.anularSede = { resultado: "ok", estado: "anulada" };
+  const r = await llamar("POST", "/sedes/3/anular", { confirmado_en_siesa: true, motivo: "error de pesos" });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { resultado: "ok", estado: "anulada" } });
+  assert.equal(llamadas[0].nombre, "anularSede");
+  assert.equal(llamadas[0].args[0], 3);
+  assert.deepEqual(llamadas[0].args[1], { por: null, motivo: "error de pesos" });
+});
+
+test("F-S4: anular sin confirmar que ya se anuló en SIESA es 400 y no llega al modelo", async () => {
+  encendida();
+  for (const cuerpo of [{}, { motivo: "x" }, { confirmado_en_siesa: false }, { confirmado_en_siesa: "si" }, { confirmado_en_siesa: true, otro: 1 }]) {
+    assert.equal((await llamar("POST", "/sedes/3/anular", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.deepEqual(llamadas, []);
+});
+
+test("anular sede: id inválido 400, guard de admin 403 y los errores del modelo se propagan", async () => {
+  encendida();
+  assert.equal((await llamar("POST", "/sedes/abc/anular", { confirmado_en_siesa: true })).estado, 400);
+  guardPasa = false;
+  assert.equal((await llamar("POST", "/sedes/3/anular", { confirmado_en_siesa: true })).estado, 403);
+  guardPasa = true;
+  respuestas.anularSede = createError(409, "no enviada", "sede_no_enviada");
+  const r = await llamar("POST", "/sedes/3/anular", { confirmado_en_siesa: true });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "sede_no_enviada");
+});
+
+test("anular sede es drenaje: con el interruptor apagado sigue disponible, pero la compuerta de auth (503) va primero", async () => {
+  const r = await llamar("POST", "/sedes/3/anular", { confirmado_en_siesa: true });
+  assert.equal(r.estado, 200);
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    const bloqueada = await llamar("POST", "/sedes/3/anular", { confirmado_en_siesa: true });
+    assert.equal(bloqueada.estado, 503);
+    assert.equal(bloqueada.json.codigo, "auth_requerida");
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
+});
+
+test("POST /sedes/:sedeId/descartar-correccion pasa sede, quién y motivo; el motivo es obligatorio", async () => {
+  encendida();
+  respuestas.descartarCorreccion = { resultado: "ok", estado: "enviada" };
+  const r = await llamar("POST", "/sedes/4/descartar-correccion", { motivo: "el cambio no afecta lo enviado" });
+  assert.equal(r.estado, 200);
+  assert.equal(llamadas[0].nombre, "descartarCorreccion");
+  assert.equal(llamadas[0].args[0], 4);
+  assert.deepEqual(llamadas[0].args[1], { por: null, motivo: "el cambio no afecta lo enviado" });
+  llamadas = [];
+  for (const cuerpo of [{}, { motivo: "" }, { motivo: "x" }, { motivo: "y".repeat(501) }]) {
+    assert.equal((await llamar("POST", "/sedes/4/descartar-correccion", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.deepEqual(llamadas, []);
+});
+
+test("descartar-correccion es una escritura normal: apagado responde 409 preliquidacion_apagada", async () => {
+  const r = await llamar("POST", "/sedes/4/descartar-correccion", { motivo: "ya revisado" });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_apagada");
+  assert.deepEqual(llamadas, []);
 });
