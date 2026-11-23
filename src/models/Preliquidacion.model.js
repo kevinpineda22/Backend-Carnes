@@ -17,6 +17,7 @@ import {
   AVISO_SERVICIO_TARDIO,
   AVISO_SERVICIO_TARDIO_REINTENTO,
   AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO,
+  AVISO_SERVICIO_TARDIO_SALDO_AJUSTE_PENDIENTE,
   AVISO_SERVICIO_TARDIO_SIN_DIFERENCIA,
   AVISO_SERVICIO_TARDIO_SIN_LIQUIDAR,
   registrarAlterna,
@@ -491,6 +492,14 @@ export async function actualizarCabeceraConVersion(id, cambios, { alLeer } = {})
   throw resultadoAError({ resultado: "version_cambiada" });
 }
 
+/** Aviso del PATCH según lo que pasó con la alterna y su saldo (diferencia 0: se corrigió un saldo vigente). */
+function avisoDeAlterna(alterna) {
+  if (Number(alterna.diferencia) !== 0) return AVISO_SERVICIO_TARDIO;
+  return alterna.saldo?.accion === "crear_ajuste"
+    ? AVISO_SERVICIO_TARDIO_SALDO_AJUSTE_PENDIENTE
+    : AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO;
+}
+
 /**
  * PATCH de la preliquidación.
  * - Antes de congelar: servicio (RPC, con corte y desbloqueo) y los campos de cabecera.
@@ -558,7 +567,7 @@ export async function actualizar(id, cambios = {}, { por = null, encolar = encol
         const r = await registrarAlterna(id, { por, encolar, log });
         if (r.resultado === "ok") {
           alterna = r.alterna;
-          aviso = Number(r.alterna.diferencia) === 0 ? AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO : AVISO_SERVICIO_TARDIO;
+          aviso = avisoDeAlterna(r.alterna);
         } else if (r.resultado === "ya_registrada") {
           aviso = AVISO_SERVICIO_TARDIO;
         } else if (r.resultado === "sin_diferencia") {
@@ -1488,12 +1497,13 @@ const dineroValido = (v) => {
  * Si el cambio modifica `servicio_aplicado` y los saldos vigentes (pendiente o aplicado) nacidos de una alterna
  * suman un neto distinto de cero (centavos) con al menos uno pendiente, se rechaza con `saldo_alterna_vigente`:
  * la alterna y su saldo se calcularon contra el servicio aplicado anterior y `registrarAlterna` no los recalcula
- * (es idempotente por `servicio_at`). Si todos están aplicados el plan sigue con `aviso: "saldo_alterna_aplicado"`.
+ * (es idempotente por `servicio_at`). Si todos están aplicados el plan sigue; el aviso `saldo_alterna_aplicado`
+ * lo entrega solo la RPC.
  *
  * @param {{cabecera: object, sedes: Array<object>, gastos?: Array<object>, saldosAplicados?: Array<object>,
  *   saldosOrigen?: Array<object>, cambios?: object}} p `sedes` en la forma de `aSedePlan`;
  *   `saldosOrigen` son los saldos cuyo origen es esta preliquidación
- * @returns {{ok: true, plan: object, cambios: object, aviso: string|null} | {ok: false, resultado: string}}
+ * @returns {{ok: true, plan: object, cambios: object} | {ok: false, resultado: string}}
  */
 export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplicados = [], saldosOrigen = [], cambios = {} }) {
   if (Object.keys(cambios).some((k) => !CAMPOS_RECALCULAR.includes(k))) return { ok: false, resultado: "cambios_invalidos" };
@@ -1566,7 +1576,6 @@ export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplica
     restantes: vinculacion.restantes,
   };
 
-  let aviso = null;
   if (CAMPOS_QUE_CAMBIAN_EL_GASTO.some((k) => cambios[k] !== undefined)) {
     const gasto = gastoTotal({
       animalEnPie: aplicar.animal_en_pie ?? cabecera.animal_en_pie,
@@ -1580,18 +1589,16 @@ export function armarPlanRecalcular({ cabecera, sedes, gastos = [], saldosAplica
     const { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal } = gasto.plan;
     const cambiaServicioAplicado = cabecera.servicio_aplicado == null || aCentavos(servicioAplicado) !== aCentavos(cabecera.servicio_aplicado);
     if (cambiaServicioAplicado) {
-      // Solo bloquea con neto vigente distinto de cero (centavos) y algún saldo pendiente; si todo se aplicó, avisa.
+      // Solo bloquea con neto vigente distinto de cero (centavos) y algún saldo pendiente; si todo se aplicó
+      // el recálculo sigue y la RPC es la única que devuelve el aviso `saldo_alterna_aplicado`.
       const vigentes = saldosOrigen.filter((x) => x.alterna_id != null && (x.estado === "pendiente" || x.estado === "aplicado"));
       const neto = vigentes.reduce((suma, x) => suma + aCentavos(x.valor), 0n);
-      if (neto !== 0n) {
-        if (vigentes.some((x) => x.estado === "pendiente")) return { ok: false, resultado: "saldo_alterna_vigente" };
-        aviso = "saldo_alterna_aplicado";
-      }
+      if (neto !== 0n && vigentes.some((x) => x.estado === "pendiente")) return { ok: false, resultado: "saldo_alterna_vigente" };
     }
     Object.assign(plan, { servicio_aplicado: servicioAplicado, gasto_total: gastoTotalTexto, costo_por_animal: costoPorAnimal });
   }
 
-  return { ok: true, plan, cambios: aplicar, aviso };
+  return { ok: true, plan, cambios: aplicar };
 }
 
 /** Recostea UNA sede sin enviar (sin tocar SIESA). Una falla de la sede se informa, no se propaga. */

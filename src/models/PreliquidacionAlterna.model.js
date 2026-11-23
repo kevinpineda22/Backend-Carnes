@@ -42,6 +42,17 @@ export const AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO = Object.freeze({
     "El saldo pendiente anterior se descartó o se revirtió.",
 });
 
+/**
+ * Variante cuando la diferencia es 0 y el saldo anterior ya se había aplicado en otra preliquidación:
+ * no se puede descartar, así que queda pendiente un ajuste que lo revierte.
+ */
+export const AVISO_SERVICIO_TARDIO_SALDO_AJUSTE_PENDIENTE = Object.freeze({
+  codigo: "servicio_tardio",
+  mensaje:
+    "El servicio se cargó después de la liquidación y coincide con el aplicado: no hay diferencia. " +
+    "El saldo anterior ya se había aplicado en otra preliquidación: quedó pendiente un ajuste que lo revierte.",
+});
+
 /** Variante cuando la alterna no se pudo registrar: el servicio quedó guardado y la próxima corrida la reintenta. */
 export const AVISO_SERVICIO_TARDIO_REINTENTO = Object.freeze({
   codigo: "servicio_tardio",
@@ -167,23 +178,25 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
     // Aviso (deduplicado por alterna): una falla del correo no deshace la alterna.
     // Con diferencia 0 solo se corrigió un saldo: no hay nada que avisar por correo.
     try {
-      if (comparacion.hayAlterna) await encolar(
-        {
-          evento: "servicio_tardio",
-          preliquidacionId: id,
-          sedeId: 0,
-          ocurrencia: respuesta.alterna_id,
-          detalle: {
-            especie: cabecera.especie,
-            servicio_real: comparacion.plan.servicio_real,
-            servicio_aplicado: comparacion.plan.servicio_aplicado,
-            diferencia: comparacion.plan.diferencia,
-            no_asignada: comparacion.plan.no_asignada,
-            por_sede: comparacion.plan.por_sede,
+      if (comparacion.hayAlterna) {
+        await encolar(
+          {
+            evento: "servicio_tardio",
+            preliquidacionId: id,
+            sedeId: 0,
+            ocurrencia: respuesta.alterna_id,
+            detalle: {
+              especie: cabecera.especie,
+              servicio_real: comparacion.plan.servicio_real,
+              servicio_aplicado: comparacion.plan.servicio_aplicado,
+              diferencia: comparacion.plan.diferencia,
+              no_asignada: comparacion.plan.no_asignada,
+              por_sede: comparacion.plan.por_sede,
+            },
           },
-        },
-        { log },
-      );
+          { log },
+        );
+      }
     } catch (error) {
       log.error?.(`No se pudo encolar la alerta servicio_tardio de la preliquidación ${id}: ${error?.message}`);
     }
@@ -204,16 +217,34 @@ export async function registrarAlterna(id, { por = null, leer = leerDb, rpc = rp
   return ultimo;
 }
 
+async function leerSaldosOrigen(id) {
+  const { data, error } = await supabase.from(T_SALDOS).select("id, estado, alterna_id").eq("origen_preliquidacion_id", id);
+  if (error) throw new Error(`Error al leer los saldos: ${error.message}`);
+  return data || [];
+}
+
+/** Resultados que no ameritan un aviso: se registró, no había diferencia o ya estaba registrada. */
+const RESULTADOS_SIN_AVISO = new Set(["ok", "sin_diferencia", "ya_registrada"]);
+
 /**
  * Revisión por corrida (R6): si el servicio tardío quedó sin alterna (cargado antes de liquidar
- * o con un registro que falló), la genera ahora. No hace nada si no hay alterna pendiente.
+ * o con un registro que falló), la genera ahora. Con diferencia 0 solo consulta (una lectura barata de
+ * saldos) y registra si el origen tiene un saldo vigente (pendiente o aplicado) de una alterna.
+ * Un resultado distinto de ok / sin_diferencia / ya_registrada se deja en el log.
  * NUNCA lanza: una falla aquí no puede detener una corrida ni un envío.
  *
  * @param {object} cabecera fila de `carnes_preliquidaciones`
  * @returns {Promise<object|null>} `null` si no había nada que registrar
  */
 export async function registrarAlternaTardia(cabecera, opciones = {}) {
-  const { log = console } = opciones;
+  const { log = console, leerSaldos = leerSaldosOrigen } = opciones;
+  const registrar = async () => {
+    const r = await registrarAlterna(cabecera.id, opciones);
+    if (r && !RESULTADOS_SIN_AVISO.has(r.resultado)) {
+      log.warn?.(`La alterna tardía de la preliquidación ${cabecera.id} no se registró: ${r.resultado}`);
+    }
+    return r;
+  };
   try {
     const datos = {
       servicio: cabecera.servicio,
@@ -222,10 +253,14 @@ export async function registrarAlternaTardia(cabecera, opciones = {}) {
       fechaPrimerIngreso: cabecera.fecha_primer_ingreso,
       liquidadaAt: cabecera.liquidada_at,
     };
-    if (requiereAlternaTardia(datos)) return await registrarAlterna(cabecera.id, opciones);
+    if (requiereAlternaTardia(datos)) return await registrar();
     // Diferencia 0: puede quedar un saldo vigente sin corregir si el registro del PATCH falló.
+    // Solo se relee y se registra si el origen tiene un saldo vigente de una alterna.
     if (!requiereCorreccionSaldoTardio(datos)) return null;
-    const r = await registrarAlterna(cabecera.id, opciones);
+    const saldos = await leerSaldos(cabecera.id);
+    const hayVigente = saldos.some((s) => s.alterna_id != null && (s.estado === "pendiente" || s.estado === "aplicado"));
+    if (!hayVigente) return null;
+    const r = await registrar();
     return r?.resultado === "sin_diferencia" || r?.resultado === "ya_registrada" ? null : r;
   } catch (error) {
     log.error?.(`La alterna tardía de la preliquidación ${cabecera?.id} falló: ${error?.message}`);

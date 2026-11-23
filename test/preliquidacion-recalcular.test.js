@@ -181,7 +181,8 @@ test("plan: saldos de alterna solo aplicados -> el recálculo sigue con aviso de
     cambios: { servicio_por_animal: "60000" },
   });
   assert.equal(r.ok, true);
-  assert.equal(r.aviso, "saldo_alterna_aplicado");
+  // El aviso lo entrega solo la RPC: el planificador no produce uno propio.
+  assert.equal("aviso" in r, false);
 });
 
 test("plan: saldos de alterna vigentes con neto cero no bloquean ni avisan", () => {
@@ -191,7 +192,7 @@ test("plan: saldos de alterna vigentes con neto cero no bloquean ni avisan", () 
     cambios: { servicio_por_animal: "60000" },
   });
   assert.equal(r.ok, true);
-  assert.equal(r.aviso ?? null, null);
+  assert.equal("aviso" in r, false);
 });
 
 test("plan: con saldo de alterna pero sin cambiar el servicio aplicado (o saldo descartado/movido) el recálculo sigue", () => {

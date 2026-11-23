@@ -90,8 +90,12 @@ test("sin alterna: sin liquidar, sin servicio, o servicio igual al aplicado (E-S
 // ─── registrarAlterna con dependencias inyectadas ──────────────────────────
 
 function armar({ cab = liquidada({ servicio: "700000.00", servicio_at: A_LAS_2140 }), sedes = sedes2(), saldos = [], abiertas = [], alterna = null, respuestas = [{ resultado: "ok", alterna_id: 77, saldo_id: 5 }] } = {}) {
-  const reg = { rpcs: [], alertas: [], lecturas: 0 };
+  const reg = { rpcs: [], alertas: [], lecturas: 0, lecturasSaldos: 0 };
   const deps = {
+    leerSaldos: async () => {
+      reg.lecturasSaldos += 1;
+      return saldos;
+    },
     leer: async () => {
       reg.lecturas += 1;
       return { cabecera: cab, sedes, saldos, abiertas, alterna };
@@ -290,7 +294,7 @@ test("registrarAlternaTardia nunca lanza y no hace nada si no hay alterna pendie
 
 test("corrida: servicio tardío igual al aplicado con un saldo vigente sin corregir -> reintenta la corrección del saldo", async () => {
   const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
-  const saldos = [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20 }];
+  const saldos = [{ id: 9, valor: "200000.00", estado: "pendiente", destino_preliquidacion_id: 20, alterna_id: 77 }];
   const { deps, reg } = armar({ cab, saldos });
   const r = await Alterna.registrarAlternaTardia(cab, deps);
   assert.equal(r.resultado, "ok");
@@ -306,11 +310,66 @@ test("corrida: servicio tardío igual al aplicado sin saldo que corregir -> null
   assert.equal(reg.rpcs.length, 0);
 });
 
+test("corrida: diferencia 0 sin saldo vigente con alterna_id no relee ni registra (pre-gate barato)", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
+  const sinAlterna = [
+    [],
+    [{ id: 9, valor: "200000.00", estado: "pendiente", alterna_id: null }],
+    [{ id: 9, valor: "200000.00", estado: "descartado", alterna_id: 77 }],
+    [{ id: 9, valor: "200000.00", estado: "movido", alterna_id: 77 }],
+  ];
+  for (const saldos of sinAlterna) {
+    const { deps, reg } = armar({ cab, saldos });
+    assert.equal(await Alterna.registrarAlternaTardia(cab, deps), null);
+    assert.equal(reg.lecturasSaldos, 1);
+    assert.equal(reg.lecturas, 0, "no debe leer la preliquidación completa");
+    assert.equal(reg.rpcs.length, 0);
+  }
+});
+
+test("corrida: diferencia 0 con saldo aplicado con alterna_id pasa el pre-gate y corrige", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
+  const saldos = [{ id: 9, valor: "200000.00", estado: "aplicado", alterna_id: 77, destino_preliquidacion_id: 20 }];
+  const { deps, reg } = armar({ cab, saldos });
+  const r = await Alterna.registrarAlternaTardia(cab, deps);
+  assert.equal(r.resultado, "ok");
+  assert.equal(reg.rpcs[0].args.p_saldo_plan.accion, "crear_ajuste");
+});
+
+test("corrida: el pre-gate falla -> no lanza y devuelve error", async () => {
+  const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2140 });
+  const { deps } = armar({ cab });
+  deps.leerSaldos = async () => { throw new Error("base caída"); };
+  const r = await Alterna.registrarAlternaTardia(cab, deps);
+  assert.equal(r.resultado, "error");
+});
+
+test("corrida: un resultado que no es ok / sin_diferencia / ya_registrada se registra en el log", async () => {
+  const cab = liquidada({ servicio: "700000.00", servicio_at: A_LAS_2140 });
+  const avisos = [];
+  const { deps } = armar({ cab, respuestas: [{ resultado: "no_pendiente" }] });
+  deps.log = { info() {}, error() {}, warn: (m) => avisos.push(m) };
+  const r = await Alterna.registrarAlternaTardia(cab, deps);
+  assert.equal(r.resultado, "no_pendiente");
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /no_pendiente/);
+
+  const ok = armar({ cab });
+  const avisosOk = [];
+  ok.deps.log = { info() {}, error() {}, warn: (m) => avisosOk.push(m) };
+  assert.equal((await Alterna.registrarAlternaTardia(cab, ok.deps)).resultado, "ok");
+  const ya = armar({ cab, alterna: { id: 5 } });
+  ya.deps.log = { info() {}, error() {}, warn: (m) => avisosOk.push(m) };
+  await Alterna.registrarAlternaTardia(cab, ya.deps);
+  assert.deepEqual(avisosOk, []);
+});
+
 test("corrida: servicio igual al aplicado cargado antes del corte no consulta saldos", async () => {
   const cab = liquidada({ servicio: "500000.00", servicio_at: A_LAS_2129 });
   const { deps, reg } = armar({ cab });
   assert.equal(await Alterna.registrarAlternaTardia(cab, deps), null);
   assert.equal(reg.lecturas, 0);
+  assert.equal(reg.lecturasSaldos, 0);
 });
 
 test("el módulo de la alterna no conoce SIESA (nada se envía por un servicio tardío)", () => {
@@ -511,6 +570,18 @@ test("aviso: diferencia 0 que corrigió un saldo vigente -> dice que el saldo se
   assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_SALDO_CORREGIDO);
   assert.match(r.aviso.mensaje, /descart|revirti/i);
   assert.doesNotMatch(r.aviso.mensaje, /no se generó liquidación alterna/i);
+});
+
+test("aviso: diferencia 0 que dejó un ajuste de reversa pendiente (el saldo ya estaba aplicado) lo dice", async () => {
+  const patch = prepararPatchLiquidada(500000);
+  tablas.carnes_preliquidacion_saldos = [
+    { id: 9, origen_preliquidacion_id: 1, valor: "200000.00", estado: "aplicado", alterna_id: 77, destino_preliquidacion_id: 20 },
+  ];
+  const r = await patch();
+  assert.equal(r.alterna.saldo.accion, "crear_ajuste");
+  assert.deepEqual(r.aviso, Alterna.AVISO_SERVICIO_TARDIO_SALDO_AJUSTE_PENDIENTE);
+  assert.match(r.aviso.mensaje, /ajuste/i);
+  assert.match(r.aviso.mensaje, /revierte|reversa/i);
 });
 
 for (const [nombre, manejador] of [
