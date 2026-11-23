@@ -138,7 +138,8 @@ function claveNormalizada(evento, datos) {
 }
 
 /**
- * Encola una alerta (solo inserta; el correo sale en `despacharAlertas`).
+ * Encola una alerta (solo inserta; el correo sale en `despacharAlertas`). Quien la encola, sea una acción del admin o
+ * el camino inmediato, no espera el correo: lo entrega el cron (barrido horario + corrida de las 21:30), con hasta 1 h de retraso.
  *
  * @param {{evento: string, preliquidacionId?: *, sedeId?: *, ocurrencia?: *, detalle?: object}} alerta
  * @param {{log?: Pick<Console, "info"|"warn"|"error">, db?: object, env?: object}} [opciones]

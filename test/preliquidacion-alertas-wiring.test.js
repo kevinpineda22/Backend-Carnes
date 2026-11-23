@@ -14,7 +14,6 @@ process.env.DOTENV_CONFIG_PATH = "no-existe.env";
 const { armarContextoAlerta, enviarAlerta } = await import("../src/services/preliquidacionAlertasEnvio.js");
 const { encolarAlerta, despacharAlertas } = await import("../src/services/preliquidacionAlertas.js");
 const { alFinalizar } = await import("../src/services/preliquidacionInmediato.js");
-const { despacharTrasAccion } = await import("../src/controllers/preliquidaciones.controller.js");
 
 const leer = (ruta) => readFileSync(fileURLToPath(new URL(ruta, import.meta.url)), "utf8");
 const silencio = { info() {}, warn() {}, error() {} };
@@ -290,22 +289,6 @@ test("si no hay forma de correr en segundo plano, la alerta queda para el barrid
 
 // ─── Endpoints de admin ────────────────────────────────────────────────────
 
-test("despacharTrasAccion despacha con un límite acotado y nunca lanza", async () => {
-  const llamadas = [];
-  await despacharTrasAccion({ despachar: async (c) => llamadas.push(c) });
-  assert.equal(llamadas.length, 1);
-  assert.ok(llamadas[0].limite > 0 && llamadas[0].limite <= 3, "desde los controladores el límite es pequeño");
-  const margen = llamadas[0].hasta - Date.now();
-  assert.ok(margen > 0 && margen < 5000, "la fecha límite del despacho queda por debajo de la espera máxima");
-  await despacharTrasAccion({ despachar: async () => { throw new Error("boom"); } });
-});
-
-test("despacharTrasAccion no retiene la respuesta más allá de la espera máxima", async () => {
-  const inicio = Date.now();
-  await despacharTrasAccion({ despachar: () => new Promise(() => {}), esperaMaximaMs: 30 });
-  assert.ok(Date.now() - inicio < 1000);
-});
-
 test("el transportador SMTP tiene timeouts de conexión, saludo y socket", () => {
   const fuente = leer("../src/services/email.service.js");
   for (const clave of ["connectionTimeout", "greetingTimeout", "socketTimeout"]) {
@@ -313,14 +296,10 @@ test("el transportador SMTP tiene timeouts de conexión, saludo y socket", () =>
   }
 });
 
-test("los handlers que pueden generar alertas despachan antes de responder", () => {
+test("el controlador no despacha alertas: las entrega solo el cron (barrido horario + 21:30)", () => {
   const fuente = leer("../src/controllers/preliquidaciones.controller.js");
-  for (const handler of ["actualizar", "vincular", "procesar", "procesarSede", "recalcular", "cerrar"]) {
-    const m = fuente.match(new RegExp(`export async function ${handler}\\(req, res, next\\) \\{([\\s\\S]*?)\\r?\\n\\}\\r?\\n`));
-    assert.ok(m, `no se encontró ${handler}`);
-    assert.match(m[1], /await despacharTrasAccion\(\)/, handler);
-    assert.ok(m[1].indexOf("despacharTrasAccion") < m[1].lastIndexOf("res.json("), `${handler}: despachar antes de responder`);
-  }
+  assert.doesNotMatch(fuente, /despacharAlertas|despacharTras|PRESUPUESTO_DESPACHO|ESPERA_MAXIMA_DESPACHO|LIMITE_DESPACHO/);
+  assert.match(fuente, /entrega(n)? (únicamente|solo) (por|el) (el )?cron/i);
 });
 
 // ─── Obsolescencia en las RPC (estático) ───────────────────────────────────

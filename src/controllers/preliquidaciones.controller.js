@@ -6,53 +6,12 @@ import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
 import { revisarCorridasPerdidas } from "../models/PreliquidacionVigilancia.model.js";
-import { despacharAlertas } from "../services/preliquidacionAlertas.js";
-
-/** Alertas que se despachan tras una acción del admin (el resto lo drena el barrido del cron). */
-const LIMITE_DESPACHO_ADMIN = 3;
-/** Presupuesto del despacho: por debajo de la espera máxima, para que deje de reclamar antes de que se corte la espera. */
-const PRESUPUESTO_DESPACHO_MS = 3000;
-/** Espera máxima del despacho: el correo nunca debe retener la respuesta del admin. */
-const ESPERA_MAXIMA_DESPACHO_MS = 5000;
 
 /**
- * Despacha las alertas que la acción acaba de encolar, antes de responder (en Vercel la función se
- * congela al responder). NUNCA lanza ni espera más de `esperaMaximaMs`: lo que no salga queda en la
- * cola y lo toma la siguiente corrida.
+ * Alertas: las acciones de este controlador solo las ENCOLAN (a través de los modelos). Ningún endpoint
+ * las despacha: se entregan únicamente por el cron (barrido horario + corrida de las 21:30), con hasta
+ * 1 h de retraso. Despachar desde aquí retenía la respuesta del admin y en Vercel la función se congela al responder.
  */
-export async function despacharTrasAccion({
-  despachar = despacharAlertas,
-  esperaMaximaMs = ESPERA_MAXIMA_DESPACHO_MS,
-} = {}) {
-  let temporizador;
-  try {
-    const limite = new Promise((resolver) => {
-      temporizador = setTimeout(resolver, esperaMaximaMs);
-    });
-    await Promise.race([Promise.resolve(despachar({ limite: LIMITE_DESPACHO_ADMIN, hasta: Date.now() + PRESUPUESTO_DESPACHO_MS })).catch(() => {}), limite]);
-  } catch (error) {
-    console.error("Despacho de alertas tras la acción falló:", error?.message);
-  } finally {
-    clearTimeout(temporizador);
-  }
-}
-
-/** Rechazos de validación previa: ocurren antes de cualquier escritura, no hay alertas que despachar. */
-const ESTADOS_PREVALIDACION = [400, 404, 422];
-
-/**
- * ¿Puede el error haber llegado DESPUÉS de encolar alertas? Los rechazos de validación previa (400, 404, 422)
- * no; los conflictos (409...), los 5xx y los errores sin estado (fallos inesperados a mitad de la acción) sí.
- */
-export function errorPuedeHaberEncolado(error) {
-  const estado = Number(error?.statusCode ?? error?.status);
-  return !ESTADOS_PREVALIDACION.includes(estado);
-}
-
-/** Despacho en el `catch` de una acción: solo si el error puede haber seguido a un encolado. */
-async function despacharTrasError(error) {
-  if (errorPuedeHaberEncolado(error)) await despacharTrasAccion();
-}
 
 /** Quién hace la acción (correo del usuario autenticado cuando `CARNES_AUTH` lo exige). */
 const quien = (req) => conQuienHace(req, {}, "por").por ?? null;
@@ -114,13 +73,13 @@ export function exigirEscrituraHabilitada(req, _res, next) {
  * apagado no revisa nada; una falla de la revisión nunca rompe la lectura.
  */
 async function idsConCorridaPerdida(preliquidaciones) {
-  if (motivoApagado()) return { ids: new Set(), nuevas: 0 };
+  if (motivoApagado()) return new Set();
   try {
-    const { perdidas, nuevas = 0 } = await revisarCorridasPerdidas({ preliquidaciones });
-    return { ids: new Set(perdidas.map(String)), nuevas };
+    const { perdidas } = await revisarCorridasPerdidas({ preliquidaciones });
+    return new Set(perdidas.map(String));
   } catch (error) {
     console.error("Revisión de corridas perdidas falló:", error?.message);
-    return { ids: new Set(), nuevas: 0 };
+    return new Set();
   }
 }
 
@@ -132,9 +91,7 @@ export async function listar(req, res, next) {
     if (especie) filtros.especie = especie;
     if (estado) filtros.estado = estado;
     const data = await PreliquidacionModel.listar(filtros);
-    const { ids: perdidas, nuevas } = await idsConCorridaPerdida(data);
-    // Una lectura solo despacha si esta misma revisión encoló una alerta nueva (sin efectos de lado repetidos).
-    if (nuevas > 0) await despacharTrasAccion();
+    const perdidas = await idsConCorridaPerdida(data);
     res.json({ ok: true, data: data.map((p) => ({ ...p, corrida_perdida: perdidas.has(String(p.id)) })) });
   } catch (error) {
     next(error);
@@ -156,8 +113,7 @@ export async function crear(req, res, next) {
 export async function obtener(req, res, next) {
   try {
     const data = await PreliquidacionModel.obtener(req.idPreliquidacion);
-    const { ids: perdidas, nuevas } = await idsConCorridaPerdida([data]);
-    if (nuevas > 0) await despacharTrasAccion();
+    const perdidas = await idsConCorridaPerdida([data]);
     res.json({ ok: true, data: { ...data, corrida_perdida: perdidas.has(String(data.id)) } });
   } catch (error) {
     next(error);
@@ -168,11 +124,8 @@ export async function obtener(req, res, next) {
 export async function actualizar(req, res, next) {
   try {
     const data = await PreliquidacionModel.actualizar(req.idPreliquidacion, req.body, { por: quien(req) });
-    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasError(error);
     next(error);
   }
 }
@@ -195,8 +148,6 @@ export async function guardarGastos(req, res, next) {
  * Si NINGUNA entra se responde con el estado HTTP del primer error.
  */
 export async function vincular(req, res, next) {
-  // Un único despacho por petición: tras el bucle (éxito o rechazo total) o, si algo lanza antes, en el catch.
-  let despachado = false;
   try {
     const resultados = [];
     let primerError = null;
@@ -214,16 +165,10 @@ export async function vincular(req, res, next) {
       }
     }
     if (primerError && resultados.every((r) => !r.ok)) {
-      despachado = true;
-      await despacharTrasError(primerError);
       return next(primerError);
     }
-    despachado = true;
-    await despacharTrasAccion();
     res.json({ ok: true, data: resultados });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    if (!despachado) await despacharTrasError(error);
     next(error);
   }
 }
@@ -289,11 +234,8 @@ export async function guardarConfig(req, res, next) {
 export async function procesar(req, res, next) {
   try {
     const data = await PreliquidacionModel.procesarAdmin(req.idPreliquidacion, { por: quien(req) });
-    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasError(error);
     next(error);
   }
 }
@@ -302,11 +244,8 @@ export async function procesar(req, res, next) {
 export async function procesarSede(req, res, next) {
   try {
     const data = await PreliquidacionModel.procesarSedeAdmin(req.idSede, { por: quien(req) });
-    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasError(error);
     next(error);
   }
 }
@@ -316,11 +255,8 @@ export async function recalcular(req, res, next) {
   try {
     const { cambios = {}, motivo = null } = req.body ?? {};
     const data = await PreliquidacionModel.recalcular(req.idPreliquidacion, { cambios, motivo }, { por: quien(req) });
-    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasError(error);
     next(error);
   }
 }
@@ -380,11 +316,8 @@ export async function anular(req, res, next) {
 export async function cerrar(req, res, next) {
   try {
     const data = await PreliquidacionModel.cerrar(req.idPreliquidacion);
-    await despacharTrasAccion();
     res.json({ ok: true, data });
   } catch (error) {
-    // La acción puede haber encolado alertas antes de fallar: se despachan sin cambiar la respuesta de error.
-    await despacharTrasError(error);
     next(error);
   }
 }

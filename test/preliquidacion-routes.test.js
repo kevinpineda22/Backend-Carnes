@@ -243,84 +243,33 @@ test("R7: si la revisión falla la lectura responde igual, con corrida_perdida f
   assert.equal(r.json.data.corrida_perdida, false);
 });
 
-test("B6: las lecturas solo despachan si la revisión encoló una alerta NUEVA", async () => {
+test("las alertas se entregan solo por el cron: ningún endpoint despacha, ni en éxito, ni en error, ni en lecturas", async () => {
   encendida();
+  despachos = [];
   perdidasFalsas = [2];
+  nuevasFalsas = 1;
   respuestas.listar = [{ id: 2, estado: "abierta" }];
   respuestas.obtener = { id: 2, estado: "abierta" };
-  nuevasFalsas = 0;
   await llamar("GET", "/");
   await llamar("GET", "/2");
-  assert.equal(despachos.length, 0, "perdida ya conocida: la lectura no tiene efectos de lado");
-  nuevasFalsas = 1;
-  await llamar("GET", "/");
-  assert.equal(despachos.length, 1);
-  await llamar("GET", "/2");
-  assert.equal(despachos.length, 2);
   perdidasFalsas = [];
-});
-
-test("B5: si la acción lanza tras encolar, igual se despacha y la respuesta de error no cambia", async () => {
-  encendida();
-  const casos = [
+  nuevasFalsas = 0;
+  for (const [metodo, ruta, nombre] of [
     ["POST", "/5/procesar", "procesarAdmin"],
     ["POST", "/sedes/3/procesar", "procesarSedeAdmin"],
     ["POST", "/5/recalcular", "recalcular"],
     ["POST", "/5/cerrar", "cerrar"],
-  ];
-  for (const [metodo, ruta, nombre] of casos) {
-    despachos = [];
+  ]) {
     respuestas[nombre] = createError(409, "no se pudo", "conflicto_test");
     const r = await llamar(metodo, ruta, {});
     assert.equal(r.estado, 409, ruta);
     assert.equal(r.json.ok, false, ruta);
-    assert.equal(despachos.length, 1, `${ruta} debe despachar tras el fallo`);
-    assert.ok(despachos[0].limite <= 3 && Number.isFinite(despachos[0].hasta), ruta);
   }
-});
-
-test("B5: un rechazo de validación previo (400/404/422) no despacha; un error sin estado o un 5xx sí", async () => {
-  encendida();
-  const casos = [
-    [400, false],
-    [404, false],
-    [422, false],
-    [409, true],
-    [500, true],
-    [503, true],
-  ];
-  for (const [estado, despacha] of casos) {
-    despachos = [];
-    respuestas.cerrar = createError(estado, "fallo", "codigo_test");
-    const r = await llamar("POST", "/5/cerrar", {});
-    assert.equal(r.estado, estado);
-    assert.equal(despachos.length, despacha ? 1 : 0, `estado ${estado}`);
-  }
-  despachos = [];
-  respuestas.cerrar = new Error("inesperado");
-  await llamar("POST", "/5/cerrar", {});
-  assert.equal(despachos.length, 1, "error sin estado: puede seguir a un encolado");
-});
-
-test("B5: vincular despacha una sola vez por petición y no despacha ante un rechazo previo total", async () => {
-  encendida();
-  despachos = [];
-  respuestas.vincularRecepcion = createError(404, "no existe", "recepcion_no_encontrada");
-  const r404 = await llamar("POST", "/3/recepciones", { recepcion_ids: [10] });
-  assert.equal(r404.estado, 404);
-  assert.equal(despachos.length, 0, "404 de validación: nada que despachar");
-
-  despachos = [];
   respuestas.vincularRecepcion = createError(409, "fuera de ventana", "fuera_ventana");
-  const r409 = await llamar("POST", "/3/recepciones", { recepcion_ids: [10, 11] });
-  assert.equal(r409.estado, 409);
-  assert.equal(despachos.length, 1, "un solo despacho aunque fallen varias");
-
-  despachos = [];
-  respuestas.vincularRecepcion = new Error("inesperado");
-  await llamar("POST", "/3/recepciones", { recepcion_ids: [10] });
-  assert.equal(despachos.length, 1, "error inesperado: un solo despacho en el catch");
+  const r = await llamar("POST", "/3/recepciones", { recepcion_ids: [10, 11] });
+  assert.equal(r.estado, 409);
   delete respuestas.vincularRecepcion;
+  assert.equal(despachos.length, 0, "el despacho es solo del cron (barrido horario + 21:30)");
 });
 
 // ─── Interruptor ───────────────────────────────────────────────────────────
