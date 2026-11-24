@@ -2,6 +2,7 @@ import * as RecepcionModel from "../models/Recepcion.model.js";
 import { notificarRecepcionFinalizada, notificarConfirmacionRecibidor } from "../services/notificaciones.service.js";
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
+import { alFinalizar as preliquidacionAlFinalizar } from "../services/preliquidacionInmediato.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
 import { hoyBogota } from "../shared/proveedorValores.js";
 import { siesaParaRecibidor } from "../shared/siesaEntrada.js";
@@ -225,6 +226,8 @@ export async function homologarAdicional(req, res, next) {
  * pero el aviso al admin no salió" en vez de dar todo por bueno.
  */
 export async function finalizar(req, res, next) {
+  // El camino inmediato de la preliquidación mide su presupuesto de tiempo desde aquí.
+  const inicioPeticion = Date.now();
   try {
     const data = await RecepcionModel.finalizar(
       req.params.id,
@@ -253,9 +256,17 @@ export async function finalizar(req, res, next) {
       DesposteModel.vincularAnticipada(data.id),
     ]);
 
+    // Preliquidación de talleres (flag apagado => `null` y la respuesta no cambia). Vincula y deja
+    // registrado el envío con waitUntil ANTES de responder; nunca lanza ni espera al envío.
+    const preliquidacion = await preliquidacionAlFinalizar(data, {
+      inicioPeticion,
+      inicialEstado: siesa?.estado,
+    });
+
     res.json({
       ok: true,
       data,
+      ...(preliquidacion ? { preliquidacion } : {}),
       notificacion,
       confirmacion,
       siesa: siesaParaRecibidor(siesa, data.id),

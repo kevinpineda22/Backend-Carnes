@@ -3,6 +3,7 @@ import sedesRoutes from "./sedes.routes.js";
 import plantillaRoutes from "./plantilla.routes.js";
 import recepcionesRoutes from "./recepciones.routes.js";
 import liquidacionesRoutes from "./liquidaciones.routes.js";
+import preliquidacionesRoutes from "./preliquidaciones.routes.js";
 import siesaRoutes from "./siesa.routes.js";
 import transformacionesRoutes from "./transformaciones.routes.js";
 import desposteRoutes from "./desposte.routes.js";
@@ -11,9 +12,13 @@ import recibidoresRoutes from "./recibidores.routes.js";
 import recepcionesProveedorRoutes from "./recepcionesProveedor.routes.js";
 import { verificarEmail } from "../services/email.service.js";
 import { sandboxOn } from "../config/sandbox.js";
+import cronRoutes from "./cron.routes.js";
 import { autenticar } from "../middleware/authCarnes.js";
 
 const router = Router();
+
+// El cron de la preliquidación se autentica con CRON_SECRET (no con sesión), por eso va ANTES de `autenticar`.
+router.use("/cron", cronRoutes);
 
 // Autenticación con interruptor `CARNES_AUTH` (off | reportar | exigir). En `off`
 // —el valor por defecto— no hace nada. `/health*` y las preflight CORS quedan
@@ -24,6 +29,7 @@ router.use("/sedes", sedesRoutes);
 router.use("/plantilla", plantillaRoutes);
 router.use("/recepciones", recepcionesRoutes);
 router.use("/liquidaciones", liquidacionesRoutes);
+router.use("/preliquidaciones", preliquidacionesRoutes);
 router.use("/siesa", siesaRoutes);
 router.use("/transformaciones", transformacionesRoutes);
 router.use("/desposte", desposteRoutes);

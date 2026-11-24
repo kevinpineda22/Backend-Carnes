@@ -17,6 +17,7 @@ import {
   validarFilasRetomas,
 } from "../shared/retomasLiquidacion.js";
 import * as PlantillaModel from "./Plantilla.model.js";
+import { preliquidacionIdsDeRecepciones } from "./PreliquidacionGuardas.model.js";
 import {
   fallarSiFaltaMigracion,
   esMigracionFaltante,
@@ -396,7 +397,7 @@ async function exigirCerdo(id, { escritura = false } = {}) {
  * Las retomas del catálogo de cerdo: bloque 'bonificacion' y sin factor por
  * novillo. Las 'informativo' o por factor no son retomas y no deben aparecer.
  */
-async function listarCatalogoRetomas() {
+export async function listarCatalogoRetomas() {
   const todas = await PlantillaModel.listar("viceras", "cerdo");
   return todas.filter(
     (v) =>
@@ -842,8 +843,15 @@ export async function vincular(id, recepcionIds = []) {
     }
   }
 
+  // Una recepción de una preliquidación de talleres no entra a una liquidación legada:
+  // iría dos veces a SIESA (CHECK de sql/038 como segunda defensa).
+  const enPreliquidacion = await preliquidacionIdsDeRecepciones(recepcionIds);
+
   for (const r of candidatas || []) {
     const nombre = r.sede?.nombre || `#${r.id}`;
+    if (enPreliquidacion.has(String(r.id))) {
+      problemas.push(`${nombre}: ya está en la preliquidación #${enPreliquidacion.get(String(r.id))}.`);
+    }
     if (r.especie !== liquidacion.especie) {
       problemas.push(
         `${nombre}: es de ${r.especie} y la liquidación es de ${liquidacion.especie}.`,

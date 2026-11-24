@@ -36,6 +36,10 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
   tls: { ciphers: "TLSv1.2" },
+  // Sin esto un SMTP colgado retiene la función serverless hasta que la congelan (reclamos huérfanos, correos duplicados).
+  connectionTimeout: 10_000,
+  greetingTimeout: 10_000,
+  socketTimeout: 10_000,
 });
 
 /**
@@ -79,6 +83,15 @@ export function destinatariosProveedores() {
 export function destinatariosAnulacion() {
   const propios = lista(process.env.CARNES_MAIL_ANULACION);
   return propios.length ? propios : destinatariosAdmin();
+}
+
+/**
+ * Quien recibe las alertas de la preliquidación de talleres (`CARNES_MAIL_PRELIQUIDACION`). Si está
+ * vacía cae al admin. La dirección nunca va en el código: sale solo del entorno, y se lee por llamada.
+ */
+export function destinatariosPreliquidacion(env = process.env) {
+  const propios = lista(env.CARNES_MAIL_PRELIQUIDACION);
+  return propios.length ? propios : lista(env.CARNES_MAIL_ADMIN);
 }
 
 export function emailConfigurado() {

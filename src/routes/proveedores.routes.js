@@ -53,4 +53,22 @@ router.post(
   ProveedoresController.agregarCorte,
 );
 
+// Editar la equivalencia de una fila de la plantilla, o sumarle otra al mismo corte.
+// `plantillaFilaParams` valida `:id` y `:equivalencia_id` juntos (un segundo validador
+// de params pisaría `datosValidados`).
+router.patch(
+  "/:id/plantilla/:equivalencia_id",
+  requireAdminCarnes,
+  validators.plantillaFilaParams,
+  validators.editarEquivalenciaProveedor,
+  ProveedoresController.editarEquivalencia,
+);
+router.post(
+  "/:id/plantilla/:equivalencia_id/equivalencias",
+  requireAdminCarnes,
+  validators.plantillaFilaParams,
+  validators.agregarEquivalenciaProveedor,
+  ProveedoresController.agregarEquivalencia,
+);
+
 export default router;

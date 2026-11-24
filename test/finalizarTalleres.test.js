@@ -39,7 +39,7 @@ function crearDb({ estado = "Borrador", filasActualizadas = [{ id: 1 }], errorUp
           return q;
         },
         maybeSingle() {
-          return Promise.resolve({ data: { id: 1, estado, novillos: 0 }, error: null });
+          return Promise.resolve({ data: { id: 1, estado, novillos: 4 }, error: null });
         },
         then(resolve, reject) {
           if (q._update) {

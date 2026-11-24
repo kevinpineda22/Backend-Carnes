@@ -9,7 +9,13 @@ import {
   LIMITE_HISTORIAL_MAX,
   OFFSET_HISTORIAL_MAX,
 } from "../shared/historialRecibidor.js";
-import { TOPE_COLUMNAS_CARGA, TOPE_FILAS_CARGA } from "../shared/plantillaProveedor.js";
+import {
+  MENSAJE_EQUIVALENCIA_LARGA,
+  MENSAJE_EQUIVALENCIA_VACIA,
+  TOPE_COLUMNAS_CARGA,
+  TOPE_FILAS_CARGA,
+} from "../shared/plantillaProveedor.js";
+import { LIMITES as LIMITES_PLANTILLA, normalizarEquivalencia } from "../shared/equivalenciasProveedor.js";
 
 /* =============================================
    Validación de entrada con zod.
@@ -386,6 +392,32 @@ const agregarCorteProveedorSchema = z.object({
 const agregarCorteAdicionalSchema = z.object({
   editado_por: correo("El correo de quien agrega el corte no es válido."),
   ...corteDelCatalogo,
+});
+
+/** `:id` del proveedor + `:equivalencia_id` de la fila de su plantilla. */
+const plantillaFilaParamsSchema = z.object({
+  id: idParamSchema.shape.id,
+  equivalencia_id: z.coerce
+    .number({ invalid_type_error: "La fila de la plantilla no es válida." })
+    .int("La fila de la plantilla no es válida.")
+    .positive("La fila de la plantilla no es válida.")
+    .safe("La fila de la plantilla no es válida."),
+});
+
+/** La equivalencia con la misma normalización de la carga de Excel; '' = "Sin equivalencia". */
+const equivalenciaEscrita = z
+  .string({ required_error: "Falta la equivalencia.", invalid_type_error: "La equivalencia no es válida." })
+  .transform(normalizarEquivalencia)
+  .refine((v) => v.length <= LIMITES_PLANTILLA.equivalencia, MENSAJE_EQUIVALENCIA_LARGA);
+
+const editarEquivalenciaProveedorSchema = z.object({
+  por: correo("El correo de quien edita la equivalencia no es válido."),
+  equivalencia: equivalenciaEscrita,
+});
+
+const agregarEquivalenciaProveedorSchema = z.object({
+  por: correo("El correo de quien agrega la equivalencia no es válido."),
+  equivalencia: equivalenciaEscrita.refine((v) => v.length > 0, MENSAJE_EQUIVALENCIA_VACIA),
 });
 
 /** `:id` de la recepción + `:item_id` del renglón. */
@@ -840,6 +872,26 @@ const reenviarViscerasSchema = z.object({
     .optional(),
 });
 
+// Dinero de la preliquidación: número o texto numérico, no negativo.
+const preliqDinero = z
+  .union([z.number(), z.string().trim().regex(/^\d+(\.\d+)?$/, "El valor debe ser un número.")], {
+    errorMap: () => ({ message: "El valor debe ser un número no negativo." }),
+  })
+  .refine((v) => Number(v) >= 0, "El valor no puede ser negativo.");
+
+/** Valor de un saldo: con signo (puede ser negativo), hasta 2 decimales y dentro de NUMERIC(14,2). */
+const preliqSaldoValor = z
+  .union([z.number(), z.string()], { errorMap: () => ({ message: "El valor del saldo debe ser un número." }) })
+  .refine(
+    (v) => /^-?\d+(\.\d{1,2})?$/.test(String(v).trim()) && Math.abs(Number(v)) < 1e12,
+    "El valor del saldo debe ser un número con hasta 2 decimales.",
+  );
+
+const preliqAnimales = z.coerce
+  .number({ invalid_type_error: "Los animales deben ser un número entero." })
+  .int("Los animales deben ser un número entero.")
+  .positive("Los animales deben ser mayores que cero.");
+
 export const validators = {
   verificarSede: validar(verificarSedeSchema),
   reenviarVisceras: validar(reenviarViscerasSchema),
@@ -850,6 +902,9 @@ export const validators = {
   buscarCortes: validar(buscarCortesQuerySchema, "query"),
   agregarCorteProveedor: validar(agregarCorteProveedorSchema),
   agregarCorteAdicional: validar(agregarCorteAdicionalSchema),
+  plantillaFilaParams: validar(plantillaFilaParamsSchema, "params"),
+  editarEquivalenciaProveedor: validar(editarEquivalenciaProveedorSchema),
+  agregarEquivalenciaProveedor: validar(agregarEquivalenciaProveedorSchema),
   corteAdicionalParams: validar(corteAdicionalParamsSchema, "params"),
 
   abrirRecepcionProveedor: validar(abrirRecepcionProveedorSchema),
@@ -963,7 +1018,8 @@ export const validators = {
           required_error: "Falta la cantidad.",
           invalid_type_error: "La cantidad debe ser un número.",
         })
-        .nonnegative("La cantidad no puede ser negativa."),
+        .int("La cantidad debe ser un número entero.")
+        .positive("La cantidad debe ser mayor que cero."),
       editado_por: correo("Falta el correo de quien edita."),
     }),
   ),
@@ -1065,6 +1121,161 @@ export const validators = {
         )
         .default([]),
     }),
+  ),
+
+  // ─── Preliquidación de talleres (res / cerdo) ─────────────────────────────
+  // Los valores de dinero llegan como número o texto de un <input>; se aceptan
+  // los dos y se rechaza lo que no sea un valor no negativo.
+  crearPreliquidacion: validar(
+    z.object({
+      especie: z.enum(ESPECIES, { errorMap: () => ({ message: "La especie debe ser res o cerdo." }) }),
+      animales: preliqAnimales,
+      animal_en_pie: preliqDinero.optional(),
+      servicio: preliqDinero.nullable().optional(),
+      tercero_id: z.string().trim().min(1).max(30).optional(),
+    }),
+  ),
+
+  actualizarPreliquidacion: validar(
+    z
+      .object({
+        animales: preliqAnimales.optional(),
+        animal_en_pie: preliqDinero.optional(),
+        servicio: preliqDinero.optional(),
+        servicio_por_animal: preliqDinero.optional(),
+        tercero_id: z.string().trim().min(1).max(30).optional(),
+      })
+      .refine((v) => Object.keys(v).length > 0, "No hay nada que actualizar."),
+  ),
+
+  guardarGastosPreliquidacion: validar(
+    z.object({
+      filas: z
+        .array(
+          z.object({
+            concepto: z.string().trim().min(1, "El gasto necesita un concepto.").max(120),
+            valor: preliqDinero,
+            signo: z.union([z.literal(1), z.literal(-1)], {
+              errorMap: () => ({ message: "El signo debe ser 1 o -1." }),
+            }),
+          }),
+        )
+        .default([]),
+    }),
+  ),
+
+  // Recalcular no enviadas: `cambios` vacío = recosteo puro. Solo los campos que se pueden cambiar
+  // con la preliquidación ya liquidada; cualquier otro (p. ej. liquidada_at) se rechaza.
+  recalcularPreliquidacion: validar(
+    z.object({
+      cambios: z
+        .object({
+          animales: preliqAnimales.optional(),
+          animal_en_pie: preliqDinero.optional(),
+          servicio_por_animal: preliqDinero.optional(),
+          tercero_id: z.string().trim().min(1).max(30).optional(),
+          gastos: z
+            .array(
+              z.object({
+                concepto: z.string().trim().min(1, "El gasto necesita un concepto.").max(120),
+                valor: preliqDinero,
+                signo: z.union([z.literal(1), z.literal(-1)], {
+                  errorMap: () => ({ message: "El signo debe ser 1 o -1." }),
+                }),
+              }),
+            )
+            .optional(),
+          retomas: z
+            .array(
+              z.object({
+                vicera_item_id: z.coerce.number().int().positive().nullable().optional(),
+                nombre: z.string().trim().min(1, "La retoma necesita un nombre.").max(80),
+                unidad: z.string().trim().min(1).max(5).optional(),
+                kilos: z.coerce.number({ invalid_type_error: "Los kilos deben ser un número." }).min(0, "Los kilos no pueden ser negativos."),
+                precio: preliqDinero,
+                precio_catalogo: preliqDinero.optional(),
+              }),
+            )
+            .optional(),
+        })
+        .strict("Hay campos que no se pueden cambiar al recalcular.")
+        .default({}),
+      motivo: z.string().trim().max(500, "El motivo no puede pasar de 500 caracteres.").optional(),
+    }),
+  ),
+
+  // Anular una sede enviada: la anulación en SIESA la hace una persona; el admin confirma que ya pasó.
+  anularSedePreliquidacion: validar(
+    z
+      .object({
+        confirmado_en_siesa: z.literal(true, {
+          errorMap: () => ({ message: "Confirme que la entrada oficial ya se anuló en SIESA." }),
+        }),
+        motivo: z.string().trim().max(500, "El motivo no puede pasar de 500 caracteres.").optional(),
+      })
+      .strict(),
+  ),
+
+  // Saldos pendientes. La lectura filtra por especie y estado ("todos" = historial).
+  listarSaldosPreliquidacion: validar(
+    z.object({
+      especie: z.enum(["res", "cerdo"], { errorMap: () => ({ message: "Especie inválida. Debe ser: res o cerdo." }) }).optional(),
+      estado: z
+        .enum(["pendiente", "aplicado", "movido", "descartado", "todos"], {
+          errorMap: () => ({ message: "Estado inválido. Debe ser: pendiente, aplicado, movido, descartado o todos." }),
+        })
+        .optional(),
+    }),
+    "query",
+  ),
+
+  // PATCH de un saldo: EXACTAMENTE una acción (editar el valor, quitarlo o moverlo de destino).
+  actualizarSaldoPreliquidacion: validar(
+    z
+      .object({
+        valor: preliqSaldoValor.optional(),
+        descartar: z.literal(true, { errorMap: () => ({ message: "descartar solo admite true." }) }).optional(),
+        destino_id: z.coerce
+          .number({ invalid_type_error: "El destino debe ser un número." })
+          .int("El destino debe ser un número entero.")
+          .positive("El destino no es válido.")
+          .optional(),
+      })
+      .strict()
+      .refine(
+        (v) => [v.valor, v.descartar, v.destino_id].filter((x) => x !== undefined).length === 1,
+        "Indique exactamente una acción: valor, descartar o destino_id.",
+      ),
+  ),
+
+  // Anular la preliquidación completa: el motivo queda como trazabilidad (`motivo_anulacion`).
+  anularPreliquidacion: validar(
+    z
+      .object({
+        motivo: z
+          .string({ required_error: "Escriba el motivo de la anulación.", invalid_type_error: "El motivo no es válido." })
+          .trim()
+          .min(3, "Escriba el motivo de la anulación.")
+          .max(500, "El motivo no puede pasar de 500 caracteres."),
+      })
+      .strict(),
+  ),
+
+  // Descartar el aviso "requiere corrección": decisión humana, queda el motivo en el log.
+  descartarCorreccionPreliquidacion: validar(
+    z
+      .object({
+        motivo: z
+          .string({ required_error: "Escriba el motivo.", invalid_type_error: "El motivo no es válido." })
+          .trim()
+          .min(3, "Escriba el motivo.")
+          .max(500, "El motivo no puede pasar de 500 caracteres."),
+      })
+      .strict(),
+  ),
+
+  guardarConfigPreliquidacion: validar(
+    z.object({ servicio_por_animal: preliqDinero }),
   ),
 
   vincularRecepciones: validar(

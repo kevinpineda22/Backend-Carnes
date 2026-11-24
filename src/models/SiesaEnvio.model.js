@@ -59,6 +59,8 @@ import {
   fechaSiesa,
   TIPO_ENVIO,
 } from "../shared/siesaEntrada.js";
+import { transicionSede } from "../shared/preliquidacionEstados.js";
+import { intentarAutocierre } from "./PreliquidacionCierre.model.js";
 import {
   planearDocumentosPorFecha,
   referenciasEnConflicto,
@@ -648,6 +650,8 @@ async function ejecutarEnvio({
   por,
   referenciaInicial,
   terceroId,
+  timeoutMs,
+  alArmar,
 }) {
   const consecutivo = consecutivoDe(recepcion.id, tipo);
   const armado = armarEntradaDirecta({
@@ -661,12 +665,14 @@ async function ejecutarEnvio({
     // la novedad. La oficial sigue bloqueando (ver `armarEntradaDirecta`).
     omitirSinCodigo: tipo === TIPO_ENVIO.INICIAL,
   });
+  alArmar?.(armado);
   return registrarYEnviar({
     armado,
     base: { recepcion_id: recepcion.id, liquidacion_id: liquidacionId, tipo, consecutivo },
     por,
     vigente: () => envioVigente(recepcion.id, tipo),
     etiqueta: `${tipo} recepción #${recepcion.id}`,
+    ...(timeoutMs != null ? { timeoutMs } : {}),
   });
 }
 
@@ -905,6 +911,46 @@ export async function reintentarInicial(recepcionId, por) {
   // Otro pedido la reservó entre la pregunta de arriba y la reserva.
   if (fila.repetido) throw createError(409, motivoVigente(fila));
   return fila;
+}
+
+/**
+ * Entrada OFICIAL de UNA recepción (una CEA por sede de preliquidación). La dispara
+ * `procesarSede`; no cierra ninguna liquidación.
+ *
+ * Reusa `ejecutarEnvio` (reserva antes de mandar + índice único de sql/010), así que un
+ * segundo intento sobre la misma recepción devuelve la fila vigente con `repetido`.
+ * Si entra (`ok`, no repetido), sale el correo que pide anular la inicial.
+ *
+ * No lanza por SIESA: devuelve la fila. Lanza solo si la recepción no existe o falta una
+ * migración. `armadoBloqueos` lista lo que impidió armar el documento (sin llamar a SIESA).
+ *
+ * @param {number|string} recepcionId
+ * @param {{por?: string, terceroId?: string, timeoutMs?: number}} [opciones]
+ * @returns {Promise<{fila: object, armadoBloqueos: string[]}>}
+ */
+export async function enviarOficialRecepcion(recepcionId, { por, terceroId, timeoutMs } = {}) {
+  const recepcion = await cargarRecepcion(recepcionId);
+  const inicial = await ultimoEnvio(recepcionId, TIPO_ENVIO.INICIAL);
+  let armadoBloqueos = [];
+  const fila = await ejecutarEnvio({
+    recepcion,
+    tipo: TIPO_ENVIO.OFICIAL,
+    por,
+    referenciaInicial: inicial?.referencia ?? undefined,
+    terceroId,
+    timeoutMs,
+    alArmar: (armado) => {
+      armadoBloqueos = [...armado.bloqueos];
+    },
+  });
+  if (fila.estado === "ok" && !fila.repetido) {
+    try {
+      await avisarAnulacion(recepcion, inicial, fila);
+    } catch (e) {
+      console.error(`🔴 SIESA oficial recepción #${recepcionId}: no se pudo avisar la anulación (${e?.message}).`);
+    }
+  }
+  return { fila, armadoBloqueos };
 }
 
 /**
@@ -1543,6 +1589,56 @@ async function avisarAnulacion(recepcion, inicial, oficial) {
   }
 }
 
+const REINTENTOS_SINCRONIZAR_SEDE = 3;
+
+/**
+ * Hook de `resolver()` hacia la preliquidación: si una sede referencia este envío, aplica
+ * `transicionSede(estado, evento)` y la escribe por la RPC `carnes_preliq_sincronizar_envio`
+ * (CAS por estado y versión; `version_cambiada` relee y reintenta, máx. 3).
+ *
+ * Sin sede es un no-op (los envíos legados no se tocan). Nunca lanza: la resolución del
+ * envío ya quedó guardada y no puede fallar por la sede. Devuelve la transición aplicada
+ * (con sus efectos, que aplica quien la use: autocierre, alertas) o null.
+ */
+async function sincronizarSedeDePreliquidacion(envio, evento) {
+  try {
+    for (let intento = 1; intento <= REINTENTOS_SINCRONIZAR_SEDE; intento += 1) {
+      const { data: sede, error } = await supabase
+        .from("carnes_preliquidacion_sedes")
+        .select("*")
+        .eq("envio_id", envio.id)
+        .maybeSingle();
+      if (error || !sede) return null;
+      // Una sede que ya salió de `enviando`/`sin_confirmar` no tiene nada que seguir.
+      if (!["enviando", "sin_confirmar"].includes(sede.estado)) return null;
+
+      const transicion = transicionSede(sede.estado, evento, {
+        envioId: envio.id,
+        requiereCorreccion: sede.requiere_correccion === true,
+        claimCosteoOrdenVersion: sede.claim_costeo_orden_version,
+        correccionOrdenVersion: sede.correccion_orden_version,
+      });
+      const { estado: hacia, ...camposSinEstado } = transicion.campos;
+      const efectoRecepcion = transicion.efectos.find((e) => e.tipo === "recepcion");
+      const { data: res, error: errorRpc } = await supabase.rpc("carnes_preliq_sincronizar_envio", {
+        p_envio_id: envio.id,
+        p_sede_version: sede.version,
+        p_desde: sede.estado,
+        p_hacia: hacia,
+        p_campos: { ...camposSinEstado, ...(efectoRecepcion ? { recepcion_estado: efectoRecepcion.estado } : {}) },
+      });
+      if (errorRpc) throw errorRpc;
+      if (res?.resultado === "version_cambiada") continue;
+      return { resultado: res?.resultado ?? null, transicion, preliquidacionId: sede.preliquidacion_id };
+    }
+    console.error(`🟠 SIESA envío #${envio.id}: la sede de preliquidación cambió de versión ${REINTENTOS_SINCRONIZAR_SEDE} veces; queda para la próxima corrida.`);
+    return null;
+  } catch (e) {
+    console.error(`🔴 SIESA envío #${envio.id}: no se pudo sincronizar la sede de preliquidación (${e?.message}).`);
+    return null;
+  }
+}
+
 /**
  * Resolver un envío que quedó en el aire, después de mirar en SIESA.
  *
@@ -1636,6 +1732,15 @@ export async function resolver(id, { resultado, por } = {}) {
           await avisarAnulacionLiquidacion(liq, recepciones, filas);
         }
       }
+    }
+  }
+
+  // Preliquidación: la sede que referencia este envío sigue lo que la persona confirmó.
+  if (data.recepcion_id && data.tipo === TIPO_ENVIO.OFICIAL) {
+    const sincronizada = await sincronizarSedeDePreliquidacion(data, data.estado === "ok" ? "resuelto_ok" : "resuelto_error");
+    // La sede pasó a enviada: puede completar la preliquidación (D3). No lanza.
+    if (sincronizada?.resultado === "ok" && sincronizada.transicion?.efectos?.some((e) => e.tipo === "intentar_autocierre")) {
+      await intentarAutocierre(sincronizada.preliquidacionId);
     }
   }
 
@@ -1811,6 +1916,84 @@ export async function anularOficiales(liquidacionId, { por, motivo, inicialesAnu
     anulados: (anulados || []).map((e) => ({ id: e.id, tipo: e.tipo, referencia: e.referencia })),
     recepciones: (reabiertas || []).length,
   };
+}
+
+/**
+ * La oficial de UNA recepción (sede de preliquidación) se anuló en SIESA: se refleja acá.
+ *
+ * Es la misma regla de `anularOficiales`, acotada a una recepción y sin tocar la liquidación (la
+ * sede de una preliquidación no tiene `carnes_liquidaciones`): la oficial vigente (ok, duplicado o
+ * sin_confirmar) pasa a `anulado`, lo que libera el índice único de sql/010. El estado de la
+ * recepción y de la sede lo escribe quien llama, con el CAS de la sede.
+ *
+ * Idempotente: sin oficial vigente no hace nada y devuelve `anulados: []`. NO toca SIESA (la
+ * anulación allá la hace una persona) y un `enviando` vivo se rechaza con 409: SIESA puede estar
+ * creándolo en este momento.
+ *
+ * @param {number|string} recepcionId
+ * @param {{ por?: string, motivo?: string }} [p]
+ * @returns {Promise<{anulados: Array<{id: number, tipo: string, referencia: string}>}>}
+ */
+export async function anularOficialRecepcion(recepcionId, { por, motivo } = {}) {
+  const { data: enCurso, error: e0 } = await supabase
+    .from(TABLA)
+    .select("id, referencia, enviado_at")
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .eq("estado", "enviando");
+  if (e0) fallarSiFaltaMigracion(e0, "Error al leer los envíos", MIGRACIONES);
+  const vivos = (enCurso || []).filter(
+    (e) => Date.now() - new Date(e.enviado_at).getTime() <= ENVIANDO_ABANDONADO_MS,
+  );
+  if (vivos.length) {
+    throw createError(
+      409,
+      `Hay envíos en curso (${vivos.map((e) => e.referencia).join(", ")}). Espere a que terminen.`,
+    );
+  }
+
+  const marca = {
+    estado: "anulado",
+    anulado_por: por || null,
+    anulado_at: new Date().toISOString(),
+    motivo_anulacion: String(motivo ?? "").trim() || null,
+  };
+  const { data: cerrados, error: e1 } = await supabase
+    .from(TABLA)
+    .update(marca)
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .in("estado", ["ok", "duplicado", "sin_confirmar"])
+    .select("id, tipo, referencia");
+  if (e1) {
+    // Sin sql/011, el CHECK no conoce `anulado`.
+    if (e1.code === "23514") {
+      throw createError(503, "A la base le falta sql/011_siesa_anulacion.sql. Corra el script en Supabase y vuelva a intentar.");
+    }
+    fallarSiFaltaMigracion(e1, "No se pudo anular la oficial de la recepción", MIGRACIONES);
+  }
+  // Un `enviando` solo se anula si ya está ABANDONADO; la condición va en la misma consulta que lo cambia.
+  const limite = new Date(Date.now() - ENVIANDO_ABANDONADO_MS).toISOString();
+  const { data: abandonados, error: e2 } = await supabase
+    .from(TABLA)
+    .update(marca)
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_ENVIO.OFICIAL)
+    .eq("estado", "enviando")
+    .lt("enviado_at", limite)
+    .select("id, tipo, referencia");
+  if (e2) fallarSiFaltaMigracion(e2, "No se pudo anular la oficial de la recepción", MIGRACIONES);
+
+  const { error: e3 } = await supabase.from("carnes_recepciones").update({ siesa_at: null }).eq("id", recepcionId);
+  if (e3) fallarSiFaltaMigracion(e3, "No se pudo limpiar la fecha de SIESA de la recepción", MIGRACIONES);
+
+  const anulados = [...(cerrados || []), ...(abandonados || [])].map((e) => ({
+    id: e.id,
+    tipo: e.tipo,
+    referencia: e.referencia,
+  }));
+  console.log(`↩️  Recepción #${recepcionId}: ${anulados.length} oficial(es) anulada(s) por ${por || "—"}.`);
+  return { anulados };
 }
 
 /**

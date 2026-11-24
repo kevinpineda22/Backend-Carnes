@@ -22,6 +22,8 @@ import { ESTADOS } from "./estados.js";
  *
  *   Borrador                 es de `descartar`, no de acá.
  *   Costeado / Enviado_SIESA ya movió plata o ya está en el ERP.
+ *   preliquidacion_id        vinculada a una preliquidación de talleres: se
+ *                            desvincula primero (solo si nunca se envió).
  *   liquidacion_id           vinculada a una liquidación: hay que sacarla de
  *                            ahí primero, o el consolidado de esa liquidación
  *                            queda corriendo sobre una recepción que ya no
@@ -38,13 +40,14 @@ import { ESTADOS } from "./estados.js";
  * @param {{
  *   estado: string,
  *   liquidacion_id: number|string|null,
+ *   preliquidacion_id?: number|string|null,
  *   envios?: {tipo: string, estado: string}[],
  * }} p  `envios` son los de esta recepción, directos (recepcion_id) y los de
  *       la CEA consolidada que la incluye (recepcion_ids) — ver
  *       `SiesaEnvio.model.js#enviosDeRecepcion`.
  * @returns {{ok: boolean, motivo: string|null}}
  */
-export function puedeEliminarRecepcion({ estado, liquidacion_id, envios = [] }) {
+export function puedeEliminarRecepcion({ estado, liquidacion_id, preliquidacion_id = null, envios = [] }) {
   if (estado === ESTADOS.BORRADOR) {
     return {
       ok: false,
@@ -67,6 +70,12 @@ export function puedeEliminarRecepcion({ estado, liquidacion_id, envios = [] }) 
     return {
       ok: false,
       motivo: "Está vinculada a una liquidación: desvinculala primero.",
+    };
+  }
+  if (preliquidacion_id) {
+    return {
+      ok: false,
+      motivo: "Está vinculada a una preliquidación: desvincúlela primero.",
     };
   }
   const oficial = envios.find((e) => e.tipo === "oficial");

@@ -123,6 +123,51 @@ export async function agregarCorte(req, res, next) {
 }
 
 /**
+ * PATCH /api/proveedores/:id/plantilla/:equivalencia_id
+ * Body: { por(correo), equivalencia }  ('' = "Sin equivalencia")
+ *
+ * Cambia la equivalencia de una fila activa de la plantilla. 200 con la fila (igual
+ * si el valor no cambió: no se escribe); 400 si no cabe en la columna; 404 si la fila
+ * no es del proveedor o no está activa; 409 EQUIVALENCIA_YA_EXISTE si otra fila del
+ * mismo corte (activa o desactivada) ya tiene ese valor.
+ */
+export async function editarEquivalencia(req, res, next) {
+  try {
+    const { id, equivalencia_id } = req.datosValidados;
+    const { equivalencia, por } = conQuienHace(req, req.body, "por");
+    const { fila, cambiada } = await ProveedorModel.editarEquivalencia(id, equivalencia_id, {
+      equivalencia,
+      por,
+    });
+    res.json({ ok: true, data: fila, cambiada });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/proveedores/:id/plantilla/:equivalencia_id/equivalencias
+ * Body: { por(correo), equivalencia }  (no vacía)
+ *
+ * Agrega otra equivalencia al mismo corte de esa fila. 201 con la fila nueva (o
+ * reactivada); 400 si viene vacía o no cabe; 404 si la fila no es del proveedor o no
+ * está activa; 409 EQUIVALENCIA_YA_EXISTE si el corte ya la tiene.
+ */
+export async function agregarEquivalencia(req, res, next) {
+  try {
+    const { id, equivalencia_id } = req.datosValidados;
+    const { equivalencia, por } = conQuienHace(req, req.body, "por");
+    const { fila, reactivada } = await ProveedorModel.agregarEquivalencia(id, equivalencia_id, {
+      equivalencia,
+      por,
+    });
+    res.status(201).json({ ok: true, data: fila, reactivada });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * GET /api/proveedores/grupos-impositivos/estado
  * Cuántos ítems tiene el catálogo de grupos impositivos y cuándo se sincronizó por
  * última vez (`ultima_sincronizacion` null = nunca).

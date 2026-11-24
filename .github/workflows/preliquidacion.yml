@@ -1,0 +1,110 @@
+name: preliquidacion
+
+# Corrida de la preliquidación de talleres.
+#  - 02:30 UTC = 21:30 hora de Bogotá: corrida del corte.
+#  - minuto 15 de cada hora: barrido (recoge sedes pendientes y detecta corridas perdidas).
+# El corte lo juzga el backend por los TIMESTAMPS de los datos, no por la hora a la que
+# GitHub arranque este workflow: un retraso de GitHub no liquida antes ni después de tiempo.
+on:
+  schedule:
+    - cron: '30 2 * * *'
+    - cron: '15 * * * *'
+  workflow_dispatch:
+    inputs:
+      especie:
+        description: Especie a procesar
+        type: choice
+        default: todas
+        options:
+          - todas
+          - res
+          - cerdo
+      dry_run:
+        description: Calcula el plan sin escribir ni enviar a SIESA
+        type: boolean
+        default: false
+
+# Una sola corrida a la vez; la que está en curso NO se cancela.
+concurrency:
+  group: preliquidacion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  corrida:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Llamar al cron de preliquidaciones
+        env:
+          PRELIQ_URL: ${{ secrets.PRELIQ_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          ESPECIE: ${{ inputs.especie || 'todas' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          GH_RUN_ID: ${{ github.run_id }}
+          ORIGEN: ${{ github.event_name == 'workflow_dispatch' && 'dispatch' || (github.event.schedule == '30 2 * * *' && 'schedule' || 'sweep') }}
+        run: |
+          set -uo pipefail
+          corrida_id=""
+
+          # Hasta 6 iteraciones que comparten el corrida_id de la primera mientras queden pendientes.
+          for i in 1 2 3 4 5 6; do
+            cuerpo=$(jq -nc \
+              --arg origen "$ORIGEN" --arg especie "$ESPECIE" --arg gh "$GH_RUN_ID" \
+              --arg corrida "$corrida_id" --argjson dry "$DRY_RUN" \
+              '{origen: $origen, dry_run: $dry, gh_run_id: $gh}
+               + (if $especie != "" and $especie != "todas" then {especie: $especie} else {} end)
+               + (if $corrida != "" then {corrida_id: ($corrida | tonumber)} else {} end)')
+
+            args=(--silent --show-error --fail-with-body --max-time 290
+              -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${CRON_SECRET}")
+            # Los previews de Vercel exigen el bypass de la protección de despliegues.
+            if [ -n "${BYPASS:-}" ]; then
+              args+=(-H "x-vercel-protection-bypass: ${BYPASS}")
+            fi
+
+            # Un timeout o un 5xx luego de que el servidor empezó a trabajar NO se reintenta
+            # dentro de la iteración: la siguiente vuelta o el barrido lo recoge sin duplicar.
+            if ! respuesta=$(curl "${args[@]}" --data "$cuerpo" "${PRELIQ_URL%/}/api/cron/preliquidaciones"); then
+              echo "::error::El cron de preliquidaciones falló (401/5xx/timeout)"
+              echo "$respuesta"
+              exit 1
+            fi
+            echo "$respuesta"
+
+            if [ "$(echo "$respuesta" | jq -r '.ok')" != "true" ]; then
+              echo "::error::El cron terminó con errores en alguna preliquidación"
+              exit 1
+            fi
+
+            flag=$(echo "$respuesta" | jq -r '.flag')
+            if [ "$flag" != "on" ]; then
+              motivo=$(echo "$respuesta" | jq -r '.motivo // "sin motivo"')
+              if [ "$motivo" = "auth_requerida" ]; then
+                echo "::error::Preliquidación deshabilitada por la compuerta de auth (auth_requerida): exigir CARNES_AUTH=exigir en producción"
+                exit 1
+              fi
+              echo "::warning::preliquidacion flag is ${flag} (${motivo})"
+              exit 0
+            fi
+
+            if [ -z "$corrida_id" ]; then
+              corrida_id=$(echo "$respuesta" | jq -r '.corrida_id // empty')
+            fi
+            pendientes=$(echo "$respuesta" | jq -r '.pendientes // 0')
+
+            # Un dry_run es una sola llamada: no escribe, así que repetirla no avanza nada.
+            if [ "$DRY_RUN" = "true" ]; then
+              break
+            fi
+            if [ "$pendientes" -eq 0 ]; then
+              break
+            fi
+          done
+
+          if [ "${pendientes:-0}" -gt 0 ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::warning::Quedan ${pendientes} pendientes tras 6 iteraciones; el siguiente barrido los retoma"
+          fi
