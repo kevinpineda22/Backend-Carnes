@@ -159,8 +159,10 @@ BEGIN
   END IF;
 
   -- Actualizar un saldo que ya no está pendiente -> version_cambiada, sin alterna escrita.
+  -- Otro servicio_at: now() es fijo dentro de la transacción y el caso anterior ya registró
+  -- una alterna con now(), así que repetirlo devolvería ya_registrada (idempotencia).
   r := carnes_preliq_registrar_alterna(
-    res1, 1100000, now(), '[]'::jsonb, 600000,
+    res1, 1100000, now() + interval '1 minute', '[]'::jsonb, 600000,
     jsonb_build_object('accion', 'actualizar_pendiente', 'saldo_id', s1, 'valor', '1.00')
   );
   IF r->>'resultado' <> 'version_cambiada' THEN RAISE EXCEPTION 'actualizar un aplicado debía ser version_cambiada: %', r; END IF;
