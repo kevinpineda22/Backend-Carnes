@@ -722,16 +722,24 @@ function gastoDeCabecera({ cabecera, gastos, saldos }) {
   });
 }
 
+/** Renglones de las recepciones, en una sola consulta. */
+async function leerRenglones(recepcionIds) {
+  const { data, error } = await supabase.from(T_ITEMS).select("*").in("recepcion_id", recepcionIds).order("orden");
+  if (error) throw new Error(`Error al leer los renglones de las recepciones: ${error.message}`);
+  return data || [];
+}
+
 /**
  * Gasto total, monto de cada sede y su costeo, con las funciones puras de
  * `src/shared` (única implementación: el frontend NO recalcula nada). Solo lee los
  * renglones de las sedes costeables.
  *
+ * @param {object} contexto el de `leerContexto`; opcionalmente `items` (renglones ya leídos de las recepciones)
  * @returns {Promise<{gasto: object, resumen: object, porSede: Map<string, object>, detalle: Map<string, object>}>}
  *   `porSede` va vacío cuando hay un bloqueo de cabecera (`servicio_cero`). `detalle` guarda el
  *   costeo final (`calcularCosteo`) de cada sede: sus renglones son los que se congelan.
  */
-async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }) {
+async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas, items: itemsLeidos }) {
   const gasto = gastoDeCabecera({ cabecera, gastos, saldos });
 
   const resumen = {
@@ -757,16 +765,8 @@ async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }
   const montoPorSede = new Map(montos.map((m) => [String(m.sedeId), m.gastoSedeCent]));
 
   const costeables = sedes.filter((s) => montoPorSede.has(String(s.id)));
-  let items = [];
-  if (costeables.length) {
-    const { data, error } = await supabase
-      .from(T_ITEMS)
-      .select("*")
-      .in("recepcion_id", costeables.map((s) => s.recepcion_id))
-      .order("orden");
-    if (error) throw new Error(`Error al leer los renglones de las recepciones: ${error.message}`);
-    items = data || [];
-  }
+  // `obtener` ya leyó los renglones de TODAS las sedes (una consulta) para el consolidado: se reutilizan.
+  const items = itemsLeidos ?? (costeables.length ? await leerRenglones(costeables.map((s) => s.recepcion_id)) : []);
 
   const retomasPorSede = new Map(
     cabecera.especie === "cerdo"
@@ -960,30 +960,94 @@ export async function obtener(id) {
   let calculo = null;
   let calculoError;
   let porSede = new Map();
+  let detalle = new Map();
+  // Renglones de TODAS las sedes con recepción (también las bloqueadas): una sola consulta, sin N+1.
+  let items = null;
   try {
-    const r = await calcular(contexto);
+    const recepcionIds = contexto.sedes.map((s) => s.recepcion_id).filter((r) => r != null);
+    items = recepcionIds.length ? await leerRenglones(recepcionIds) : [];
+    const r = await calcular({ ...contexto, items });
     calculo = r.resumen;
     porSede = r.porSede;
+    detalle = r.detalle;
   } catch (error) {
     calculoError = error.message;
   }
 
   const sedes = contexto.sedes.map((s) => {
+    const consolidado = consolidadoSede(s, items);
     const { congelada, guardadoDesactualizado } = estadoCosteoSede(s, contexto.cabecera);
-    if (congelada) return { ...s, costeo_previo_obsoleto: false, fuente_calculo: "congelado" };
+    if (congelada) {
+      // Mismo origen que la hoja: el costeo guardado.
+      return { ...s, costeo_previo_obsoleto: false, fuente_calculo: "congelado", ...consolidado, ...costosFinales(s.costeo) };
+    }
     const nuevo = porSede.get(String(s.id));
     if (!nuevo) {
-      return { ...s, ...Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null])), costeo_previo_obsoleto: false, fuente_calculo: null };
+      return {
+        ...s, ...Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null])), costeo_previo_obsoleto: false, fuente_calculo: null,
+        ...consolidado, ...costosFinales(null),
+      };
     }
     const { bloqueos, ...montos } = nuevo;
-    return { ...s, ...montos, bloqueos_calculo: bloqueos, costeo_previo_obsoleto: guardadoDesactualizado, fuente_calculo: "previsualizado" };
+    return {
+      ...s, ...montos, bloqueos_calculo: bloqueos, costeo_previo_obsoleto: guardadoDesactualizado, fuente_calculo: "previsualizado",
+      ...consolidado, ...costosFinales(detalle.get(String(s.id))),
+    };
   });
 
   const { cabecera, gastos, saldos } = contexto;
   // `siesa_activo` permite al panel ocultar "Enviar" cuando SIESA está apagado (M5).
-  const respuesta = { ...cabecera, gastos, saldos, sedes, calculo, siesa_activo: siesaActivo() };
+  const respuesta = { ...cabecera, gastos, saldos, sedes, totales_sedes: totalesSedes(sedes), calculo, siesa_activo: siesaActivo() };
   if (calculoError) respuesta.calculo_error = calculoError;
   return respuesta;
+}
+
+/** `costo_real` y `factor` de una sede: los mismos que devuelve `hojaSede` (costeo guardado o costeo final en vivo). */
+function costosFinales(costeo) {
+  return { costo_real: aNumeroONulo(costeo?.costoReal), factor: aNumeroONulo(costeo?.factor) };
+}
+
+/**
+ * `kilos` y `costo_teorico` de una sede: Σ cantidad y Σ cantidad × costo_base de sus renglones de producto
+ * (carne + adicional; las vísceras no son cortes), igual que `hojaSede.totales`. Salen de los renglones, así que
+ * existen también en sedes bloqueadas. Sin renglones leídos (sin recepción o lectura fallida): ambos nulos; con
+ * recepción pero sin renglones de producto: kilos 0 y `costo_teorico` nulo.
+ */
+function consolidadoSede(sede, items) {
+  if (items == null || sede.recepcion_id == null) return { kilos: null, costo_teorico: null };
+  const propios = items.filter((i) => String(i.recepcion_id) === String(sede.recepcion_id) && ES_PRODUCTO(i));
+  return {
+    kilos: redondear(propios.reduce((a, i) => a + Number(i.cantidad), 0), 3),
+    costo_teorico: propios.length ? redondear(propios.reduce((a, i) => a + Number(i.cantidad) * Number(i.costo_base), 0), 2) : null,
+  };
+}
+
+const aCentavosNumero = (n) => Math.round(Number(n) * 100);
+
+/**
+ * `totales_sedes`: suma de la tabla "Consolidado por sede". Participa solo la sede con TODOS sus números
+ * (gasto_sede, servicio_compra, utilidad, costo_real y costo_teorico): bloqueada sin costeo, desborde sin liberar,
+ * bloqueo de cabecera (`servicio_cero`) o costeo guardado sin `costeo` quedan fuera. Los kilos y los animales de
+ * esas sedes tampoco se suman: así todas las columnas del total salen del mismo conjunto de sedes y cuadran entre
+ * sí (p. ej. utilidad por kilo). `sedes_incluidas` / `sedes_excluidas` dicen cuántas entraron. Los montos se suman
+ * en centavos y salen como número con 2 decimales.
+ */
+function totalesSedes(sedes) {
+  const completa = (s) =>
+    [s.gasto_sede, s.servicio_compra, s.utilidad, s.costo_real, s.costo_teorico, s.kilos].every((v) => v != null);
+  const incluidas = sedes.filter(completa);
+  const centavos = (f) => incluidas.reduce((a, s) => a + aCentavosNumero(f(s)), 0) / 100;
+  return {
+    animales: incluidas.reduce((a, s) => a + Number(s.animales), 0),
+    kilos: redondear(incluidas.reduce((a, s) => a + Number(s.kilos), 0), 2),
+    gasto_sede: centavos((s) => s.gasto_sede),
+    servicio_compra: centavos((s) => s.servicio_compra),
+    costo_real: centavos((s) => s.costo_real),
+    costo_teorico: centavos((s) => s.costo_teorico),
+    utilidad: centavos((s) => s.utilidad),
+    sedes_incluidas: incluidas.length,
+    sedes_excluidas: sedes.length - incluidas.length,
+  };
 }
 
 // ─── Envío de una sede (reclamar -> SIESA -> cerrar) ───────────────────────
