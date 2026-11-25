@@ -364,19 +364,47 @@ test("hoja de una sede simulada con costeo desactualizado: se calcula en vivo (l
   assert.notEqual(h.gasto_sede, "1.00");
 });
 
-test("hoja de una sede bloqueada con gasto_sede guardado: coincide con calcular (sin costeo), no con lo guardado", async () => {
+test("hoja de una sede bloqueada con costeo vigente guardado: devuelve lo guardado (montos, costeo y bloqueo)", async () => {
   tablas.carnes_preliquidacion_sedes[0] = sede({
     id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
     gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
-    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 7, costoReal: 8, factor: 0.5, advertencias: ["a"] },
   });
   const h = await Modelo.hojaSede(1, 11);
   const prev = await Modelo.previsualizar(1);
   assert.equal(prev.sedes.some((x) => x.sede_id === 11), false);
-  assert.equal(h.congelada, false);
+  assert.equal(h.congelada, true);
   assert.equal(h.costeo_previo_obsoleto, false);
-  assert.equal(h.gasto_sede, null);
+  assert.equal(h.gasto_sede, "500.00");
+  assert.equal(h.utilidad, "-5.00");
+  assert.equal(h.costo_teorico, 7);
+  assert.equal(h.costo_real, 8);
+  assert.equal(h.factor, 0.5);
+  assert.deepEqual(h.advertencias, ["a"]);
   assert.deepEqual(h.bloqueos, [{ motivo: "utilidad_negativa", detalle: "Utilidad negativa" }]);
+});
+
+test("hoja de una sede bloqueada sin costeo guardado: montos y costos nulos, con el bloqueo", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, false);
+  assert.equal(h.gasto_sede, null);
+  assert.ok(h.cortes.every((c) => c.costo_total === null));
+  assert.deepEqual(h.bloqueos, [{ motivo: "utilidad_negativa", detalle: "Utilidad negativa" }]);
+});
+
+test("hoja de un desborde liberado con costeo guardado vigente: se recostea en vivo (no se congela)", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "excede_animales", liberada_at: "2026-11-23T10:00:00.000Z",
+    gasto_sede: "1.00", utilidad: "1.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, false);
+  assert.notEqual(h.gasto_sede, "1.00");
+  assert.notEqual(h.gasto_sede, null);
 });
 
 test("hoja: un error al leer los renglones se propaga (no responde con cortes vacíos)", async () => {
@@ -454,7 +482,7 @@ test("calcular: un error al leer los renglones se propaga a previsualizar, hoja 
   assert.equal(rpcDe("carnes_preliq_congelar_sede").length, 0);
 });
 
-test("hoja de una sede bloqueada sin plan: los renglones guardados por un costeo previo no se muestran", async () => {
+test("hoja de una sede bloqueada con costeo vigente: muestra los costos por corte guardados en los renglones", async () => {
   tablas.carnes_preliquidacion_sedes[0] = sede({
     id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
     gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
@@ -463,10 +491,58 @@ test("hoja de una sede bloqueada sin plan: los renglones guardados por un costeo
   tablas.carnes_recepcion_items[0] = corte(1, 101, 1, { cantidad: "60", costo_base: "12000", costo_ajustado: "9.99", costo_total: "599.40" });
   tablas.carnes_recepcion_items[1] = corte(2, 101, 2, { tipo: "adicional", cantidad: "40.5", costo_base: "9000", costo_ajustado: "8.88", costo_total: "359.64" });
   const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, true);
+  assert.deepEqual(h.cortes.map((c) => [c.costo_ajustado, c.costo_total]), [[9.99, 599.4], [8.88, 359.64]]);
+  assert.equal(h.totales.costo_total, 959.04);
+});
+
+test("hoja de una sede bloqueada con costeo desactualizado: los renglones guardados por un costeo previo no se muestran", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+    gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 1, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  tablas.carnes_recepcion_items[0] = corte(1, 101, 1, { cantidad: "60", costo_base: "12000", costo_ajustado: "9.99", costo_total: "599.40" });
+  tablas.carnes_recepcion_items[1] = corte(2, 101, 2, { tipo: "adicional", cantidad: "40.5", costo_base: "9000", costo_ajustado: "8.88", costo_total: "359.64" });
+  const h = await Modelo.hojaSede(1, 11);
   assert.equal(h.congelada, false);
   assert.ok(h.cortes.length > 0);
   assert.ok(h.cortes.every((c) => c.costo_ajustado === null && c.costo_total === null));
   assert.equal(h.totales.costo_total, null);
+});
+
+test("obtener: una sede bloqueada (utilidad_negativa) con costeo vigente conserva lo guardado, incluida la utilidad negativa", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+    gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const s = (await Modelo.obtener(1)).sedes.find((x) => x.id === 11);
+  assert.equal(s.fuente_calculo, "congelado");
+  assert.equal(s.costeo_previo_obsoleto, false);
+  assert.equal(s.gasto_sede, "500.00");
+  assert.equal(s.utilidad, "-5.00");
+  assert.equal(s.motivo_bloqueo, "utilidad_negativa");
+});
+
+test("obtener: una sede bloqueada sin costeo guardado devuelve montos nulos y sin fuente", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+  });
+  const s = (await Modelo.obtener(1)).sedes.find((x) => x.id === 11);
+  assert.equal(s.fuente_calculo, null);
+  for (const c of NUMEROS) assert.equal(s[c], null, c);
+});
+
+test("obtener: un desborde liberado con costeo guardado vigente se recostea en vivo (previsualizado)", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "excede_animales", liberada_at: "2026-11-23T10:00:00.000Z",
+    gasto_sede: "1.00", utilidad: "1.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const s = (await Modelo.obtener(1)).sedes.find((x) => x.id === 11);
+  assert.equal(s.fuente_calculo, "previsualizado");
+  assert.notEqual(s.gasto_sede, "1.00");
 });
 
 test("hoja: costeo_previo_obsoleto es falso si la sede no tiene plan vivo (bloqueada con costeo desactualizado)", async () => {

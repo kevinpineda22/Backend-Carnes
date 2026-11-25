@@ -656,12 +656,15 @@ const ESTADOS_CON_MONTO_FIJO = new Set(["enviando", "enviada", "sin_confirmar"])
 
 /** Un desborde sin liberar no consume animales ni recibe monto. */
 const esDesborde = (s) => s.estado === "bloqueada" && s.motivo_bloqueo === "excede_animales" && !s.liberada_at;
-const noCosteable = (s) => s.estado === "bloqueada" && !(s.motivo_bloqueo === "excede_animales" && s.liberada_at);
+const desbordeLiberado = (s) => s.estado === "bloqueada" && s.motivo_bloqueo === "excede_animales" && Boolean(s.liberada_at);
+const noCosteable = (s) => s.estado === "bloqueada" && !desbordeLiberado(s);
 
 /**
  * Única regla para decidir si el costeo guardado de una sede es autoritativo (lo usan `obtener` y `hojaSede`).
  * Congelada: hay `gasto_sede` guardado Y la liquidación no lo va a cambiar: estado de monto fijo, o costeo
- * vigente (`costeoVigente`, la misma guarda de `planearEnvios`) de una sede que `calcular` sí costea.
+ * vigente (`costeoVigente`, la misma guarda de `planearEnvios`), salvo un desborde liberado, que `procesar`
+ * recostea (`debeCostearse`). Una sede bloqueada con costeo vigente conserva lo guardado: `armarPlanCongelar`
+ * guarda los montos también en los resultados bloqueados y ninguna ruta la recostea.
  * `guardadoDesactualizado`: hay costeo guardado que no se muestra por no ser vigente; quien lo expone como
  * `costeo_previo_obsoleto` debe exigir además que exista un plan vivo para la sede.
  *
@@ -670,7 +673,7 @@ const noCosteable = (s) => s.estado === "bloqueada" && !(s.motivo_bloqueo === "e
 function estadoCosteoSede(fila, cabecera) {
   const tieneCosteoGuardado = fila.gasto_sede != null;
   const vigente = costeoVigente(fila, cabecera);
-  const congelada = tieneCosteoGuardado && (ESTADOS_CON_MONTO_FIJO.has(fila.estado) || (vigente && !noCosteable(fila)));
+  const congelada = tieneCosteoGuardado && (ESTADOS_CON_MONTO_FIJO.has(fila.estado) || (vigente && !desbordeLiberado(fila)));
   return { congelada, guardadoDesactualizado: tieneCosteoGuardado && !congelada && !vigente };
 }
 
