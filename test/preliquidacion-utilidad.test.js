@@ -90,15 +90,18 @@ test("C-S9 res: la utilidad suma vísceras y no retomas", () => {
   assert.equal(r.utilidadCent, COSTO_TEORICO_RES_CENT - 10_000_000_00n + 300_000_00n);
 });
 
-test("C-S4: las vísceras no entran al prorrateo, solo a la utilidad", () => {
+test("C-S4: las vísceras suben la utilidad y reducen el costo real distribuido", () => {
   const sin = costearSede({ items: ITEMS_RES, gastoSedeCent: 10_000_000_00n, especie: "res", valorVicerasCent: 0n });
   const con = costearSede({ items: ITEMS_RES, gastoSedeCent: 10_000_000_00n, especie: "res", valorVicerasCent: 400_000_00n });
 
   // Cambia la utilidad (y por ende el servicio de compra), pero el costo teórico no.
   assert.equal(con.costoTeoricoCent, sin.costoTeoricoCent);
   assert.equal(con.utilidadCent, sin.utilidadCent + 400_000_00n);
-  // El único gasto del prorrateo es gasto de sede + servicio de compra.
-  assert.equal(Math.round(con.costeoFinal.totalGastos * 100), Number(10_000_000_00n + con.servicioCompraCent));
+  // El costo real distribuido es gasto de sede + servicio de compra - vísceras.
+  assert.equal(
+    Math.round(con.costeoFinal.totalGastos * 100),
+    Number(10_000_000_00n + con.servicioCompraCent - 400_000_00n),
+  );
   assert.equal(con.costeoFinal.valorViceras, 0);
 });
 
@@ -112,12 +115,13 @@ test("C-S5: servicio de compra = utilidad / 2 una sola vez, mitad hacia afuera d
   // 349.935.229 / 2 = 174.967.614,5 -> 174.967.615
   assert.equal(r.servicioCompraCent, 174_967_615n);
   assert.equal(r.servicioCompraCent, roundHalfAwayFromZero(r.utilidadCent, 2n));
-  // El gasto del costeo final es gasto de sede + servicio de compra, en pesos.
-  assert.equal(r.costeoFinal.totalGastos, 28_262_559.86);
+  // El costo real del costeo final es gasto de sede + servicio de compra - retomas
+  // (26.512.883,71 + 1.749.676,15 - 1.000.000,00), en pesos.
+  assert.equal(r.costeoFinal.totalGastos, 27_262_559.86);
   // Una sola pasada: cuadra contra calcularCosteo directo.
   const directo = calcularCosteo({
     items: ITEMS_CERDO,
-    gastos: [{ valor: 28_262_559.86 }],
+    gastos: [{ valor: 27_262_559.86 }],
     bonificacionViceras: false,
   });
   assert.deepEqual(r.costeoFinal.items, directo.items);
@@ -174,7 +178,7 @@ test("factor_anula_costos solo cuenta en la pasada final y bloquea con costeo_in
   assert.deepEqual(r.bloqueos.map((b) => b.motivo), ["costeo_invalido"]);
 });
 
-test("una sola pasada final: bonificacionViceras=false y el factor se calcula con gasto + servicio", () => {
+test("una sola pasada final: bonificacionViceras=false y el costo real ya trae el aporte restado", () => {
   const r = costearSede({
     items: ITEMS_RES,
     gastoSedeCent: 10_000_000_00n,
@@ -202,4 +206,96 @@ test("plan: valores NUMERIC en texto listos para el RPC", () => {
 test("costearSede: gasto no entero o especie inválida lanza", () => {
   assert.throws(() => costearSede({ items: ITEMS_RES, gastoSedeCent: 10.5, especie: "res" }));
   assert.throws(() => costearSede({ items: ITEMS_RES, gastoSedeCent: 10n, especie: "pollo" }));
+});
+
+// ─── Aporte (vísceras/retomas) reduce el costo real de la pasada final ──────
+
+const ITEMS_EJEMPLO = [
+  { codigo_item: "A", costo_base: 30000, cantidad: 500 }, // 15.000.000
+  { codigo_item: "B", costo_base: 10000, cantidad: 1000 }, // 10.000.000
+]; // costo teórico 25.000.000
+
+test("aporte res: costo real = gasto + servicio - vísceras y el corte baja a 27.240/kg", () => {
+  const r = costearSede({
+    items: ITEMS_EJEMPLO,
+    gastoSedeCent: 21_600_000_00n,
+    especie: "res",
+    valorVicerasCent: 1_200_000_00n,
+  });
+  assert.equal(r.utilidadCent, 4_600_000_00n);
+  assert.equal(r.servicioCompraCent, 2_300_000_00n);
+  assert.equal(r.costeoFinal.costoReal, 22_700_000);
+  assert.equal(r.costeoFinal.factor, 0.092);
+  assert.equal(r.costeoFinal.items[0].costo_ajustado, 27240);
+  assert.equal(r.costeoFinal.items[1].costo_ajustado, 9080);
+  assert.deepEqual(r.bloqueos, []);
+  // Los campos de la sede conservan su significado.
+  assert.equal(r.plan.gasto_sede, "21600000.00");
+  assert.equal(r.plan.utilidad, "4600000.00");
+  assert.equal(r.plan.servicio_compra, "2300000.00");
+  assert.equal(r.plan.valor_viceras, "1200000.00");
+  assert.equal(r.plan.valor_retomas, "0.00");
+  // Total final = (gasto + teórico - aporte) / 2
+  assert.equal(r.costeoFinal.costoReal * 100, Number((21_600_000_00n + 25_000_000_00n - 1_200_000_00n) / 2n));
+});
+
+test("aporte cerdo: las retomas reducen el costo real igual que las vísceras en res", () => {
+  const r = costearSede({
+    items: ITEMS_EJEMPLO,
+    gastoSedeCent: 21_600_000_00n,
+    especie: "cerdo",
+    valorRetomasCent: 1_200_000_00n,
+  });
+  assert.equal(r.costeoFinal.costoReal, 22_700_000);
+  assert.equal(r.costeoFinal.items[0].costo_ajustado, 27240);
+  assert.equal(r.plan.valor_retomas, "1200000.00");
+  assert.equal(r.plan.valor_viceras, "0.00");
+});
+
+test("aporte res: las retomas se ignoran", () => {
+  const base = { items: ITEMS_EJEMPLO, gastoSedeCent: 21_600_000_00n, especie: "res", valorVicerasCent: 1_200_000_00n };
+  const con = costearSede({ ...base, valorRetomasCent: 9_999_00n });
+  const sin = costearSede(base);
+  assert.deepEqual(con.costeoFinal, sin.costeoFinal);
+  assert.equal(con.plan.valor_retomas, "0.00");
+});
+
+test("aporte cerdo: las vísceras se ignoran", () => {
+  const base = { items: ITEMS_EJEMPLO, gastoSedeCent: 21_600_000_00n, especie: "cerdo", valorRetomasCent: 1_200_000_00n };
+  const con = costearSede({ ...base, valorVicerasCent: 9_999_00n });
+  const sin = costearSede(base);
+  assert.deepEqual(con.costeoFinal, sin.costeoFinal);
+  assert.equal(con.plan.valor_viceras, "0.00");
+});
+
+test("aporte 0: el resultado es el de gasto + servicio de compra (regresión)", () => {
+  const r = costearSede({ items: ITEMS_EJEMPLO, gastoSedeCent: 21_600_000_00n, especie: "res" });
+  // utilidad 3.400.000 -> servicio 1.700.000 -> costo real 23.300.000
+  assert.equal(r.costeoFinal.costoReal, 23_300_000);
+  const directo = calcularCosteo({ items: ITEMS_EJEMPLO, gastos: [{ valor: 23_300_000 }], bonificacionViceras: false });
+  assert.deepEqual(r.costeoFinal.items, directo.items);
+});
+
+test("aporte desproporcionado: costo real <= 0 bloquea con costeo_invalido", () => {
+  const r = costearSede({
+    items: ITEMS_EJEMPLO,
+    gastoSedeCent: 0n,
+    especie: "res",
+    valorVicerasCent: 30_000_000_00n, // servicio 27.500.000 - 30.000.000 = -2.500.000
+  });
+  assert.ok(r.costeoFinal.costoReal < 0);
+  assert.ok(r.costeoFinal.advertencias.some((a) => a.codigo === "factor_anula_costos"));
+  assert.deepEqual(r.bloqueos.map((b) => b.motivo), ["costeo_invalido"]);
+});
+
+test("aporte que deja el costo real en exactamente 0 bloquea con costeo_invalido", () => {
+  // gasto 0, teórico 25M, vísceras 25M -> utilidad 50M, servicio 25M, real 0
+  const r = costearSede({
+    items: ITEMS_EJEMPLO,
+    gastoSedeCent: 0n,
+    especie: "res",
+    valorVicerasCent: 25_000_000_00n,
+  });
+  assert.equal(r.costeoFinal.costoReal, 0);
+  assert.deepEqual(r.bloqueos.map((b) => b.motivo), ["costeo_invalido"]);
 });

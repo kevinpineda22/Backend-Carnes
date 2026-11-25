@@ -12,7 +12,7 @@
  */
 
 import { calcularCosteo } from "./costeo.js";
-import { utilidadSede } from "./utilidad.js";
+import { utilidadSede, aporteSede } from "./utilidad.js";
 
 const MENSAJE_VALOR = "valor monetario inválido";
 
@@ -224,14 +224,20 @@ const centavosAPesos = (centavos) => Number(centavosATexto(centavos));
  *
  *   1. costo teórico = `calcularCosteo` con `bonificacionViceras = false` (solo se
  *      lee `costoTeorico`), llevado a centavos.
- *   2. utilidad = `utilidadSede` (forma cerrada; vísceras/retomas solo aquí).
+ *   2. utilidad = `utilidadSede` (forma cerrada; suma el aporte: vísceras en res,
+ *      retomas en cerdo).
  *   3. servicio de compra = utilidad / 2, una sola vez, mitad hacia afuera del cero.
- *   4. UNA pasada final de `calcularCosteo` con gasto = gasto de sede + servicio de
- *      compra y `bonificacionViceras = false`; esos renglones son los que se
- *      congelan y se envían.
+ *   4. UNA pasada final de `calcularCosteo` con
+ *        costo real = gasto de sede + servicio de compra - aporte
+ *      y `bonificacionViceras = false`; esos renglones son los que se congelan y
+ *      se envían. El aporte vuelve a bajar el costo de los cortes, como en el flujo
+ *      legado (servicio de compra cargado a mano y vísceras/"Retomas" restadas del
+ *      costo real). Algebraicamente el costo final total es
+ *      (gasto + teórico - aporte) / 2.
  *
  * Bloqueos: utilidad < 0 -> `utilidad_negativa`; la advertencia
- * `factor_anula_costos` de la pasada final -> `costeo_invalido`.
+ * `factor_anula_costos` de la pasada final -> `costeo_invalido` (cubre también un
+ * costo real <= 0 por un aporte desproporcionado, que da factor >= 1).
  *
  * @param {object} p
  * @param {Array} p.items renglones de carne `{cantidad, costo_base, ...}`
@@ -255,9 +261,17 @@ export function costearSede({ items, gastoSedeCent, especie, valorVicerasCent = 
   });
   const servicioCompraCent = roundHalfAwayFromZero(utilidadCent, 2n);
 
+  const aporteCent = aporteSede({ especie, valorVicerasCent, valorRetomasCent });
+  const costoRealCent = gastoSede + servicioCompraCent - aporteCent;
+
   const costeoFinal = calcularCosteo({
     items,
-    gastos: [{ concepto: "Gasto de sede y servicio de compra", valor: centavosAPesos(gastoSede + servicioCompraCent) }],
+    gastos: [
+      {
+        concepto: "Gasto de sede y servicio de compra, menos vísceras/retomas",
+        valor: centavosAPesos(costoRealCent),
+      },
+    ],
     bonificacionViceras: false,
   });
 
