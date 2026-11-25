@@ -809,7 +809,7 @@ export async function previsualizar(id) {
       animales: Number(s.animales),
       orden: s.orden,
       estado: s.estado,
-      ...porSede.get(String(s.id)),
+      ...conUtilidadFinal(porSede.get(String(s.id))),
     }));
   return { preliquidacion_id: contexto.cabecera.id, especie: contexto.cabecera.especie, ...resumen, sedes };
 }
@@ -821,6 +821,16 @@ const redondear = (n, decimales) => Math.round(n * 10 ** decimales) / 10 ** deci
 const aNumeroONulo = (v) => (v == null ? null : Number(v));
 /** NUMERIC (texto o número) -> texto con dos decimales, como el resto de la API; nulo se conserva. */
 const aMontoTexto = (v) => (v == null ? null : centavosATexto(aCentavos(v)));
+
+/**
+ * Utilidad final de una sede = utilidad inicial - servicio de compra (el servicio es un gasto adicional).
+ * Se calcula en centavos al leer, sin columna propia; `utilidad` sigue siendo la inicial. Nulo si falta alguno.
+ */
+function utilidadFinalTexto({ utilidad, servicio_compra: servicioCompra }) {
+  if (utilidad == null || servicioCompra == null) return null;
+  return centavosATexto(aCentavos(utilidad) - aCentavos(servicioCompra));
+}
+const conUtilidadFinal = (sede) => ({ ...sede, utilidad_final: utilidadFinalTexto(sede) });
 
 /**
  * Hoja de costeo de UNA sede, corte por corte (`GET /:id/sedes/:sedeId/hoja`). Solo lee.
@@ -928,6 +938,7 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     costeo_previo_obsoleto: costeoPrevioObsoleto,
     animales: Number(fila.animales),
     ...(montos ?? Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null]))),
+    utilidad_final: montos ? utilidadFinalTexto(montos) : null,
     costo_teorico: aNumeroONulo(costeo?.costoTeorico),
     costo_real: aNumeroONulo(costeo?.costoReal),
     factor: aNumeroONulo(costeo?.factor),
@@ -988,7 +999,8 @@ export async function obtener(id) {
     }
   }
 
-  const sedes = contexto.sedes.map((s) => {
+  const sedes = contexto.sedes.map((s) => conUtilidadFinal(armarSede(s)));
+  function armarSede(s) {
     const consolidado = consolidadoSede(s, items);
     const { congelada, guardadoDesactualizado } = estadoCosteoSede(s, contexto.cabecera);
     if (congelada) {
@@ -1011,7 +1023,7 @@ export async function obtener(id) {
       ...s, ...montos, bloqueos_calculo: bloqueos, costeo_previo_obsoleto: guardadoDesactualizado, fuente_calculo: "previsualizado",
       ...consolidado, ...costosFinales(detalle.get(String(s.id))),
     };
-  });
+  }
 
   const { cabecera, gastos, saldos } = contexto;
   // `siesa_activo` permite al panel ocultar "Enviar" cuando SIESA está apagado (M5).
@@ -1045,7 +1057,7 @@ const aCentavosNumero = (n) => Math.round(Number(n) * 100);
 /**
  * `totales_sedes`: suma de la tabla "Consolidado por sede". Una sola regla:
  * - `animales` y `kilos` son conteos que se muestran en cada fila: suman TODAS las sedes de `sedes[]` que tienen el valor.
- * - Los montos (gasto_sede, servicio_compra, costo_real, costo_teorico, utilidad y `complemento`) suman solo las sedes
+ * - Los montos (gasto_sede, servicio_compra, costo_real, costo_teorico, utilidad, utilidad_final y `complemento`) suman solo las sedes
  *   "incluidas": las que tienen todos esos montos (bloqueada sin costeo, desborde sin liberar, bloqueo de cabecera
  *   `servicio_cero` o costeo guardado sin `costeo` quedan fuera).
  * - `complemento` = valor_retomas (cerdo) o valor_viceras (res) sobre ese mismo conjunto de incluidas.
@@ -1067,6 +1079,7 @@ function totalesSedes(sedes, especie) {
     costo_real: centavos((s) => s.costo_real),
     costo_teorico: centavos((s) => s.costo_teorico),
     utilidad: centavos((s) => s.utilidad),
+    utilidad_final: centavos((s) => s.utilidad_final),
     complemento: centavos((s) => s[campoComplemento]),
     sedes_incluidas: incluidas.length,
     sedes_excluidas: sedes.length - incluidas.length,

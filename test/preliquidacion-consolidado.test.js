@@ -188,6 +188,7 @@ test("totales_sedes: animales y kilos suman todas las sedes; los montos solo las
     costo_real: 1050000.1,
     costo_teorico: 2700000,
     utilidad: 9.25,
+    utilidad_final: -49990.75,
     complemento: 1500.5,
     sedes_incluidas: 2,
     sedes_excluidas: 1,
@@ -212,7 +213,7 @@ test("totales_sedes: sin ninguna sede incluida los montos son null (no 0); anima
   const r = await Modelo.obtener(1);
   assert.deepEqual(r.totales_sedes, {
     animales: 10, kilos: 250.5, gasto_sede: null, servicio_compra: null, costo_real: null, costo_teorico: null,
-    utilidad: null, complemento: null, sedes_incluidas: 0, sedes_excluidas: 2, sedes_total: 2,
+    utilidad: null, utilidad_final: null, complemento: null, sedes_incluidas: 0, sedes_excluidas: 2, sedes_total: 2,
   });
 });
 

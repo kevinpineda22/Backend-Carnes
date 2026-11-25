@@ -135,7 +135,7 @@ const falla = async (fn, estado) => {
 
 const CLAVES = [
   "preliquidacion_id", "sede_row_id", "sede_id", "sede_nombre", "recepcion_id", "especie", "estado", "congelada",
-  "animales", "gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas",
+  "animales", "gasto_sede", "utilidad", "utilidad_final", "servicio_compra", "valor_viceras", "valor_retomas",
   "costo_teorico", "costo_real", "factor", "cortes", "totales", "bloqueos", "advertencias", "costeo_previo_obsoleto",
 ];
 
