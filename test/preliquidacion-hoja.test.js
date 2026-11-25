@@ -401,3 +401,114 @@ test("hoja: si el cálculo lanza por datos inválidos responde 422 calculo_error
     },
   );
 });
+
+// ─── Ronda 2: obtener/hoja consistentes, errores de lectura, renglones sin plan y errores de cálculo ───
+
+const NUMEROS = ["gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas"];
+
+test("obtener: una sede calculada con costeo desactualizado usa los valores en vivo (iguales a la hoja) y avisa", async () => {
+  await liquidarAhora();
+  Object.assign(tablas.carnes_preliquidacion_sedes[0], { gasto_sede: "1.00", utilidad: "1.00", servicio_compra: "1.00" });
+  tablas.carnes_preliquidaciones[0].orden_version += 1;
+
+  const r = await Modelo.obtener(1);
+  const s = r.sedes.find((x) => x.id === 11);
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(s.fuente_calculo, "previsualizado");
+  assert.equal(s.costeo_previo_obsoleto, true);
+  for (const c of NUMEROS) assert.equal(s[c], h[c], c);
+  assert.notEqual(s.gasto_sede, "1.00");
+  assert.equal(h.costeo_previo_obsoleto, true);
+});
+
+test("obtener: una sede calculada con costeo vigente se devuelve congelada y sin aviso", async () => {
+  await liquidarAhora();
+  const r = await Modelo.obtener(1);
+  for (const s of r.sedes) {
+    assert.equal(s.fuente_calculo, "congelado");
+    assert.equal(s.costeo_previo_obsoleto, false);
+  }
+});
+
+test("obtener: una sede de monto fijo conserva lo guardado aunque el costeo no sea vigente", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "enviada", gasto_sede: "123.45", utilidad: "10.00", servicio_compra: "5.00",
+    valor_viceras: "0.00", valor_retomas: "0.00", costeo_orden_version: 1, costeo_animales: 4,
+  });
+  const s = (await Modelo.obtener(1)).sedes.find((x) => x.id === 11);
+  assert.equal(s.fuente_calculo, "congelado");
+  assert.equal(s.gasto_sede, "123.45");
+  assert.equal(s.costeo_previo_obsoleto, false);
+});
+
+test("calcular: un error al leer los renglones se propaga a previsualizar, hoja en vivo y procesar (no congela costeo vacío)", async () => {
+  erroresTabla.carnes_recepcion_items = "fallo de lectura";
+  await assert.rejects(() => Modelo.previsualizar(1), /fallo de lectura/);
+  const consola = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(() => Modelo.hojaSede(1, 11), /fallo de lectura/);
+  } finally {
+    consola.mock.restore();
+  }
+  await assert.rejects(() => liquidarAhora(), /fallo de lectura/);
+  assert.equal(rpcDe("carnes_preliq_congelar_sede").length, 0);
+});
+
+test("hoja de una sede bloqueada sin plan: los renglones guardados por un costeo previo no se muestran", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+    gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  tablas.carnes_recepcion_items[0] = corte(1, 101, 1, { cantidad: "60", costo_base: "12000", costo_ajustado: "9.99", costo_total: "599.40" });
+  tablas.carnes_recepcion_items[1] = corte(2, 101, 2, { tipo: "adicional", cantidad: "40.5", costo_base: "9000", costo_ajustado: "8.88", costo_total: "359.64" });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, false);
+  assert.ok(h.cortes.length > 0);
+  assert.ok(h.cortes.every((c) => c.costo_ajustado === null && c.costo_total === null));
+  assert.equal(h.totales.costo_total, null);
+});
+
+test("hoja: costeo_previo_obsoleto es falso si la sede no tiene plan vivo (bloqueada con costeo desactualizado)", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+    gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 1, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.gasto_sede, null);
+  assert.equal(h.costeo_previo_obsoleto, false);
+  const s = (await Modelo.obtener(1)).sedes.find((x) => x.id === 11);
+  assert.equal(s.costeo_previo_obsoleto, false);
+});
+
+test("hoja: un error inesperado del cálculo no se convierte en 422; se registra y se propaga", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({ id: 11, animales: 4, orden: 1, liberada_at: null });
+  // Un renglón con cantidad Symbol provoca un TypeError dentro del cálculo: no es validación de datos.
+  tablas.carnes_recepcion_items[0] = corte(1, 101, 1, { cantidad: Symbol("x") });
+  const consola = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(
+      () => Modelo.hojaSede(1, 11),
+      (e) => {
+        assert.notEqual(e.statusCode, 422);
+        assert.notEqual(e.codigo, "calculo_error");
+        return true;
+      },
+    );
+    assert.ok(consola.mock.callCount() >= 1);
+  } finally {
+    consola.mock.restore();
+  }
+});
+
+test("hoja: un error de validación de datos sigue siendo 422 calculo_error y se registra", async () => {
+  tablas.carnes_preliquidaciones[0].servicio_por_animal = "no-numerico";
+  const consola = mock.method(console, "error", () => {});
+  try {
+    await assert.rejects(() => Modelo.hojaSede(1, 11), (e) => e.statusCode === 422 && e.codigo === "calculo_error");
+    assert.ok(consola.mock.callCount() >= 1);
+  } finally {
+    consola.mock.restore();
+  }
+});

@@ -5,6 +5,7 @@ import {
   centavosATexto,
   costearSede,
   desbloqueaServicioCero,
+  ErrorDatosCosteo,
   gastoTotal,
   montoSedes,
 } from "../shared/preliquidacionCosteo.js";
@@ -657,6 +658,22 @@ const ESTADOS_CON_MONTO_FIJO = new Set(["enviando", "enviada", "sin_confirmar"])
 const esDesborde = (s) => s.estado === "bloqueada" && s.motivo_bloqueo === "excede_animales" && !s.liberada_at;
 const noCosteable = (s) => s.estado === "bloqueada" && !(s.motivo_bloqueo === "excede_animales" && s.liberada_at);
 
+/**
+ * Única regla para decidir si el costeo guardado de una sede es autoritativo (lo usan `obtener` y `hojaSede`).
+ * Congelada: hay `gasto_sede` guardado Y la liquidación no lo va a cambiar: estado de monto fijo, o costeo
+ * vigente (`costeoVigente`, la misma guarda de `planearEnvios`) de una sede que `calcular` sí costea.
+ * `guardadoDesactualizado`: hay costeo guardado que no se muestra por no ser vigente; quien lo expone como
+ * `costeo_previo_obsoleto` debe exigir además que exista un plan vivo para la sede.
+ *
+ * @returns {{congelada: boolean, guardadoDesactualizado: boolean}}
+ */
+function estadoCosteoSede(fila, cabecera) {
+  const tieneCosteoGuardado = fila.gasto_sede != null;
+  const vigente = costeoVigente(fila, cabecera);
+  const congelada = tieneCosteoGuardado && (ESTADOS_CON_MONTO_FIJO.has(fila.estado) || (vigente && !noCosteable(fila)));
+  return { congelada, guardadoDesactualizado: tieneCosteoGuardado && !congelada && !vigente };
+}
+
 /** Todo lo que el cálculo necesita de la preliquidación, leído una sola vez. */
 async function leerContexto(id) {
   const cabecera = await leerCabecera(id);
@@ -737,9 +754,16 @@ async function calcular({ cabecera, gastos, saldos, sedes: sedesTodas, retomas }
   const montoPorSede = new Map(montos.map((m) => [String(m.sedeId), m.gastoSedeCent]));
 
   const costeables = sedes.filter((s) => montoPorSede.has(String(s.id)));
-  const items = costeables.length
-    ? (await supabase.from(T_ITEMS).select("*").in("recepcion_id", costeables.map((s) => s.recepcion_id)).order("orden")).data || []
-    : [];
+  let items = [];
+  if (costeables.length) {
+    const { data, error } = await supabase
+      .from(T_ITEMS)
+      .select("*")
+      .in("recepcion_id", costeables.map((s) => s.recepcion_id))
+      .order("orden");
+    if (error) throw new Error(`Error al leer los renglones de las recepciones: ${error.message}`);
+    items = data || [];
+  }
 
   const retomasPorSede = new Map(
     cabecera.especie === "cerdo"
@@ -818,12 +842,9 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
   if (!fila) throw createError(404, "La sede no pertenece a la preliquidación.", "sede_no_encontrada");
 
   const { cabecera } = contexto;
-  // Lo guardado solo es autoritativo si la liquidación no lo va a cambiar: monto fijo (`calcular` lo respeta),
-  // o costeo vigente (`costeoVigente`, la misma guarda de `planearEnvios`) de una sede que `calcular` sí costea.
-  const tieneCosteoGuardado = fila.gasto_sede != null;
-  const vigente = costeoVigente(fila, cabecera);
-  const congelada = tieneCosteoGuardado && (ESTADOS_CON_MONTO_FIJO.has(fila.estado) || (vigente && !noCosteable(fila)));
-  const costeoPrevioObsoleto = tieneCosteoGuardado && !congelada && !vigente;
+  // Lo guardado solo es autoritativo si la liquidación no lo va a cambiar (ver `estadoCosteoSede`).
+  const { congelada, guardadoDesactualizado } = estadoCosteoSede(fila, cabecera);
+  let costeoPrevioObsoleto = false;
 
   const [catalogo] = fila.recepcion?.sede_id != null ? await leerLista(T_SEDES_CATALOGO, { id: fila.recepcion.sede_id }) : [];
 
@@ -841,9 +862,15 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     try {
       calculo = await calcular(contexto);
     } catch (error) {
-      throw createError(422, `No se pudo calcular la hoja de la sede: ${error.message}`, "calculo_error");
+      console.error(`Error al calcular la hoja de la sede ${fila.id} de la preliquidación ${preliquidacionId}:`, error);
+      // Solo los datos inválidos son del usuario; cualquier otro fallo (lectura, bug) sube como error interno.
+      if (error instanceof ErrorDatosCosteo) {
+        throw createError(422, `No se pudo calcular la hoja de la sede: ${error.message}`, "calculo_error");
+      }
+      throw error;
     }
     const plan = calculo.porSede.get(String(fila.id));
+    costeoPrevioObsoleto = guardadoDesactualizado && Boolean(plan);
     if (plan) {
       const { bloqueos: bloqueosCalculo, ...montosPlan } = plan;
       montos = montosPlan;
@@ -866,6 +893,8 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     if (error) throw new Error(`Error al leer los renglones de la recepción: ${error.message}`);
     renglones = (data ?? []).filter(ES_PRODUCTO);
   }
+  // Sin plan y sin congelar, los costos que traigan los renglones son de un costeo previo: no se muestran.
+  const sinCostos = !itemsCosteados && !congelada;
   const cortes = renglones.map((i) => ({
     item_id: i.id,
     descripcion: i.descripcion ?? null,
@@ -873,8 +902,8 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     tipo: i.tipo,
     cantidad: Number(i.cantidad),
     costo_base: Number(i.costo_base),
-    costo_ajustado: aNumeroONulo(i.costo_ajustado),
-    costo_total: aNumeroONulo(i.costo_total),
+    costo_ajustado: sinCostos ? null : aNumeroONulo(i.costo_ajustado),
+    costo_total: sinCostos ? null : aNumeroONulo(i.costo_total),
   }));
 
   const conCostos = cortes.length > 0 && cortes.every((c) => c.costo_total != null);
@@ -937,13 +966,14 @@ export async function obtener(id) {
   }
 
   const sedes = contexto.sedes.map((s) => {
-    if (s.gasto_sede != null) return { ...s, fuente_calculo: "congelado" };
+    const { congelada, guardadoDesactualizado } = estadoCosteoSede(s, contexto.cabecera);
+    if (congelada) return { ...s, costeo_previo_obsoleto: false, fuente_calculo: "congelado" };
     const nuevo = porSede.get(String(s.id));
     if (!nuevo) {
-      return { ...s, ...Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null])), fuente_calculo: null };
+      return { ...s, ...Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null])), costeo_previo_obsoleto: false, fuente_calculo: null };
     }
     const { bloqueos, ...montos } = nuevo;
-    return { ...s, ...montos, bloqueos_calculo: bloqueos, fuente_calculo: "previsualizado" };
+    return { ...s, ...montos, bloqueos_calculo: bloqueos, costeo_previo_obsoleto: guardadoDesactualizado, fuente_calculo: "previsualizado" };
   });
 
   const { cabecera, gastos, saldos } = contexto;

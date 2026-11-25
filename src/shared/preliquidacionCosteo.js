@@ -16,6 +16,14 @@ import { utilidadSede, aporteSede } from "./utilidad.js";
 
 const MENSAJE_VALOR = "valor monetario inválido";
 
+/** Dato de entrada inválido (monto no numérico, animales fuera de rango, sedes que exceden el total): el llamador puede mostrarlo. */
+export class ErrorDatosCosteo extends Error {
+  constructor(mensaje) {
+    super(mensaje);
+    this.name = "ErrorDatosCosteo";
+  }
+}
+
 /**
  * Convierte un valor monetario a centavos enteros.
  * Texto/NUMERIC: lee los dígitos sin float; con más de dos decimales redondea la
@@ -30,18 +38,18 @@ export function aCentavos(valor) {
   let texto;
   if (typeof valor === "number") {
     if (!Number.isFinite(valor) || Math.abs(valor) >= 1e21) {
-      throw new Error(`${MENSAJE_VALOR}: ${String(valor)}`);
+      throw new ErrorDatosCosteo(`${MENSAJE_VALOR}: ${String(valor)}`);
     }
     texto = valor.toFixed(6);
   } else if (typeof valor === "string") {
     texto = valor.trim();
   } else {
-    throw new Error(`${MENSAJE_VALOR}: ${String(valor)}`);
+    throw new ErrorDatosCosteo(`${MENSAJE_VALOR}: ${String(valor)}`);
   }
 
   const m = /^([+-])?(\d*)(?:\.(\d*))?$/.exec(texto);
   if (!m || (m[2] === "" && (m[3] === undefined || m[3] === ""))) {
-    throw new Error(`${MENSAJE_VALOR}: ${JSON.stringify(valor)}`);
+    throw new ErrorDatosCosteo(`${MENSAJE_VALOR}: ${JSON.stringify(valor)}`);
   }
 
   const entero = m[2] === "" ? "0" : m[2];
@@ -102,7 +110,7 @@ function aBigIntEntero(valor, nombre) {
 export function montoSedes(sedesOrdenadas, { gastoTotalCent, animales }) {
   const total = aBigIntEntero(gastoTotalCent, "gastoTotalCent");
   if (!Number.isInteger(animales) || animales <= 0) {
-    throw new Error(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
+    throw new ErrorDatosCosteo(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
   }
 
   const resultado = [];
@@ -112,11 +120,11 @@ export function montoSedes(sedesOrdenadas, { gastoTotalCent, animales }) {
   for (const s of sedesOrdenadas) {
     if (s.bloqueada) continue;
     if (!Number.isInteger(s.animales) || s.animales <= 0) {
-      throw new Error(`animales de la sede ${s.sedeId} debe ser un entero > 0: ${s.animales}`);
+      throw new ErrorDatosCosteo(`animales de la sede ${s.sedeId} debe ser un entero > 0: ${s.animales}`);
     }
     acumulado += s.animales;
     if (acumulado > animales) {
-      throw new Error(`las sedes vinculadas (${acumulado}) excede los animales de la preliquidación (${animales})`);
+      throw new ErrorDatosCosteo(`las sedes vinculadas (${acumulado}) excede los animales de la preliquidación (${animales})`);
     }
 
     let gastoSedeCent;
@@ -171,7 +179,7 @@ function porAnimalEfectivoCent(servicioPorAnimal) {
  */
 export function gastoTotal({ animalEnPie, servicioPrecorte, servicioPorAnimal, animales, gastos = [], saldos = [] }) {
   if (!Number.isInteger(animales) || animales <= 0) {
-    throw new Error(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
+    throw new ErrorDatosCosteo(`animales de la preliquidación debe ser un entero > 0: ${animales}`);
   }
 
   const precorte = precorteEfectivoCent(servicioPrecorte);
