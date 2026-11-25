@@ -37,6 +37,7 @@ mock.module(url("models/Preliquidacion.model.js"), {
     vincularRecepcion: falso("vincularRecepcion"),
     desvincularSede: falso("desvincularSede"),
     previsualizar: falso("previsualizar"),
+    hojaSede: falso("hojaSede"),
     obtenerConfig: falso("obtenerConfig"),
     guardarConfig: falso("guardarConfig"),
     procesarAdmin: falso("procesarAdmin"),
@@ -298,7 +299,7 @@ test("todo el router pasa por requireAdminCarnes", async () => {
   for (const [m, r, c] of [
     ["GET", "/"], ["POST", "/", {}], ["GET", "/1"], ["PATCH", "/1", {}], ["PUT", "/1/gastos", {}],
     ["POST", "/1/recepciones", {}], ["DELETE", "/1/sedes/2"], ["GET", "/1/previsualizar"],
-    ["GET", "/config/res"], ["PUT", "/config/res", {}],
+    ["GET", "/1/sedes/2/hoja"], ["GET", "/config/res"], ["PUT", "/config/res", {}],
   ]) {
     assert.equal((await llamar(m, r, c)).estado, 403, `${m} ${r}`);
   }
@@ -375,6 +376,28 @@ test("GET /:id/previsualizar no exige el interruptor", async () => {
   const r = await llamar("GET", "/3/previsualizar");
   assert.equal(r.estado, 200);
   assert.equal(r.json.data.gasto_total, "1.00");
+});
+
+// ─── Hoja de costeo de una sede ────────────────────────────────────────────
+
+test("GET /:id/sedes/:sedeId/hoja es una lectura: no exige el interruptor y pasa los dos ids al modelo", async () => {
+  respuestas.hojaSede = { sede_row_id: 9, cortes: [] };
+  const r = await llamar("GET", "/3/sedes/9/hoja");
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { sede_row_id: 9, cortes: [] } });
+  assert.equal(llamadas[0].nombre, "hojaSede");
+  assert.deepEqual(llamadas[0].args, [3, 9]);
+});
+
+test("GET /:id/sedes/:sedeId/hoja: ids inválidos son 400 y el 404 del modelo se propaga", async () => {
+  for (const ruta of ["/x/sedes/9/hoja", "/3/sedes/0/hoja", "/3/sedes/abc/hoja"]) {
+    assert.equal((await llamar("GET", ruta)).estado, 400, ruta);
+  }
+  assert.equal(llamadas.length, 0);
+  respuestas.hojaSede = createError(404, "Sede no encontrada.", "sede_no_encontrada");
+  const r = await llamar("GET", "/3/sedes/9/hoja");
+  assert.equal(r.estado, 404);
+  assert.equal(r.json.codigo, "sede_no_encontrada");
 });
 
 // ─── PATCH ─────────────────────────────────────────────────────────────────
@@ -566,8 +589,9 @@ test("apagado: cada ruta de escritura responde 409 preliquidacion_apagada antes 
 test("apagado: las lecturas siguen disponibles", async () => {
   respuestas.obtenerConfig = { especie: "res" };
   respuestas.obtenerRetomas = { filas: [] };
+  respuestas.hojaSede = { cortes: [] };
   respuestas.listar = [];
-  for (const r of ["/", "/3", "/3/retomas", "/3/previsualizar", "/config/res"]) {
+  for (const r of ["/", "/3", "/3/retomas", "/3/previsualizar", "/3/sedes/9/hoja", "/config/res"]) {
     assert.equal((await llamar("GET", r)).estado, 200, `GET ${r}`);
   }
 });

@@ -194,6 +194,15 @@ export async function previsualizar(req, res, next) {
   }
 }
 
+/** GET /api/preliquidaciones/:id/sedes/:sedeId/hoja — costeo corte por corte de una sede; no escribe nada. */
+export async function hojaSede(req, res, next) {
+  try {
+    res.json({ ok: true, data: await PreliquidacionModel.hojaSede(req.idPreliquidacion, req.idSede) });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** GET /api/preliquidaciones/:id/retomas — solo cerdo. */
 export async function obtenerRetomas(req, res, next) {
   try {

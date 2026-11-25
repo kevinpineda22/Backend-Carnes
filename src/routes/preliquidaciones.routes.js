@@ -76,4 +76,7 @@ router.post(
 // Previsualizar es GET porque no escribe nada.
 router.get("/:id/previsualizar", PreliquidacionesController.previsualizar);
 
+// Hoja de costeo de una sede (corte por corte): en vivo antes de liquidar, congelada después. Es lectura.
+router.get("/:id/sedes/:sedeId/hoja", PreliquidacionesController.hojaSede);
+
 export default router;

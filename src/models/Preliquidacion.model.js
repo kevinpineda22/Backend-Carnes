@@ -787,6 +787,112 @@ export async function previsualizar(id) {
   return { preliquidacion_id: contexto.cabecera.id, especie: contexto.cabecera.especie, ...resumen, sedes };
 }
 
+// ─── Hoja de costeo de una sede ────────────────────────────────────────────
+
+const T_SEDES_CATALOGO = "carnes_sedes";
+const redondear = (n, decimales) => Math.round(n * 10 ** decimales) / 10 ** decimales;
+const aNumeroONulo = (v) => (v == null ? null : Number(v));
+/** NUMERIC (texto o número) -> texto con dos decimales, como el resto de la API; nulo se conserva. */
+const aMontoTexto = (v) => (v == null ? null : centavosATexto(aCentavos(v)));
+
+/**
+ * Hoja de costeo de UNA sede, corte por corte (`GET /:id/sedes/:sedeId/hoja`). Solo lee.
+ *
+ * - Congelada (`gasto_sede` guardado: lo mismo que usa `obtener` para `fuente_calculo: "congelado"`):
+ *   devuelve lo guardado en la fila de la sede y en los renglones de la recepción; no recalcula.
+ * - Sin congelar: calcula con `calcular` (la MISMA ruta de la liquidación: `montoSedes` + `costearSede`),
+ *   así que los números son los que congelaría liquidar ahora.
+ * - Sede sin costeo (desborde, bloqueada, `servicio_cero`): cortes con cantidad y costo base, costos en
+ *   `null` y el bloqueo.
+ *
+ * Los renglones son los de producto (`carne` / `adicional`), en el orden de la recepción; las vísceras
+ * no son cortes. Los cortes y los totales van como números en pesos (cantidad con hasta 3 decimales);
+ * los montos de la sede, como texto "123.45"; `costo_teorico`, `costo_real` y `factor`, como número.
+ *
+ * @param {number} preliquidacionId
+ * @param {number} sedeRowId id de la fila en `carnes_preliquidacion_sedes`
+ */
+export async function hojaSede(preliquidacionId, sedeRowId) {
+  const contexto = await leerContexto(preliquidacionId);
+  const fila = contexto.sedes.find((s) => String(s.id) === String(sedeRowId));
+  if (!fila) throw createError(404, "La sede no pertenece a la preliquidación.", "sede_no_encontrada");
+
+  const { cabecera } = contexto;
+  const congelada = fila.gasto_sede != null;
+
+  const [catalogo] = fila.recepcion?.sede_id != null ? await leerLista(T_SEDES_CATALOGO, { id: fila.recepcion.sede_id }) : [];
+
+  let montos = null; // gasto_sede, utilidad, servicio_compra, valor_*
+  let costeo = null; // { costoTeorico, costoReal, factor, advertencias }
+  let itemsCosteados = null; // renglones con costo_ajustado / costo_total
+  let bloqueos = [];
+
+  if (congelada) {
+    montos = Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, aMontoTexto(fila[c])]));
+    costeo = fila.costeo ?? null;
+    if (fila.motivo_bloqueo) bloqueos = [{ motivo: fila.motivo_bloqueo, detalle: fila.detalle_bloqueo ?? null }];
+  } else {
+    const calculo = await calcular(contexto);
+    const plan = calculo.porSede.get(String(fila.id));
+    if (plan) {
+      const { bloqueos: bloqueosCalculo, ...montosPlan } = plan;
+      montos = montosPlan;
+      bloqueos = bloqueosCalculo;
+      const final = calculo.detalle.get(String(fila.id));
+      costeo = final;
+      itemsCosteados = final.items;
+    } else if (calculo.gasto.bloqueo) {
+      bloqueos = [
+        { motivo: calculo.gasto.bloqueo, detalle: "El servicio de la preliquidación es cero: cargue el servicio para liquidar." },
+      ];
+    } else if (fila.motivo_bloqueo) {
+      bloqueos = [{ motivo: fila.motivo_bloqueo, detalle: fila.detalle_bloqueo ?? null }];
+    }
+  }
+
+  const renglones =
+    itemsCosteados ??
+    (await supabase.from(T_ITEMS).select("*").eq("recepcion_id", fila.recepcion_id).order("orden")).data?.filter(ES_PRODUCTO) ??
+    [];
+  const cortes = renglones.map((i) => ({
+    item_id: i.id,
+    descripcion: i.descripcion ?? null,
+    codigo_item: i.codigo_item ?? null,
+    tipo: i.tipo,
+    cantidad: Number(i.cantidad),
+    costo_base: Number(i.costo_base),
+    costo_ajustado: aNumeroONulo(i.costo_ajustado),
+    costo_total: aNumeroONulo(i.costo_total),
+  }));
+
+  const conCostos = cortes.length > 0 && cortes.every((c) => c.costo_total != null);
+  const totales = {
+    cantidad: redondear(cortes.reduce((a, c) => a + c.cantidad, 0), 3),
+    costo_teorico: redondear(cortes.reduce((a, c) => a + c.cantidad * c.costo_base, 0), 2),
+    costo_total: conCostos ? redondear(cortes.reduce((a, c) => a + c.costo_total, 0), 2) : null,
+  };
+
+  return {
+    preliquidacion_id: cabecera.id,
+    sede_row_id: fila.id,
+    sede_id: fila.recepcion?.sede_id ?? null,
+    sede_nombre: catalogo?.nombre ?? null,
+    recepcion_id: fila.recepcion_id,
+    especie: cabecera.especie,
+    estado: fila.estado,
+    congelada,
+    animales: Number(fila.animales),
+    ...(montos ?? Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null]))),
+    costo_teorico: aNumeroONulo(costeo?.costoTeorico),
+    costo_real: aNumeroONulo(costeo?.costoReal),
+    factor: aNumeroONulo(costeo?.factor),
+    cortes,
+    totales,
+    bloqueos,
+    advertencias: costeo?.advertencias ?? [],
+  };
+}
+
 const CAMPOS_MONTO_SEDE = ["gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas"];
 
 /**
