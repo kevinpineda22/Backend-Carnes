@@ -13,7 +13,7 @@ import {
 import { hoyBogota } from "../shared/fechaBogota.js";
 import { puedeEliminarRecepcion } from "../shared/eliminacionAdmin.js";
 import * as PreliquidacionModel from "./Preliquidacion.model.js";
-import { exigirSinPreliquidacion, preliquidacionIdDeRecepcion } from "./PreliquidacionGuardas.model.js";
+import { exigirSinPreliquidacion, preliquidacionIdDeRecepcion, preliquidacionIdsDeRecepciones } from "./PreliquidacionGuardas.model.js";
 import { recalcularVicerasPorNovillo, cantidadPorNovillo } from "../shared/visceras.js";
 import { COLUMNAS_RECEPCION, COLUMNAS_FIRMA_RECIBIDOR } from "../shared/recepcionColumnas.js";
 import { armarRecibidor, idRecibidorListado, validarFirma } from "../shared/finalizarProveedor.js";
@@ -134,7 +134,14 @@ export async function listar({
 
   const { data, error } = await q;
   if (error) throw new Error(`Error al listar recepciones: ${error.message}`);
-  return data || [];
+  const filas = data || [];
+  if (!filas.length) return filas;
+
+  // `preliquidacion_id` no está en SELECT_CABECERA (ver PreliquidacionGuardas.model.js): una sola
+  // lectura para toda la página. Un fallo se propaga como el de cualquier otra lectura; sin la
+  // columna (antes de sql/038) el helper devuelve un mapa vacío y todas quedan en null.
+  const vinculos = await preliquidacionIdsDeRecepciones(filas.map((f) => f.id));
+  return filas.map((f) => ({ ...f, preliquidacion_id: vinculos.get(String(f.id)) ?? null }));
 }
 
 /**
