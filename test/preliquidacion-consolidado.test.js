@@ -45,7 +45,7 @@ const corte = (id, recepcionId, orden, extra = {}) => ({
 });
 const congelado = (extra = {}) => ({
   gasto_sede: "400000.00", utilidad: "12.50", servicio_compra: "20000.00", valor_viceras: "0.00", valor_retomas: "0.00",
-  costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1200000, costoReal: 420000, factor: 0.35, advertencias: [] },
+  costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1200000, costoReal: 420000, factor: 0.65, advertencias: [] },
   ...extra,
 });
 
@@ -80,9 +80,13 @@ async function igualAHoja(id) {
   const s = sedeDe(r, id);
   const h = await Modelo.hojaSede(1, id);
   assert.equal(s.kilos, h.totales.cantidad, "kilos");
-  assert.equal(s.costo_teorico, h.totales.costo_teorico, "costo_teorico = totales de la hoja");
+  // Con costeo (vivo o guardado) el costo_teorico de la hoja manda; sin costeo la hoja no trae teorico y sale de los renglones.
+  assert.equal(s.costo_teorico, h.costo_teorico ?? h.totales.costo_teorico, "costo_teorico = el de la hoja");
   assert.equal(s.costo_real, h.costo_real, "costo_real");
   assert.equal(s.factor, h.factor, "factor");
+  if (s.costo_teorico != null && s.costo_real != null && s.factor != null) {
+    assert.ok(Math.abs(s.factor - (s.costo_teorico - s.costo_real) / s.costo_teorico) < 1e-9, "factor = (teorico - real) / teorico");
+  }
   return { r, s, h };
 }
 
@@ -91,6 +95,7 @@ test("consolidado en vivo: kilos, costo_teorico, costo_real y factor son los de 
   assert.equal(s.fuente_calculo, "previsualizado");
   assert.equal(s.kilos, 100.5);
   assert.equal(s.costo_teorico, 60 * 12000 + 40.5 * 9000);
+  assert.equal(h.totales.costo_teorico, s.costo_teorico);
   assert.equal(typeof s.costo_real, "number");
   assert.equal(typeof s.factor, "number");
   assert.equal(s.costo_teorico, h.costo_teorico, "coincide tambien con el costo_teorico del costeo de la hoja");
@@ -99,10 +104,12 @@ test("consolidado en vivo: kilos, costo_teorico, costo_real y factor son los de 
 
 test("consolidado congelado: sale del costeo guardado, igual que la hoja", async () => {
   tablas.carnes_preliquidacion_sedes[0] = sede({ id: 11, estado: "calculada", ...congelado() });
-  const { s } = await igualAHoja(11);
+  const { s, h } = await igualAHoja(11);
   assert.equal(s.fuente_calculo, "congelado");
+  assert.equal(s.costo_teorico, 1200000, "teorico guardado, no la suma de renglones");
+  assert.equal(s.costo_teorico, h.costo_teorico);
   assert.equal(s.costo_real, 420000);
-  assert.equal(s.factor, 0.35);
+  assert.equal(s.factor, 0.65);
   assert.equal(s.kilos, 100.5);
 });
 
@@ -110,9 +117,11 @@ test("consolidado de sede bloqueada con costeo guardado: costo_real y factor gua
   tablas.carnes_preliquidacion_sedes[0] = sede({
     id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "x", ...congelado({ utilidad: "-5.00" }),
   });
-  const { s } = await igualAHoja(11);
+  const { s, h } = await igualAHoja(11);
+  assert.equal(s.costo_teorico, 1200000);
+  assert.equal(s.costo_teorico, h.costo_teorico);
   assert.equal(s.costo_real, 420000);
-  assert.equal(s.factor, 0.35);
+  assert.equal(s.factor, 0.65);
 });
 
 test("consolidado de sede bloqueada sin costeo: kilos y costo_teorico si; costo_real y factor nulos (igual que la hoja)", async () => {
@@ -161,38 +170,72 @@ test("consolidado: no agrega consultas por sede (una sola lectura de renglones)"
   assert.equal(consultas.filter((t) => t === "carnes_recepcion_items").length, 1);
 });
 
-test("totales_sedes: suma solo las sedes con costeo completo y redondea a 2 decimales", async () => {
+test("totales_sedes: animales y kilos suman todas las sedes; los montos solo las incluidas", async () => {
   tablas.carnes_preliquidacion_sedes = [
     sede({ id: 11, estado: "calculada", animales: 4, orden: 1, ...congelado() }),
     sede({ id: 12, estado: "calculada", animales: 6, orden: 2, recepcion_id: 102, ...congelado({
-      costeo_animales: 6, gasto_sede: "600000.10", utilidad: "-3.25", servicio_compra: "30000.00",
-      costeo: { costoTeorico: 1500000, costoReal: 630000.1, factor: 0.42, advertencias: [] },
+      costeo_animales: 6, gasto_sede: "600000.10", utilidad: "-3.25", servicio_compra: "30000.00", valor_viceras: "1500.50",
+      costeo: { costoTeorico: 1500000, costoReal: 630000.1, factor: 0.58, advertencias: [] },
     }) }),
     sede({ id: 13, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "x", recepcion_id: 103, animales: 3, orden: 3 }),
   ];
   const r = await Modelo.obtener(1);
   assert.deepEqual(r.totales_sedes, {
-    animales: 10,
-    kilos: 250.5,
+    animales: 13,
+    kilos: 270.75,
     gasto_sede: 1000000.1,
     servicio_compra: 50000,
     costo_real: 1050000.1,
-    costo_teorico: 60 * 12000 + 40.5 * 9000 + 1500000,
+    costo_teorico: 2700000,
     utilidad: 9.25,
+    complemento: 1500.5,
     sedes_incluidas: 2,
     sedes_excluidas: 1,
+    sedes_total: 3,
   });
   for (const v of Object.values(r.totales_sedes)) assert.equal(typeof v, "number");
 });
 
-test("totales_sedes: sin ninguna sede con costeo todo es 0 y no explota", async () => {
+test("totales_sedes en cerdo: el complemento es la suma de valor_retomas de las incluidas", async () => {
+  tablas.carnes_preliquidaciones[0] = cabecera({ especie: "cerdo" });
+  tablas.carnes_preliquidacion_sedes = [
+    sede({ id: 11, estado: "calculada", ...congelado({ valor_retomas: "5000.25", valor_viceras: "7.00" }) }),
+    sede({ id: 12, estado: "calculada", recepcion_id: 102, animales: 6, ...congelado({ costeo_animales: 6, valor_retomas: "100.00", valor_viceras: "9.00" }) }),
+  ];
+  const r = await Modelo.obtener(1);
+  assert.equal(r.totales_sedes.complemento, 5100.25);
+});
+
+test("totales_sedes: sin ninguna sede incluida los montos son null (no 0); animales y kilos si se suman", async () => {
   tablas.carnes_preliquidaciones[0] = cabecera({ servicio_por_animal: "0.00" });
   tablas.carnes_preliquidacion_gastos = [];
   const r = await Modelo.obtener(1);
   assert.deepEqual(r.totales_sedes, {
-    animales: 0, kilos: 0, gasto_sede: 0, servicio_compra: 0, costo_real: 0, costo_teorico: 0, utilidad: 0,
-    sedes_incluidas: 0, sedes_excluidas: 2,
+    animales: 10, kilos: 250.5, gasto_sede: null, servicio_compra: null, costo_real: null, costo_teorico: null,
+    utilidad: null, complemento: null, sedes_incluidas: 0, sedes_excluidas: 2, sedes_total: 2,
   });
+});
+
+test("consolidado en vivo: el costo_teorico por sede es el del costeo vivo (hoja) para cada sede", async () => {
+  const r = await Modelo.obtener(1);
+  for (const s of r.sedes) {
+    const h = await Modelo.hojaSede(1, s.id);
+    assert.equal(s.costo_teorico, h.costo_teorico);
+  }
+});
+
+test("obtener: una lectura de renglones fallida no oculta el bloqueo servicio_cero en calculo", async () => {
+  tablas.carnes_preliquidaciones[0] = cabecera({ servicio_por_animal: "0.00" });
+  tablas.carnes_preliquidacion_gastos = [];
+  const original = tablas.carnes_recepcion_items;
+  Object.defineProperty(tablas, "carnes_recepcion_items", { get() { throw new Error("falla de lectura"); }, configurable: true });
+  try {
+    const r = await Modelo.obtener(1);
+    assert.equal(r.calculo?.bloqueo, "servicio_cero");
+    assert.ok(r.calculo_error);
+  } finally {
+    Object.defineProperty(tablas, "carnes_recepcion_items", { value: original, writable: true, configurable: true, enumerable: true });
+  }
 });
 
 test("totales_sedes en vivo: coincide con la suma de las hojas de las sedes", async () => {
@@ -204,6 +247,7 @@ test("totales_sedes en vivo: coincide con la suma de las hojas de las sedes", as
   assert.equal(r.totales_sedes.utilidad, suma((h) => h.utilidad));
   assert.equal(r.totales_sedes.kilos, suma((h) => h.totales.cantidad));
   assert.equal(r.totales_sedes.animales, 10);
+  assert.equal(r.totales_sedes.costo_teorico, suma((h) => h.costo_teorico));
 });
 
 test("obtener conserva los campos existentes de cada sede", async () => {
