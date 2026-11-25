@@ -798,9 +798,9 @@ const aMontoTexto = (v) => (v == null ? null : centavosATexto(aCentavos(v)));
 /**
  * Hoja de costeo de UNA sede, corte por corte (`GET /:id/sedes/:sedeId/hoja`). Solo lee.
  *
- * - Congelada (`gasto_sede` guardado: lo mismo que usa `obtener` para `fuente_calculo: "congelado"`):
- *   devuelve lo guardado en la fila de la sede y en los renglones de la recepción; no recalcula.
- * - Sin congelar: calcula con `calcular` (la MISMA ruta de la liquidación: `montoSedes` + `costearSede`),
+ * - Congelada (`gasto_sede` guardado Y autoritativo: estado de monto fijo, o costeo vigente en una sede que
+ *   `calcular` costea): devuelve lo guardado en la fila de la sede y en los renglones; no recalcula.
+ * - Sin congelar (incluye costeo guardado desactualizado, `costeo_previo_obsoleto: true`): calcula con `calcular` (la MISMA ruta de la liquidación: `montoSedes` + `costearSede`),
  *   así que los números son los que congelaría liquidar ahora.
  * - Sede sin costeo (desborde, bloqueada, `servicio_cero`): cortes con cantidad y costo base, costos en
  *   `null` y el bloqueo.
@@ -818,7 +818,12 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
   if (!fila) throw createError(404, "La sede no pertenece a la preliquidación.", "sede_no_encontrada");
 
   const { cabecera } = contexto;
-  const congelada = fila.gasto_sede != null;
+  // Lo guardado solo es autoritativo si la liquidación no lo va a cambiar: monto fijo (`calcular` lo respeta),
+  // o costeo vigente (`costeoVigente`, la misma guarda de `planearEnvios`) de una sede que `calcular` sí costea.
+  const tieneCosteoGuardado = fila.gasto_sede != null;
+  const vigente = costeoVigente(fila, cabecera);
+  const congelada = tieneCosteoGuardado && (ESTADOS_CON_MONTO_FIJO.has(fila.estado) || (vigente && !noCosteable(fila)));
+  const costeoPrevioObsoleto = tieneCosteoGuardado && !congelada && !vigente;
 
   const [catalogo] = fila.recepcion?.sede_id != null ? await leerLista(T_SEDES_CATALOGO, { id: fila.recepcion.sede_id }) : [];
 
@@ -832,7 +837,12 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     costeo = fila.costeo ?? null;
     if (fila.motivo_bloqueo) bloqueos = [{ motivo: fila.motivo_bloqueo, detalle: fila.detalle_bloqueo ?? null }];
   } else {
-    const calculo = await calcular(contexto);
+    let calculo;
+    try {
+      calculo = await calcular(contexto);
+    } catch (error) {
+      throw createError(422, `No se pudo calcular la hoja de la sede: ${error.message}`, "calculo_error");
+    }
     const plan = calculo.porSede.get(String(fila.id));
     if (plan) {
       const { bloqueos: bloqueosCalculo, ...montosPlan } = plan;
@@ -850,10 +860,12 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     }
   }
 
-  const renglones =
-    itemsCosteados ??
-    (await supabase.from(T_ITEMS).select("*").eq("recepcion_id", fila.recepcion_id).order("orden")).data?.filter(ES_PRODUCTO) ??
-    [];
+  let renglones = itemsCosteados;
+  if (!renglones) {
+    const { data, error } = await supabase.from(T_ITEMS).select("*").eq("recepcion_id", fila.recepcion_id).order("orden");
+    if (error) throw new Error(`Error al leer los renglones de la recepción: ${error.message}`);
+    renglones = (data ?? []).filter(ES_PRODUCTO);
+  }
   const cortes = renglones.map((i) => ({
     item_id: i.id,
     descripcion: i.descripcion ?? null,
@@ -881,6 +893,7 @@ export async function hojaSede(preliquidacionId, sedeRowId) {
     especie: cabecera.especie,
     estado: fila.estado,
     congelada,
+    costeo_previo_obsoleto: costeoPrevioObsoleto,
     animales: Number(fila.animales),
     ...(montos ?? Object.fromEntries(CAMPOS_MONTO_SEDE.map((c) => [c, null]))),
     costo_teorico: aNumeroONulo(costeo?.costoTeorico),

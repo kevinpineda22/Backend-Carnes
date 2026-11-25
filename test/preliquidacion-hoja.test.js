@@ -13,6 +13,7 @@ let tablas = {};
 let rpcs = [];
 let escrituras = [];
 let manejadores = {};
+let erroresTabla = {};
 
 class Q {
   constructor(t) { this.t = t; this.f = []; }
@@ -25,7 +26,10 @@ class Q {
   filas() { return (tablas[this.t] || []).filter((r) => this.f.every((g) => g(r))); }
   maybeSingle() { return Promise.resolve({ data: this.filas()[0] ?? null, error: null }); }
   single() { return this.maybeSingle(); }
-  then(res, rej) { return Promise.resolve({ data: this.filas(), error: null }).then(res, rej); }
+  then(res, rej) {
+    if (erroresTabla[this.t]) return Promise.resolve({ data: null, error: { message: erroresTabla[this.t] } }).then(res, rej);
+    return Promise.resolve({ data: this.filas(), error: null }).then(res, rej);
+  }
 }
 const supabaseFalso = {
   from: (t) => new Q(t),
@@ -114,7 +118,7 @@ beforeEach(() => {
       corte(4, 102, 1, { cantidad: "150", costo_base: "10000" }),
     ],
   };
-  rpcs = []; escrituras = [];
+  rpcs = []; escrituras = []; erroresTabla = {};
   manejadores = {
     carnes_preliq_liquidar: rpcLiquidar,
     carnes_preliq_congelar_sede: rpcCongelar,
@@ -132,7 +136,7 @@ const falla = async (fn, estado) => {
 const CLAVES = [
   "preliquidacion_id", "sede_row_id", "sede_id", "sede_nombre", "recepcion_id", "especie", "estado", "congelada",
   "animales", "gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas",
-  "costo_teorico", "costo_real", "factor", "cortes", "totales", "bloqueos", "advertencias",
+  "costo_teorico", "costo_real", "factor", "cortes", "totales", "bloqueos", "advertencias", "costeo_previo_obsoleto",
 ];
 
 test("hoja en vivo: tiene la forma acordada y no escribe nada", async () => {
@@ -306,4 +310,94 @@ test("hoja en vivo coincide con la previsualización de la sede (misma ruta de c
       assert.equal(h[c], p[c], c);
     }
   }
+});
+
+// ─── Vigencia del costeo guardado, error de lectura y error de cálculo ─────
+
+test("hoja de una sede calculada con orden_version desfasado: no se muestra lo guardado, se calcula en vivo y se avisa", async () => {
+  await liquidarAhora();
+  // Se recalculan las sedes con montos viejos y un cambio posterior del conjunto de sedes.
+  const fila = tablas.carnes_preliquidacion_sedes[0];
+  assert.equal(fila.estado, "calculada");
+  Object.assign(fila, { gasto_sede: "1.00", utilidad: "1.00", servicio_compra: "1.00" });
+  tablas.carnes_preliquidaciones[0].orden_version += 1;
+
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, false);
+  assert.equal(h.costeo_previo_obsoleto, true);
+
+  const prev = await Modelo.previsualizar(1);
+  const p = prev.sedes.find((x) => x.sede_id === 11);
+  for (const c of ["gasto_sede", "utilidad", "servicio_compra", "valor_viceras", "valor_retomas"]) {
+    assert.equal(h[c], p[c], c);
+  }
+  assert.notEqual(h.gasto_sede, "1.00");
+});
+
+test("hoja de una sede calculada con costeo vigente: valores guardados, sin aviso de obsolescencia", async () => {
+  await liquidarAhora();
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, true);
+  assert.equal(h.costeo_previo_obsoleto, false);
+});
+
+test("hoja de una sede en estado de monto fijo: usa lo guardado aunque el costeo ya no sea vigente", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "enviada", gasto_sede: "123.45", utilidad: "10.00", servicio_compra: "5.00",
+    valor_viceras: "0.00", valor_retomas: "0.00", costeo_orden_version: 1, costeo_animales: 4,
+    costeo: { costoTeorico: 999, costoReal: 5.5, factor: 0.25, advertencias: [] },
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, true);
+  assert.equal(h.gasto_sede, "123.45");
+  assert.equal(h.costeo_previo_obsoleto, false);
+});
+
+test("hoja de una sede simulada con costeo desactualizado: se calcula en vivo (la liquidación la recostea)", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "simulada", gasto_sede: "1.00", utilidad: "1.00", servicio_compra: "1.00",
+    valor_viceras: "0.00", valor_retomas: "0.00", costeo_orden_version: 1, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  assert.equal(h.congelada, false);
+  assert.equal(h.costeo_previo_obsoleto, true);
+  assert.notEqual(h.gasto_sede, "1.00");
+});
+
+test("hoja de una sede bloqueada con gasto_sede guardado: coincide con calcular (sin costeo), no con lo guardado", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "bloqueada", motivo_bloqueo: "utilidad_negativa", detalle_bloqueo: "Utilidad negativa",
+    gasto_sede: "500.00", utilidad: "-5.00", servicio_compra: "1.00", valor_viceras: "0.00", valor_retomas: "0.00",
+    costeo_orden_version: 5, costeo_animales: 4, costeo: { costoTeorico: 1 },
+  });
+  const h = await Modelo.hojaSede(1, 11);
+  const prev = await Modelo.previsualizar(1);
+  assert.equal(prev.sedes.some((x) => x.sede_id === 11), false);
+  assert.equal(h.congelada, false);
+  assert.equal(h.costeo_previo_obsoleto, false);
+  assert.equal(h.gasto_sede, null);
+  assert.deepEqual(h.bloqueos, [{ motivo: "utilidad_negativa", detalle: "Utilidad negativa" }]);
+});
+
+test("hoja: un error al leer los renglones se propaga (no responde con cortes vacíos)", async () => {
+  tablas.carnes_preliquidacion_sedes[0] = sede({
+    id: 11, estado: "enviada", gasto_sede: "123.45", utilidad: "10.00", servicio_compra: "5.00",
+    valor_viceras: "0.00", valor_retomas: "0.00", costeo: { costoTeorico: 1, costoReal: 1, factor: 1, advertencias: [] },
+  });
+  erroresTabla.carnes_recepcion_items = "fallo de lectura";
+  await assert.rejects(() => Modelo.hojaSede(1, 11), /renglones|fallo de lectura/);
+});
+
+test("hoja: si el cálculo lanza por datos inválidos responde 422 calculo_error", async () => {
+  tablas.carnes_preliquidaciones[0].servicio_por_animal = "no-numerico";
+  await assert.rejects(
+    () => Modelo.hojaSede(1, 11),
+    (e) => {
+      assert.equal(e.statusCode, 422);
+      assert.equal(e.codigo, "calculo_error");
+      assert.equal(e.expose, true);
+      assert.match(e.message, /No se pudo calcular la hoja/);
+      return true;
+    },
+  );
 });
