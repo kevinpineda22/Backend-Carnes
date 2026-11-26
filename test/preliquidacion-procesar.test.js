@@ -560,21 +560,115 @@ test("JD S2: un enviando abandonado con intentos agotados pasa a error con reint
   assert.equal(llamadas.length, 0);
 });
 
-// ─── Vísceras: el tiempo que queda viaja a procesarSede ────────────────────
 
-test("procesarSede recibe `restante` (el tiempo que queda para el CEI de vísceras)", async () => {
-  const restante = () => 99000;
-  await procesar({ restante });
-  assert.ok(llamadas.length > 0);
-  assert.equal(llamadas[0].ctx.restante, restante);
+// ─── Vísceras (CEI): DESPUÉS de todas las oficiales, con presupuesto acotado ─
+
+const PRESUPUESTO_CEI_MAX = 90_000;
+const MINIMO_CEI = 35_000;
+
+const conRegistro = (orden, { resultado = "enviada", extra = {} } = {}) => ({
+  procesarSede: async (s) => {
+    orden.push(`oficial:${s.id}`);
+    return { resultado, sede_version: 9, ...extra };
+  },
+  enviarViscerasSede: async (s, ctx) => {
+    orden.push(`cei:${s.id}`);
+    orden.cei ??= [];
+    orden.cei.push({ sede: s, ctx });
+    return { estado: "ok" };
+  },
 });
 
-test("sin `restante` explícito se deriva del presupuesto: con presupuesto alcanza, sin él es null", async () => {
-  let hay = true;
-  await procesar({ hayPresupuesto: () => hay });
-  const r = llamadas[0].ctx.restante;
-  assert.equal(typeof r, "function");
-  assert.ok(r() >= 35000);
-  hay = false;
-  assert.equal(r(), null);
+test("CEI: las oficiales de TODAS las sedes terminan antes de mandar cualquier CEI", async () => {
+  const orden = [];
+  await procesar({ ...conRegistro(orden), restante: () => 200_000 });
+  assert.deepEqual(orden.filter((x) => typeof x === "string"), ["oficial:11", "oficial:12", "cei:11", "cei:12"]);
+});
+
+test("CEI: el CEI de cada sede lleva su versión de cierre, la especie y un presupuesto acotado a 90 s", async () => {
+  const orden = [];
+  await procesar({ ...conRegistro(orden), restante: () => 200_000 });
+  assert.equal(orden.cei.length, 2);
+  for (const { ctx } of orden.cei) {
+    assert.equal(ctx.especie, "res");
+    assert.equal(ctx.sedeVersion, 9);
+    assert.equal(ctx.restante(), PRESUPUESTO_CEI_MAX, "min(restante, 90 s)");
+  }
+});
+
+test("CEI: con menos tiempo que el tope, el presupuesto es lo que queda", async () => {
+  const orden = [];
+  await procesar({ ...conRegistro(orden), restante: () => 60_000 });
+  assert.equal(orden.cei[0].ctx.restante(), 60_000);
+});
+
+test("CEI: sin tiempo suficiente NO se arranca (sin_tiempo, lo toma el barrido) y las oficiales no se ven afectadas", async () => {
+  const orden = [];
+  const r = await procesar({ ...conRegistro(orden), restante: () => MINIMO_CEI - 1 });
+  assert.deepEqual(orden.filter((x) => typeof x === "string"), ["oficial:11", "oficial:12"]);
+  assert.equal(r.enviadas, 2);
+  assert.deepEqual(r.visceras, { sin_tiempo: 2 });
+  assert.equal(r.sedes.find((x) => x.sede_id === 11).visceras, "sin_tiempo");
+});
+
+test("CEI: el presupuesto se vuelve a medir antes de cada sede: cuando se acaba, las demás quedan sin_tiempo", async () => {
+  const orden = [];
+  const mediciones = [200_000, 20_000]; // una medición por CEI: la 1ª alcanza, la 2ª ya no
+  let n = 0;
+  const restante = () => mediciones[Math.min(n++, mediciones.length - 1)];
+  const r = await procesar({ ...conRegistro(orden), restante });
+  assert.equal(orden.cei.length, 1, "solo el primer CEI arrancó");
+  assert.equal(r.visceras.ok, 1);
+  assert.equal(r.visceras.sin_tiempo, 1);
+});
+
+test("CEI: solo las sedes que quedaron enviadas mandan CEI (error, sin_confirmar, simulada no)", async () => {
+  for (const resultado of ["error_envio", "sin_confirmar", "simulada", "no_reclamable"]) {
+    const orden = [];
+    await procesar({ ...conRegistro(orden, { resultado }), restante: () => 200_000 });
+    assert.equal(orden.cei ?? undefined, undefined, resultado);
+  }
+});
+
+test("CEI: cerdo y SIESA apagado no mandan CEI", async () => {
+  let orden = [];
+  tablas.carnes_preliquidaciones = [cabecera({ especie: "cerdo" })];
+  await procesar({ ...conRegistro(orden), restante: () => 200_000 });
+  assert.equal(orden.cei, undefined);
+
+  tablas.carnes_preliquidaciones = [cabecera()];
+  orden = [];
+  await procesar({ ...conRegistro(orden), restante: () => 200_000, siesaActivo: false });
+  assert.equal(orden.cei, undefined);
+});
+
+test("CEI: va DESPUÉS del auto-cierre (cerrar la preliquidación no depende del CEI ni espera sus POST)", async () => {
+  const orden = [];
+  await procesar({
+    ...conRegistro(orden, { extra: { efectos: [{ tipo: "intentar_autocierre" }] } }),
+    restante: () => 200_000,
+    intentarAutocierre: async () => { orden.push("autocierre"); return { cerrada: true }; },
+  });
+  assert.deepEqual(orden.filter((x) => typeof x === "string"), ["oficial:11", "oficial:12", "autocierre", "cei:11", "cei:12"]);
+});
+
+test("CEI: una excepción del envío del CEI no tumba la corrida ni las demás sedes", async () => {
+  const orden = [];
+  const r = await procesar({
+    ...conRegistro(orden),
+    restante: () => 200_000,
+    enviarViscerasSede: async (s) => { orden.push(`cei:${s.id}`); if (s.id === 11) throw new Error("boom"); return { estado: "ok" }; },
+    log: { error() {}, warn() {} },
+  });
+  assert.deepEqual(orden.filter((x) => typeof x === "string"), ["oficial:11", "oficial:12", "cei:11", "cei:12"]);
+  assert.equal(r.enviadas, 2);
+  assert.equal(r.visceras.error, 1);
+  assert.equal(r.visceras.ok, 1);
+});
+
+test("CEI: sin `restante` propio se deriva del presupuesto: con presupuesto alcanza el mínimo, sin él no se manda", async () => {
+  const orden = [];
+  await procesar({ ...conRegistro(orden), hayPresupuesto: () => true });
+  assert.equal(orden.cei.length, 2);
+  assert.ok(orden.cei[0].ctx.restante() >= MINIMO_CEI);
 });

@@ -359,6 +359,42 @@ export function viscerasAlCierre() {
   return String(process.env.CARNES_SIESA_VISCERAS_AL_CIERRE || "").toLowerCase() === "true";
 }
 
+/** Motivos ya avisados en este proceso: el aviso de `viscerasPreliquidacionDesde` sale una sola vez por motivo. */
+const avisosPisoVisceras = new Set();
+
+/** Solo para pruebas: permite volver a emitir el aviso. */
+export function reiniciarAvisoViscerasPreliquidacionDesde() {
+  avisosPisoVisceras.clear();
+}
+
+/**
+ * Piso de activación del CEI de vísceras que lleva la preliquidación: `CARNES_VISCERAS_PRELIQ_DESDE`
+ * (fecha o fecha y hora ISO; se recomienda con zona, p. ej. `2026-12-01T00:00:00-05:00`). Se lee en cada llamada.
+ *
+ * Solo salen CEI de sedes cuya entrada OFICIAL quedó ok a partir de ese instante (inclusive): al desplegar, las
+ * sedes enviadas antes no se mandan ni las reintenta el barrido. Es el freno contra el reenvío masivo de la historia.
+ *
+ * FALLA SEGURO: sin la variable, vacía o con una fecha inválida NO sale ningún CEI por la preliquidación. Se avisa
+ * una sola vez por proceso (log.warn). En el despliegue hay que definirla explícitamente.
+ *
+ * @returns {{desde: Date|null, motivo: null|"sin_definir"|"invalida"}}
+ */
+export function viscerasPreliquidacionDesde({ log = console } = {}) {
+  const crudo = leer("CARNES_VISCERAS_PRELIQ_DESDE");
+  const t = crudo ? Date.parse(crudo) : NaN;
+  if (Number.isFinite(t)) return { desde: new Date(t), motivo: null };
+  const motivo = crudo ? "invalida" : "sin_definir";
+  if (!avisosPisoVisceras.has(motivo)) {
+    avisosPisoVisceras.add(motivo);
+    log?.warn?.(
+      motivo === "invalida"
+        ? `CARNES_VISCERAS_PRELIQ_DESDE tiene una fecha inválida ("${crudo}"): no sale ningún CEI de vísceras por la preliquidación hasta corregirla.`
+        : "CARNES_VISCERAS_PRELIQ_DESDE no está definida: no sale ningún CEI de vísceras por la preliquidación hasta definirla (fecha ISO de activación).",
+    );
+  }
+  return { desde: null, motivo };
+}
+
 /**
  * Endpoint y credenciales de las CONSULTAS de Connekta (solo lectura).
  *

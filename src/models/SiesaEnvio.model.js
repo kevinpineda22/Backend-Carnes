@@ -67,6 +67,7 @@ import {
   oficialCompleta,
   decidirCierreOficial,
 } from "../shared/siesaPorFecha.js";
+import { alertaDeViscerasSede } from "../shared/viscerasPreliquidacion.js";
 import {
   armarAjustesViscerasLiquidacion,
   guardaAjustesPorSede,
@@ -77,6 +78,7 @@ import {
   esperaParaEnvio,
   PRESUPUESTO_CIERRE_RECEPCION_MS,
   ESPERA_MINIMA_CIERRE_MS,
+  MINIMO_CEI_PRELIQUIDACION_MS,
   ESPERA_MINIMA_AJUSTE_MS,
   ESPERA_MAXIMA_COMPENSACION_MS,
   TIPO_AJUSTE_VISCERAS,
@@ -131,6 +133,7 @@ import {
   siesaConfigurado,
   siesaActivo,
   viscerasAlCierre,
+  viscerasPreliquidacionDesde,
   faltantesSiesa,
   terceroCarnes,
   TERCEROS_CARNES,
@@ -1659,18 +1662,15 @@ async function viscerasTrasConfirmarOficial(oficial, sincronizada, { inicio }) {
           minimoMs: ESPERA_MINIMA_CIERRE_MS,
         }),
     });
-    if (r.estado === "error" && !r.repetido) {
+    const alerta = alertaDeViscerasSede(r, {
+      preliquidacionId: sincronizada.preliquidacionId,
+      sedeId: sincronizada.sedeId,
+      ocurrencia: sincronizada.sedeVersion,
+      recepcionId: oficial.recepcion_id,
+    });
+    if (alerta) {
       const { encolarAlerta } = await import("../services/preliquidacionAlertas.js");
-      await encolarAlerta(
-        {
-          evento: "visceras_error",
-          preliquidacionId: sincronizada.preliquidacionId,
-          sedeId: sincronizada.sedeId,
-          ocurrencia: sincronizada.sedeVersion,
-          detalle: { error: r.error ?? null, recepcion_id: oficial.recepcion_id },
-        },
-        { log: console },
-      );
+      await encolarAlerta(alerta, { log: console });
     }
   } catch (e) {
     console.error(`🔴 SIESA envío #${oficial.id}: las vísceras de la sede no se pudieron mandar (${e?.message}).`);
@@ -2720,9 +2720,10 @@ const alcanceLiquidacion = (ev, item, liquidacionId, { esperaPrimerEnvioMs } = {
 const alcanceRecepcion = (
   recepcion,
   armado,
-  { alCierre = false, presupuestoMs = null, maxEsperaMs = null } = {},
+  { alCierre = false, presupuestoMs = null, maxEsperaMs = null, sinCompensar = false } = {},
 ) => ({
   armado,
+  ...(sinCompensar ? { sinCompensar: true } : {}),
   // Al cerrar, el recibidor espera la respuesta (el front corta a los 120 s): la
   // misma espera que la inicial y un presupuesto total para todo lo que se haga
   // acá. Lo que no alcance queda sin_confirmar / pendiente para el flujo de siempre.
@@ -2814,9 +2815,10 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
         if (espera < ESPERA_MINIMA_CIERRE_MS) espera = null;
       }
       if (espera === null) {
-        throw createError(
-          503,
-          "Leer la liquidación tardó demasiado para mandar el ajuste con margen. Volvé a intentar.",
+        // `sinTiempo`: el CEI de la preliquidación lo traduce a `sin_tiempo` (sin alerta; lo retoma el barrido).
+        throw Object.assign(
+          createError(503, "Leer la liquidación tardó demasiado para mandar el ajuste con margen. Volvé a intentar."),
+          { sinTiempo: true },
         );
       }
     } else {
@@ -2852,6 +2854,16 @@ async function ejecutarAjuste({ alcance, por, inicio }) {
     if (!soloFaltantes(fila.respuesta)) return resultado();
 
     const faltantes = parsearFaltantes(fila.respuesta);
+
+    // Camino automático (CEI de la preliquidación): no se generan documentos de compensación sin que una persona
+    // lo decida. El rechazo queda en la fila (con su correo) y la compensación sale desde el reintento manual.
+    if (alcance.sinCompensar) {
+      return resultado({
+        detalle:
+          "SIESA rechazó el CEI por inventario insuficiente. El envío automático no compensa faltantes: " +
+          "reintentalo a mano desde el panel de SIESA Talleres para que se compense.",
+      });
+    }
 
     // El conector propio de carnes todavía no está: se dice qué falta.
     const sinConector = bloqueoAjusteFaltante();
@@ -3156,9 +3168,10 @@ async function mandarViscerasRecepcion({
   alCierre = false,
   presupuestoMs = null,
   maxEsperaMs = null,
+  sinCompensar = false,
 }) {
   const r = await ejecutarAjuste({
-    alcance: alcanceRecepcion(recepcion, armado, { alCierre, presupuestoMs, maxEsperaMs }),
+    alcance: alcanceRecepcion(recepcion, armado, { alCierre, presupuestoMs, maxEsperaMs, sinCompensar }),
     por,
     inicio,
   });
@@ -3256,9 +3269,6 @@ export async function enviarViscerasRecepcion(recepcionId, por, { inicio = Date.
 /** Intentos automáticos con error antes de dejar de insistir: el resto lo decide una persona. */
 export const MAX_INTENTOS_VISCERAS_AUTOMATICOS = 3;
 
-/** Margen sobre el mínimo del POST, para que el presupuesto no se agote leyendo la base. */
-const MARGEN_VISCERAS_PRELIQUIDACION_MS = 5_000;
-
 /** El ajuste de vísceras del esquema anterior (por sede o consolidado) que ya lleva esta recepción, o null. */
 async function ajusteViscerasVigenteDe(recepcionId) {
   const id = Number(recepcionId);
@@ -3286,7 +3296,16 @@ async function ajusteViscerasVigenteDe(recepcionId) {
   return porSede.data || consolidado.data || null;
 }
 
-/** Cuántos intentos del CEI de esta recepción terminaron en error. */
+/**
+ * Cuántos INTENTOS del CEI de esta recepción terminaron en error (no cuántas filas).
+ *
+ * Un intento puede dejar varias filas `error`: `ejecutarAjuste` escribe una por ronda (hasta
+ * MAX_RONDAS_AJUSTE) y entre una y otra manda una compensación por faltante. Esa compensación lleva el id de la
+ * fila que la originó (`envio_origen_id`): una fila `error` con una compensación `ok` NO cerró el intento (el
+ * flujo siguió y reenvió el CEI en otra fila), así que no se cuenta. Cada intento aporta entonces exactamente una
+ * fila: la última, la que no tuvo una compensación exitosa detrás. Sin sql/021 no hay compensaciones y cada fila
+ * es un intento.
+ */
 async function intentosFallidosViscerasDe(recepcionId) {
   const { data, error } = await supabase
     .from(TABLA)
@@ -3295,7 +3314,39 @@ async function intentosFallidosViscerasDe(recepcionId) {
     .eq("tipo", TIPO_VISCERAS_RECEPCION)
     .eq("estado", "error");
   if (error) fallarSiFaltaMigracion(error, "Error al leer los envíos", MIGRACIONES);
-  return (data || []).length;
+  const filas = data || [];
+  if (!filas.length) return 0;
+
+  const { data: compensadas, error: errorCompensadas } = await supabase
+    .from(TABLA)
+    .select("envio_origen_id")
+    .eq("tipo", TIPO_AJUSTE_FALTANTE)
+    .eq("estado", "ok")
+    .in(
+      "envio_origen_id",
+      filas.map((f) => f.id),
+    );
+  if (errorCompensadas) {
+    if (esMigracionFaltante(errorCompensadas)) return filas.length;
+    fallarSiFaltaMigracion(errorCompensadas, "Error al leer los envíos", MIGRACIONES);
+  }
+  const continuadas = new Set((compensadas || []).map((c) => Number(c.envio_origen_id)));
+  return filas.filter((f) => !continuadas.has(Number(f.id))).length;
+}
+
+/**
+ * ¿Esta oficial ya puede acompañarse de su CEI? `null` si sí; si no, el estado a devolver:
+ *   sin_activacion        CARNES_VISCERAS_PRELIQ_DESDE no está definida o es inválida (falla seguro: nada sale)
+ *   anterior_a_activacion la oficial quedó ok antes del piso: es historia, no se reenvía ni la reintenta el barrido
+ *
+ * El instante en que la oficial quedó ok es `resuelto_at` (una confirmación a mano) o, si no, `enviado_at`.
+ */
+function motivoSinActivacionVisceras(oficial) {
+  const { desde } = viscerasPreliquidacionDesde();
+  if (!desde) return "sin_activacion";
+  if (!oficial) return null;
+  const okAt = new Date(oficial.resuelto_at ?? oficial.enviado_at).getTime();
+  return Number.isFinite(okAt) && okAt >= desde.getTime() ? null : "anterior_a_activacion";
 }
 
 /**
@@ -3305,12 +3356,19 @@ async function intentosFallidosViscerasDe(recepcionId) {
  * Estados de la respuesta (además de los de un envío: ok, error, enviando, sin_confirmar):
  *   apagado      CARNES_SIESA_ACTIVO no es true: no se lee ni se manda nada
  *   no_aplica    no es de res (el cerdo no lleva vísceras)
+ *   sin_activacion        CARNES_VISCERAS_PRELIQ_DESDE no definida o inválida: no sale nada (falla seguro)
+ *   anterior_a_activacion la oficial quedó ok antes de CARNES_VISCERAS_PRELIQ_DESDE: historia, no se manda
  *   sin_oficial  la entrada oficial de la recepción no está ok: el CEI nunca va antes
- *   bloqueado    ya hay un ajuste de vísceras del esquema anterior: mandarlo duplicaría el inventario
- *   agotado      el CEI ya falló MAX_INTENTOS_VISCERAS_AUTOMATICOS veces: lo retoma una persona
+ *   bloqueado    ya hay un ajuste de vísceras del esquema anterior, o la oficial (anterior al 29/09/2026) ya
+ *                lleva las vísceras: mandarlo duplicaría el inventario
+ *   agotado      el CEI ya falló MAX_INTENTOS_VISCERAS_AUTOMATICOS INTENTOS (no filas): lo retoma una persona
  *   sin_visceras la recepción no tiene vísceras con código y cantidad
- *   sin_tiempo   no alcanza el tiempo seguro para un POST: lo retoma el barrido horario
+ *   sin_tiempo   no alcanza el tiempo seguro para un POST (o ejecutarAjuste no lo tuvo): lo retoma el barrido
  * Un CEI ya vigente (ok, enviando o sin_confirmar) responde con su estado y `repetido: true`.
+ *
+ * Es el único camino de envío automático del CEI (inline, resolver, barrido), así que aquí viven el piso de
+ * activación y la regla de NO compensar faltantes por su cuenta: un faltante deja la fila `error` y el correo,
+ * y la compensación solo sale desde el reintento manual (`reintentarViscerasRecepcion`).
  *
  * @param {number|string} recepcionId
  * @param {object} [opciones]
@@ -3325,6 +3383,8 @@ export async function enviarViscerasPreliquidacion(
 ) {
   const base = { tipo: TIPO_VISCERAS_RECEPCION, recepcion_id: recepcionId };
   if (!siesaActivo()) return { ...base, estado: "apagado" };
+  // Sin piso de activación definido no sale nada, ni se toca la base.
+  if (motivoSinActivacionVisceras(null)) return { ...base, estado: "sin_activacion" };
   try {
     const recepcion = await cargarRecepcion(recepcionId);
     if (recepcion.especie !== "res") return { ...base, estado: "no_aplica" };
@@ -3332,6 +3392,8 @@ export async function enviarViscerasPreliquidacion(
     // El CEI es una entrada de inventario que sigue a la CEA: sin la oficial ok, nada.
     const oficial = await envioVigente(recepcionId, TIPO_ENVIO.OFICIAL);
     if (oficial?.estado !== "ok") return { ...base, estado: "sin_oficial" };
+    const sinActivar = motivoSinActivacionVisceras(oficial);
+    if (sinActivar) return { ...base, estado: sinActivar };
 
     const previa = await envioVigente(recepcionId, TIPO_VISCERAS_RECEPCION);
     if (previa) return { ...base, ...resultadoVisceras(previa), repetido: true };
@@ -3354,8 +3416,24 @@ export async function enviarViscerasPreliquidacion(
     const armado = armarViscerasDe(recepcion);
     if (armado.vacio) return { ...base, estado: "sin_visceras" };
 
+    // Las CEA anteriores al 29/09/2026 llevaban las vísceras como un renglón más: el CEI las entraría dos veces.
+    const yaEstan = viscerasEnCea({
+      payload: oficial.payload,
+      items: recepcion.items,
+      bodega: recepcion.sede?.bodega_siesa,
+    });
+    if (yaEstan.length) {
+      return {
+        ...base,
+        estado: "bloqueado",
+        error:
+          `La entrada oficial que ya está en SIESA trae estas vísceras: ${yaEstan.join(", ")}. ` +
+          "Mandar el CEI las entraría dos veces. Anulá esa entrada oficial y volvela a enviar (ya sin vísceras).",
+      };
+    }
+
     const ms = restante ? restante() : PRESUPUESTO_CIERRE_RECEPCION_MS;
-    if (ms == null || ms < ESPERA_MINIMA_CIERRE_MS + MARGEN_VISCERAS_PRELIQUIDACION_MS) {
+    if (ms == null || ms < MINIMO_CEI_PRELIQUIDACION_MS) {
       return { ...base, estado: "sin_tiempo" };
     }
 
@@ -3366,9 +3444,13 @@ export async function enviarViscerasPreliquidacion(
       inicio: Date.now(),
       presupuestoMs: ms,
       maxEsperaMs: Math.min(TIMEOUT_INICIAL_MS, ms),
+      // Camino automático: sin documentos de compensación por faltante (ver arriba).
+      sinCompensar: true,
     });
     return respuestaViscerasMandadas(base, r);
   } catch (e) {
+    // `ejecutarAjuste` se quedó sin tiempo antes del primer POST: no es un fallo, lo retoma el barrido.
+    if (e?.sinTiempo) return { ...base, estado: "sin_tiempo" };
     console.error(`🔴 SIESA vísceras (preliquidación) recepción #${recepcionId}: ${e.message}`);
     return { ...base, estado: "error", error: e.message };
   }
@@ -3408,6 +3490,31 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
     const oficial = await envioVigente(recepcionId, TIPO_ENVIO.OFICIAL);
     if (oficial?.estado !== "ok") {
       throw createError(409, "La entrada oficial de la recepción no está ok en SIESA: las vísceras salen después de ella.");
+    }
+    // Mismo piso que el envío automático: la historia anterior a la activación no se reenvía.
+    const sinActivar = motivoSinActivacionVisceras(oficial);
+    if (sinActivar === "sin_activacion") {
+      throw createError(
+        409,
+        "CARNES_VISCERAS_PRELIQ_DESDE no está definida o es inválida: las vísceras de las recepciones de la " +
+          "preliquidación no se mandan hasta fijar la fecha de activación.",
+      );
+    }
+    if (sinActivar) {
+      throw createError(
+        409,
+        "La entrada oficial de la recepción quedó ok antes de CARNES_VISCERAS_PRELIQ_DESDE: sus vísceras " +
+          "no se mandan por la preliquidación (son anteriores a la activación).",
+      );
+    }
+    // Mismo candado que el envío automático: un ajuste de vísceras del esquema anterior ya las lleva en SIESA.
+    const ajuste = await ajusteViscerasVigenteDe(recepcionId);
+    if (ajuste) {
+      throw createError(
+        409,
+        `Sus vísceras ya están en SIESA en el ajuste ${ajuste.referencia}: ` +
+          "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
+      );
     }
   } else if (!viscerasAlCierre()) {
     throw createError(

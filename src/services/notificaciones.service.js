@@ -644,6 +644,14 @@ const AVISOS_PRELIQUIDACION = {
       "El barrido horario lo reintenta unas veces; después se puede reenviar desde el panel de SIESA Talleres.",
     campos: ["error"],
   },
+  visceras_agotadas: {
+    titulo: "Vísceras de la sede sin enviar: reintentos automáticos agotados",
+    grave: true,
+    texto:
+      "La entrada oficial de la sede ya está en SIESA, pero el CEI de vísceras de su recepción falló varias veces. " +
+      "Los reintentos automáticos se detuvieron: una persona debe reintentarlo manualmente desde el panel de SIESA Talleres.",
+    campos: ["error"],
+  },
   reintentos_agotados: {
     titulo: "Reintentos agotados al enviar la sede a SIESA",
     grave: true,

@@ -320,7 +320,7 @@ test("códigos 040 de la tabla de errores HTTP", () => {
   }
 });
 
-// ─── Vísceras (CEI) que acompañan a la oficial de la sede ──────────────────
+// ─── Vísceras (CEI): procesarSede ya NO las manda; las manda la corrida tras todas las oficiales ─
 
 let visceras = [];
 let respuestaVisceras;
@@ -330,91 +330,107 @@ const enviarVisceras = async (recepcionId, opciones) => {
   return respuestaVisceras;
 };
 const restanteAmplio = () => 120000;
-const conVisceras = (s, extra = {}) =>
-  procesar(s, { enviarVisceras, restante: restanteAmplio, ...extra });
 const preparaOk = () => {
   visceras = [];
   respuestaVisceras = { estado: "ok", tipo: "visceras_recepcion", recepcion_id: 101 };
   respuestasRpc.carnes_preliq_reclamar_sede = [reclamoOk()];
   respuestasRpc.carnes_preliq_cerrar_envio = [{ resultado: "ok", estado: "enviada", sede_version: 9 }];
 };
-
-test("vísceras: tras la oficial ok de una sede de res se manda el CEI de su recepción, DESPUÉS del cierre", async () => {
-  preparaOk();
-  const orden = [];
-  const rpcOriginal = supabaseFalso.rpc;
-  supabaseFalso.rpc = async (n, a) => { orden.push(n); return rpcOriginal(n, a); };
-  const original = enviarVisceras;
-  const r = await procesar(sede(), {
-    enviarVisceras: async (...a) => { orden.push("visceras"); return original(...a); },
+const cei = (s = sede(), extra = {}) =>
+  Modelo.enviarViscerasDeSede(s, {
+    especie: "res",
+    sedeVersion: 9,
+    por: "cron",
     restante: restanteAmplio,
+    siesaActivo: true,
+    enviarVisceras,
+    encolar,
+    log: { error() {}, warn() {} },
+    ...extra,
   });
-  supabaseFalso.rpc = rpcOriginal;
+
+test("vísceras: procesarSede NO manda el CEI aunque la oficial quede ok (lo hace la corrida tras TODAS las oficiales)", async () => {
+  preparaOk();
+  const r = await procesar(sede(), { enviarVisceras, restante: restanteAmplio });
   assert.equal(r.resultado, "enviada");
+  assert.equal(r.sede_version, 9);
+  assert.equal(visceras.length, 0);
+  assert.equal("visceras" in r, false);
+});
+
+test("vísceras: ok de una sede de res manda el CEI de su recepción con por y restante, sin alerta", async () => {
+  preparaOk();
+  const r = await cei();
+  assert.equal(r.estado, "ok");
   assert.equal(visceras.length, 1);
   assert.equal(visceras[0].recepcionId, 101);
   assert.equal(visceras[0].opciones.por, "cron");
   assert.equal(visceras[0].opciones.restante, restanteAmplio);
-  assert.ok(orden.indexOf("visceras") > orden.indexOf("carnes_preliq_cerrar_envio"));
-  assert.equal(r.visceras.estado, "ok");
+  assert.equal(alertas.length, 0);
 });
 
-test("vísceras: envío repetido ok (otra corrida ya mandó la oficial) también dispara el CEI idempotente", async () => {
+test("vísceras: cerdo y SIESA apagado no mandan CEI", async () => {
   preparaOk();
-  respuestaEnvio = { fila: { id: 500, estado: "ok", repetido: true }, armadoBloqueos: [] };
-  await conVisceras(sede());
-  assert.equal(visceras.length, 1);
-});
-
-test("vísceras: oficial con error, sin_confirmar, bloqueo de armado, en vuelo o simulada NO mandan CEI", async () => {
-  const casos = [
-    { fila: { id: 500, estado: "error", http_status: 400, error: "x" }, armadoBloqueos: [] },
-    { fila: { id: 500, estado: "sin_confirmar" }, armadoBloqueos: [] },
-    { fila: { id: 500, estado: "enviando", repetido: true }, armadoBloqueos: [] },
-    { fila: { id: 500, estado: "error", error: "b" }, armadoBloqueos: ["b"] },
-  ];
-  for (const c of casos) {
-    preparaOk();
-    respuestaEnvio = c;
-    respuestasRpc.carnes_preliq_cerrar_envio = [{ resultado: "ok", estado: "x", sede_version: 9 }];
-    await conVisceras(sede());
-    assert.equal(visceras.length, 0, JSON.stringify(c.fila));
-  }
-  preparaOk();
-  await conVisceras(sede(), { siesaActivo: false });
-  assert.equal(visceras.length, 0, "SIESA apagado: simulada, nada sale");
-});
-
-test("vísceras: cerdo no manda CEI", async () => {
-  preparaOk();
-  await conVisceras(sede(), { header: header({ especie: "cerdo" }) });
+  assert.equal((await cei(sede(), { especie: "cerdo" })).estado, "no_aplica");
+  assert.equal((await cei(sede(), { siesaActivo: false })).estado, "apagado");
   assert.equal(visceras.length, 0);
 });
 
-test("vísceras: si el CEI falla la sede sigue enviada, nunca lanza, y se encola la alerta visceras_error", async () => {
+test("vísceras: un error SIN fila de envío (excepción, lectura fallida) encola visceras_error una vez por versión de la sede", async () => {
   preparaOk();
-  respuestaVisceras = { estado: "error", error: "SIESA dijo no", tipo: "visceras_recepcion", recepcion_id: 101 };
-  const r = await conVisceras(sede());
-  assert.equal(r.resultado, "enviada");
+  respuestaVisceras = { estado: "error", error: "no se pudo leer la recepción", tipo: "visceras_recepcion", recepcion_id: 101 };
+  await cei();
   const a = alertas.find((x) => x.evento === "visceras_error");
   assert.ok(a);
   assert.equal(a.sedeId, 11);
   assert.equal(a.ocurrencia, 9);
-  assert.equal(a.detalle.error, "SIESA dijo no");
+  assert.equal(a.detalle.error, "no se pudo leer la recepción");
 });
 
-test("vísceras: una excepción del envío no tumba la sede ni el resultado", async () => {
+test("vísceras: un error de SIESA con fila (referencia) NO duplica el correo: el envío ya avisó, no se encola visceras_error", async () => {
+  preparaOk();
+  respuestaVisceras = { estado: "error", error: "SIESA dijo no", referencia: "TC VISC R101", tipo: "visceras_recepcion", recepcion_id: 101 };
+  const r = await cei();
+  assert.equal(r.estado, "error");
+  assert.equal(alertas.some((x) => x.evento === "visceras_error"), false);
+});
+
+test("vísceras: al agotar los reintentos automáticos se encola visceras_agotadas (una por versión) diciendo que una persona debe reintentar", async () => {
+  preparaOk();
+  respuestaVisceras = { estado: "agotado", tipo: "visceras_recepcion", recepcion_id: 101 };
+  const r = await cei();
+  assert.equal(r.estado, "agotado");
+  const a = alertas.filter((x) => x.evento === "visceras_agotadas");
+  assert.equal(a.length, 1);
+  assert.equal(a[0].sedeId, 11);
+  assert.equal(a[0].ocurrencia, 9);
+  assert.equal(a[0].preliquidacionId, 1);
+  assert.match(a[0].detalle.error, /autom[aá]tic/i);
+  assert.match(a[0].detalle.error, /manual/i);
+  assert.equal(a[0].detalle.recepcion_id, 101);
+});
+
+test("vísceras: una excepción del envío no tumba nada y se alerta (no hay fila que haya avisado)", async () => {
   preparaOk();
   respuestaVisceras = new Error("boom");
-  const r = await conVisceras(sede(), { log: { error() {}, warn() {} } });
-  assert.equal(r.resultado, "enviada");
+  const r = await cei();
+  assert.equal(r.estado, "error");
+  assert.equal(alertas.filter((x) => x.evento === "visceras_error").length, 1);
 });
 
-test("vísceras: sin_tiempo / repetido / ok no encolan alerta", async () => {
-  for (const resp of [{ estado: "sin_tiempo" }, { estado: "error", repetido: true }, { estado: "ok" }, { estado: "agotado" }]) {
+test("vísceras: sin_tiempo, repetido, ok, sin_visceras, bloqueado, anterior_a_activacion y sin_activacion no encolan alerta", async () => {
+  for (const resp of [
+    { estado: "sin_tiempo" },
+    { estado: "error", repetido: true },
+    { estado: "ok" },
+    { estado: "sin_visceras" },
+    { estado: "bloqueado", error: "ya hay un ajuste" },
+    { estado: "anterior_a_activacion" },
+    { estado: "sin_activacion" },
+  ]) {
     preparaOk();
     respuestaVisceras = resp;
-    await conVisceras(sede());
-    assert.equal(alertas.some((x) => x.evento === "visceras_error"), false, JSON.stringify(resp));
+    await cei();
+    assert.equal(alertas.length, 0, JSON.stringify(resp));
   }
 });

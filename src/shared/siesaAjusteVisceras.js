@@ -15,9 +15,12 @@
  *   · Recepciones de res de una PRELIQUIDACIÓN: el CEI de UNA recepción (tipo
  *     `visceras_recepcion`) acompaña a la entrada oficial de su sede. En cuanto esa
  *     oficial queda ok —corte de las 21:30, envío inmediato, admin, reintento del cron,
- *     otro día o la confirmación de un `sin_confirmar`— sale su CEI, en el mismo proceso;
- *     lo que no alcance (tiempo, SIESA) lo reintenta el barrido horario. No depende de
- *     CARNES_SIESA_VISCERAS_AL_CIERRE y NO sale al cerrar la recepción. El cerdo no lleva.
+ *     otro día o la confirmación de un `sin_confirmar`— sale su CEI, en el mismo proceso pero DESPUÉS
+ *     de las oficiales de todas las sedes de la corrida (con su propio presupuesto, máx. 90 s);
+ *     lo que no alcance (tiempo, SIESA) lo reintenta el barrido horario. Solo sale si la oficial
+ *     quedó ok desde CARNES_VISCERAS_PRELIQ_DESDE (sin esa variable no sale nada). Un faltante de
+ *     inventario NO se compensa solo: queda el error y la compensación va por el reintento manual.
+ *     No depende de CARNES_SIESA_VISCERAS_AL_CIERRE y NO sale al cerrar la recepción. El cerdo no lleva.
  *   · Recepciones que no están en una preliquidación: al cerrar la recepción si
  *     CARNES_SIESA_VISCERAS_AL_CIERRE está prendida, o por liquidación (abajo).
  *
@@ -850,3 +853,9 @@ export function esperaParaEnvio(transcurridoMs, { maxEsperaMs, minimoMs, presupu
 export const PRESUPUESTO_CIERRE_RECEPCION_MS = 90_000;
 /** Espera mínima de cada envío del cierre (el CEI de una recepción es chico). */
 export const ESPERA_MINIMA_CIERRE_MS = 30_000;
+/**
+ * Tiempo mínimo que debe quedar para ARRANCAR el CEI de vísceras que acompaña a la oficial de la preliquidación: el
+ * mínimo del POST más un margen para que el presupuesto no se agote leyendo la base. Con menos no se arranca
+ * (`sin_tiempo`) y lo retoma el barrido horario.
+ */
+export const MINIMO_CEI_PRELIQUIDACION_MS = ESPERA_MINIMA_CIERRE_MS + 5_000;

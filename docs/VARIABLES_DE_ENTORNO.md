@@ -75,6 +75,20 @@ CARNES_AUTH=off
 # Sin esta variable (o en false) todo funciona como antes.
 CARNES_SIESA_VISCERAS_AL_CIERRE=false
 
+# ─── SIESA: vísceras de res que lleva la preliquidación (OBLIGATORIA al desplegar) ───
+# Fecha de activación del CEI de vísceras de las recepciones de res de la preliquidación de talleres
+# (ISO; se recomienda con zona: 2026-12-01T00:00:00-05:00). Solo mandan su CEI las sedes cuya entrada
+# OFICIAL quedó ok a partir de ese instante (inclusive; una oficial confirmada a mano cuenta desde que se
+# confirmó). Las anteriores se omiten (`anterior_a_activacion`) y el barrido horario nunca las reintenta:
+# es el freno contra reenviar a SIESA el historial de sedes ya enviadas al desplegar.
+# FALLA SEGURO: sin esta variable, vacía o con una fecha inválida NO sale NINGÚN CEI por la
+# preliquidación (ni el inmediato, ni el corte, ni el barrido, ni el reintento manual de una recepción
+# vinculada) y se deja un aviso en el log, una vez por proceso. Operaciones debe definirla
+# explícitamente en el despliegue, con la fecha desde la que se quieren mandar las vísceras. Se lee en
+# cada llamada, pero en Vercel un cambio requiere redeploy. No afecta al CEI al cierre de las
+# recepciones que no están en una preliquidación (ese lo gobierna CARNES_SIESA_VISCERAS_AL_CIERRE).
+CARNES_VISCERAS_PRELIQ_DESDE=
+
 # ─── Pruebas ─────────────────────────────────────────────────────────────────
 # En true no sale ni un correo.
 CARNES_SANDBOX=true

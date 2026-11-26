@@ -3,7 +3,7 @@ import { notificarRecepcionFinalizada, notificarConfirmacionRecibidor } from "..
 import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
 import * as DesposteModel from "../models/Desposte.model.js";
 import { alFinalizar as preliquidacionAlFinalizar } from "../services/preliquidacionInmediato.js";
-import { viscerasSeDifieren, viscerasTrasVinculo } from "../services/viscerasCierre.js";
+import { viscerasAlCerrar, viscerasTrasVinculo } from "../services/viscerasCierre.js";
 import { conQuienHace, quienHace } from "../middleware/auth.js";
 import { hoyBogota } from "../shared/proveedorValores.js";
 import { siesaParaRecibidor } from "../shared/siesaEntrada.js";
@@ -246,20 +246,21 @@ export async function finalizar(req, res, next) {
     // CARNES_SIESA_VISCERAS_AL_CIERRE está prendida; apagada devuelve "apagado"
     // sin tocar la base.
     //
-    // Excepción: con la preliquidación habilitada las de res NO salen aquí. Las lleva la
-    // preliquidación (su CEI sigue a la entrada oficial de la sede), pero al cerrar todavía no
-    // se sabe si la recepción queda vinculada: se decide más abajo, tras `preliquidacionAlFinalizar`
-    // (ver `services/viscerasCierre.js`). Las que no se vinculan salen al cierre como siempre.
+    // Excepción: las de res que la preliquidación va a llevar NO salen aquí (su CEI sigue a la
+    // entrada oficial de la sede). `viscerasAlCerrar` lo decide con la misma regla del vínculo,
+    // DENTRO de este mismo Promise.all: lo que no se vincularía (cerdo, módulo apagado, sin
+    // preliquidación abierta que la reciba) sale en paralelo con la inicial, como siempre, y solo
+    // lo que sí se vincularía queda diferido y se comprueba más abajo, tras `preliquidacionAlFinalizar`
+    // (ver `services/viscerasCierre.js`).
     //
     // La confirmación a quien recibió (`recibido_por`) es un correo aparte del
     // aviso al admin. Solo se llega acá en la transición real Borrador → Aprobado:
     // un reintento sobre una recepción ya cerrada lo corta `finalizar` con 409.
-    const diferirVisceras = viscerasSeDifieren(data);
-    const [notificacion, confirmacion, siesa, siesaViscerasAlCierre] = await Promise.all([
+    const [notificacion, confirmacion, siesa, visceras] = await Promise.all([
       notificarRecepcionFinalizada(data, data.items),
       notificarConfirmacionRecibidor(data, data.items),
       SiesaEnvio.enviarInicial(data.id, data.recibido_por),
-      diferirVisceras ? null : SiesaEnvio.enviarViscerasRecepcion(data.id, data.recibido_por),
+      viscerasAlCerrar(data, { inicioPeticion }),
       DesposteModel.vincularAnticipada(data.id),
     ]);
 
@@ -269,9 +270,9 @@ export async function finalizar(req, res, next) {
       inicioPeticion,
       inicialEstado: siesa?.estado,
     });
-    const siesaVisceras = diferirVisceras
+    const siesaVisceras = visceras.diferidas
       ? await viscerasTrasVinculo(data, { inicioPeticion })
-      : siesaViscerasAlCierre;
+      : visceras.resultado;
 
     res.json({
       ok: true,

@@ -71,6 +71,7 @@ const NUMEROS = {
   ventana_vencida: ["1"],
   envio_error: ["SIESA rechazó el documento"],
   visceras_error: ["SIESA rechazó el documento"],
+  visceras_agotadas: ["SIESA rechazó el documento"],
   reintentos_agotados: ["5"],
   sin_confirmar: [],
   envio_en_vuelo: [],
@@ -95,9 +96,9 @@ function enviarTipo(tipo, ctx = CTX, extra = {}) {
   }).then((r) => ({ r, t, log }));
 }
 
-test("cada tipo de alerta de la cola tiene su correo (los 19: los 18 del diseño más visceras_error)", () => {
+test("cada tipo de alerta de la cola tiene su correo (los 20: los 18 del diseño más visceras_error y visceras_agotadas)", () => {
   assert.deepEqual([...TIPOS_AVISO_PRELIQUIDACION].sort(), [...EVENTOS_ALERTA].sort());
-  assert.equal(TIPOS_AVISO_PRELIQUIDACION.length, 19);
+  assert.equal(TIPOS_AVISO_PRELIQUIDACION.length, 20);
   assert.deepEqual(Object.keys(NUMEROS).sort(), [...EVENTOS_ALERTA].sort());
 });
 

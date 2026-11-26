@@ -87,7 +87,7 @@ const enviarASiesaFalso = async (payload, opts) => {
   const r = guion.shift() ?? { ok: true };
   return r.ok
     ? { ok: true, status: 200, respuesta: { ok: 1 }, error: null }
-    : { ok: false, incierto: Boolean(r.incierto), status: r.incierto ? null : 400, respuesta: { e: 1 }, error: r.error ?? "SIESA dijo no" };
+    : { ok: false, incierto: Boolean(r.incierto), status: r.incierto ? null : 400, respuesta: r.respuesta ?? { e: 1 }, error: r.error ?? "SIESA dijo no" };
 };
 let correosError = [];
 
@@ -110,8 +110,11 @@ mock.module(url("models/PreliquidacionCierre.model.js"), {
 });
 
 const M = await import(url("models/SiesaEnvio.model.js"));
+const Cfg = await import(url("config/siesa.js"));
 const nuevo = (especie) => {
   reiniciar(especie);
+  process.env.CARNES_VISCERAS_PRELIQ_DESDE = "2026-01-01T00:00:00Z";
+  Cfg.reiniciarAvisoViscerasPreliquidacionDesde?.();
   llamadas = [];
   guion = [];
   pausa = null;
@@ -382,4 +385,208 @@ test("resolver ok: si el CEI falla, la resolución queda guardada y no lanza", a
   const data = await M.resolver(50, { resultado: "ok", por: "admin" });
   assert.equal(data.estado, "ok");
   assert.equal(cei()[0].estado, "error");
+});
+
+
+// ─── Piso de activación (CARNES_VISCERAS_PRELIQ_DESDE) ─────────────────────
+
+test("piso de activación: sin la variable (o inválida) NO sale nada por la preliquidación y se avisa UNA vez", async () => {
+  for (const valor of [undefined, "", "no-es-fecha"]) {
+    nuevo();
+    if (valor === undefined) delete process.env.CARNES_VISCERAS_PRELIQ_DESDE;
+    else process.env.CARNES_VISCERAS_PRELIQ_DESDE = valor;
+    const avisos = [];
+    const original = console.warn;
+    console.warn = (m) => avisos.push(String(m));
+    try {
+      const a = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+      const b = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+      assert.equal(a.estado, "sin_activacion", String(valor));
+      assert.equal(b.estado, "sin_activacion");
+    } finally {
+      console.warn = original;
+    }
+    assert.equal(llamadas.length, 0);
+    assert.equal(cei().length, 0);
+    assert.equal(avisos.filter((m) => /CARNES_VISCERAS_PRELIQ_DESDE/.test(m)).length, 1, `un solo aviso (${valor})`);
+  }
+});
+
+test("piso de activación: una oficial que quedó ok ANTES del piso no manda CEI (anterior_a_activacion)", async () => {
+  nuevo();
+  process.env.CARNES_VISCERAS_PRELIQ_DESDE = "2026-11-21T00:00:00Z"; // la oficial es del 20/11
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "anterior_a_activacion");
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});
+
+test("piso de activación: la oficial ok justo en el piso o después sí manda; una confirmada a mano (resuelto_at) cuenta desde que se confirmó", async () => {
+  nuevo();
+  process.env.CARNES_VISCERAS_PRELIQ_DESDE = "2026-11-20T02:00:00Z"; // igual al enviado_at de la oficial
+  assert.equal((await M.enviarViscerasPreliquidacion(2, { restante: amplio })).estado, "ok");
+
+  nuevo();
+  process.env.CARNES_VISCERAS_PRELIQ_DESDE = "2026-11-22T00:00:00Z";
+  const oficial = db.carnes_siesa_envios.find((f) => f.tipo === "oficial");
+  oficial.resuelto_at = "2026-11-23T10:00:00Z"; // se envió antes del piso pero quedó ok después
+  assert.equal((await M.enviarViscerasPreliquidacion(2, { restante: amplio })).estado, "ok");
+});
+
+test("piso de activación: el reintento manual de una recepción vinculada también lo respeta", async () => {
+  nuevo();
+  process.env.CARNES_VISCERAS_PRELIQ_DESDE = "2026-11-21T00:00:00Z";
+  db.carnes_preliquidacion_sedes = [{ id: 11, recepcion_id: 2, estado: "enviada" }];
+  await assert.rejects(() => M.reintentarViscerasRecepcion(2, "admin"), (e) => e.statusCode === 409);
+  assert.equal(llamadas.length, 0);
+
+  delete process.env.CARNES_VISCERAS_PRELIQ_DESDE;
+  Cfg.reiniciarAvisoViscerasPreliquidacionDesde();
+  await assert.rejects(() => M.reintentarViscerasRecepcion(2, "admin"), (e) => e.statusCode === 409);
+  assert.equal(llamadas.length, 0);
+});
+
+test("la recepción NO vinculada (CEI al cierre de siempre) no depende del piso", async () => {
+  nuevo();
+  delete process.env.CARNES_VISCERAS_PRELIQ_DESDE;
+  process.env.CARNES_SIESA_VISCERAS_AL_CIERRE = "true";
+  const r = await M.enviarViscerasRecepcion(2, "recibidor");
+  assert.equal(r.estado, "ok");
+});
+
+// ─── Reintento manual: guarda del ajuste vigente ───────────────────────────
+
+test("reintento manual de una recepción vinculada: un ajuste de vísceras vigente (por sede o consolidado) lo bloquea con 409", async () => {
+  nuevo();
+  db.carnes_preliquidacion_sedes = [{ id: 11, recepcion_id: 2, estado: "enviada" }];
+  db.carnes_siesa_envios.push({ id: 6, tipo: "ajuste_visceras", estado: "ok", recepcion_id: 2, referencia: "TC VIS R2", enviado_at: "2026-11-20T03:00:00Z" });
+  await assert.rejects(() => M.reintentarViscerasRecepcion(2, "admin"), (e) => e.statusCode === 409 && /TC VIS R2/.test(e.message));
+  assert.equal(llamadas.length, 0);
+
+  nuevo();
+  db.carnes_preliquidacion_sedes = [{ id: 11, recepcion_id: 2, estado: "enviada" }];
+  db.carnes_siesa_envios.push({ id: 7, tipo: "ajuste_visceras", estado: "ok", recepcion_id: null, liquidacion_id: 9, recepcion_ids: [2, 3], referencia: "TC VIS L9", enviado_at: "2026-11-20T03:00:00Z" });
+  await assert.rejects(() => M.reintentarViscerasRecepcion(2, "admin"), (e) => e.statusCode === 409 && /TC VIS L9/.test(e.message));
+  assert.equal(llamadas.length, 0);
+});
+
+// ─── El tope cuenta INTENTOS, no filas ─────────────────────────────────────
+
+const filaCei = (id, estado, extra = {}) => ({
+  id, tipo: "visceras_recepcion", estado, recepcion_id: 2, referencia: "TC VISC R2", enviado_at: `2026-11-20T03:0${id % 10}:00Z`, ...extra,
+});
+const compensacionOk = (id, origen) => ({
+  id, tipo: "ajuste_faltante", estado: "ok", recepcion_id: null, recepcion_ids: [2], envio_origen_id: origen, enviado_at: "2026-11-20T03:00:30Z",
+});
+
+test("tope: un solo intento que dejó 3 filas de error por rondas (con compensación entre ellas) NO agota el tope", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(
+    filaCei(21, "error"), compensacionOk(31, 21),
+    filaCei(22, "error"), compensacionOk(32, 22),
+    filaCei(23, "error"),
+  );
+  guion = [{ ok: true }];
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "ok", "1 intento fallido en total: todavía se reintenta");
+  assert.equal(llamadas.length, 1);
+});
+
+test("tope: tres intentos con error (una fila cada uno) sí lo agotan, aunque haya compensaciones fallidas", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(
+    filaCei(21, "error"),
+    filaCei(22, "error"),
+    filaCei(23, "error"),
+    { ...compensacionOk(33, 23), estado: "error" },
+  );
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "agotado");
+  assert.equal(llamadas.length, 0);
+});
+
+test("tope: dos intentos multironda (filas con compensaciones ok) + uno simple = 3 intentos: agotado", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(
+    filaCei(21, "error"), compensacionOk(31, 21), filaCei(22, "error"),
+    filaCei(23, "error"), compensacionOk(32, 23), filaCei(24, "error"),
+    filaCei(25, "error"),
+  );
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "agotado");
+});
+
+// ─── Sin compensación automática ───────────────────────────────────────────
+
+const FALTANTE_VISCERA = {
+  codigo: 1,
+  detalle: [{ f_valor: "Item:0020101Bodega:00201", f_detalle: "Movto Inventario: Item sin cantidad disponible Faltante Inv.: -1.5 Faltante Adic.: 0.0000" }],
+  mensaje: "Error al importar el plano",
+};
+
+test("camino automático: un rechazo por faltante NO dispara documentos de compensación (ajuste_faltante)", async () => {
+  nuevo();
+  guion = [{ ok: false, error: "faltante", respuesta: FALTANTE_VISCERA }, { ok: true }, { ok: true }];
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "error");
+  assert.equal(llamadas.length, 1, "un solo POST: nada de compensar ni reenviar");
+  assert.equal(db.carnes_siesa_envios.filter((f) => f.tipo === "ajuste_faltante").length, 0);
+  assert.equal(cei().length, 1);
+  assert.equal(correosError.length, 1, "la persona se entera por el correo del envío");
+});
+
+test("el reintento manual SÍ conserva la compensación por faltante (no se tocó)", async () => {
+  nuevo();
+  process.env.CARNES_SIESA_VISCERAS_AL_CIERRE = "true";
+  guion = [{ ok: false, error: "faltante", respuesta: FALTANTE_VISCERA }, { ok: true }, { ok: true }];
+  const r = await M.reintentarViscerasRecepcion(2, "admin");
+  assert.equal(r.estado, "ok", JSON.stringify(r));
+  assert.equal(db.carnes_siesa_envios.filter((f) => f.tipo === "ajuste_faltante").length, 1);
+});
+
+// ─── 503 "leer tardó demasiado" ───────────────────────────────────────────
+
+test("si ejecutarAjuste no tiene tiempo para el primer POST (503) el resultado es sin_tiempo, sin fila ni POST", async () => {
+  nuevo();
+  const real = Date.now;
+  let tras = 0;
+  let armada = false;
+  Date.now = () => {
+    if (!armada) return real();
+    tras += 1;
+    return real() + (tras >= 2 ? 100_000 : 0);
+  };
+  try {
+    const r = await M.enviarViscerasPreliquidacion(2, {
+      restante: () => {
+        armada = true;
+        return 60_000;
+      },
+    });
+    assert.equal(r.estado, "sin_tiempo", JSON.stringify(r));
+  } finally {
+    Date.now = real;
+  }
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});
+
+// ─── CEA anterior al 29/09 con las vísceras adentro ────────────────────────
+
+test("una oficial vieja que ya lleva las vísceras como renglón bloquea el CEI (no se entran dos veces)", async () => {
+  nuevo();
+  const oficial = db.carnes_siesa_envios.find((f) => f.tipo === "oficial");
+  oficial.payload = { Movimientos: [{ ITEM: "20101", BODEGA: "00201", CANTIDAD: 33.3 }] };
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "bloqueado");
+  assert.match(r.error, /Mondongo|20101/);
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});
+
+test("una oficial sin las vísceras en su payload no bloquea", async () => {
+  nuevo();
+  const oficial = db.carnes_siesa_envios.find((f) => f.tipo === "oficial");
+  oficial.payload = { Movimientos: [{ ITEM: "1", BODEGA: "00201", CANTIDAD: 10 }] };
+  assert.equal((await M.enviarViscerasPreliquidacion(2, { restante: amplio })).estado, "ok");
 });
