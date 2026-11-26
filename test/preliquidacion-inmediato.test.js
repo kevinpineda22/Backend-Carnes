@@ -118,6 +118,8 @@ test("D-S6: ya liquidada, registra waitUntil ANTES de volver y envía solo esa s
   assert.equal(p.corrida.id, 500);
   assert.ok(p.timeoutMs >= 30_000, "usa el presupuesto restante como timeout");
   assert.equal(typeof p.hayPresupuesto, "function");
+  assert.equal(typeof p.restante, "function", "el CEI de vísceras mide el tiempo que queda desde el inicio de la petición");
+  assert.ok(p.restante() >= 30_000);
   assert.equal(registro.terminar[0].error ?? null, null);
 });
 

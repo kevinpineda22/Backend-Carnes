@@ -40,8 +40,11 @@
  * Desde el 29/09/2026 las vísceras no viajan en la inicial ni en la oficial
  * (`vaASiesa` en `shared/visceras.js` las excluye): la CEA es la factura y solo
  * lleva cortes. Entran al inventario por un documento aparte, el ajuste de
- * vísceras CEI (`shared/siesaAjusteVisceras.js`): por liquidación, o por
- * recepción al cerrar si CARNES_SIESA_VISCERAS_AL_CIERRE está prendida.
+ * vísceras CEI (`shared/siesaAjusteVisceras.js`): por liquidación; por
+ * recepción al cerrar si CARNES_SIESA_VISCERAS_AL_CIERRE está prendida (recepciones que no
+ * están en una preliquidación); y, en las recepciones de res de una preliquidación, por
+ * recepción justo DESPUÉS de que la entrada oficial de su sede queda ok
+ * (`enviarViscerasPreliquidacion`), con la sola condición de que SIESA esté activo.
  *
  * (Entre `sql/016_visceras_siesa.sql` y esa decisión sí iban como un renglón
  * más, con su propia unidad y sin prorratear: `costo_base`, nunca

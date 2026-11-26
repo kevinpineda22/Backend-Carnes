@@ -559,3 +559,22 @@ test("JD S2: un enviando abandonado con intentos agotados pasa a error con reint
   assert.equal(rpcDe("carnes_preliq_reclamar_sede").length, 0);
   assert.equal(llamadas.length, 0);
 });
+
+// ─── Vísceras: el tiempo que queda viaja a procesarSede ────────────────────
+
+test("procesarSede recibe `restante` (el tiempo que queda para el CEI de vísceras)", async () => {
+  const restante = () => 99000;
+  await procesar({ restante });
+  assert.ok(llamadas.length > 0);
+  assert.equal(llamadas[0].ctx.restante, restante);
+});
+
+test("sin `restante` explícito se deriva del presupuesto: con presupuesto alcanza, sin él es null", async () => {
+  let hay = true;
+  await procesar({ hayPresupuesto: () => hay });
+  const r = llamadas[0].ctx.restante;
+  assert.equal(typeof r, "function");
+  assert.ok(r() >= 35000);
+  hay = false;
+  assert.equal(r(), null);
+});

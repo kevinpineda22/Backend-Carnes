@@ -1117,6 +1117,165 @@ async function enviarPorDefecto(recepcionId, opciones) {
   return enviarOficialRecepcion(recepcionId, opciones);
 }
 
+async function viscerasPorDefecto(recepcionId, opciones) {
+  const { enviarViscerasPreliquidacion } = await import("./SiesaEnvio.model.js");
+  return enviarViscerasPreliquidacion(recepcionId, opciones);
+}
+
+/**
+ * Manda el CEI de vísceras de la recepción de una sede cuya entrada oficial acaba de quedar ok
+ * (o que ya lo estaba y aún no tiene CEI). Solo res y solo con SIESA encendido. Nunca lanza: la
+ * oficial ya está en SIESA y lo que falle aquí lo reintenta el barrido horario (`barrerVisceras`).
+ *
+ * Un error real de SIESA (no un `repetido`, un `sin_tiempo` ni un tope agotado) encola la alerta
+ * `visceras_error`, una por versión de la sede, como el `envio_error` de la oficial.
+ *
+ * @param {object} sede fila de la sede (`id`, `preliquidacion_id`, `recepcion_id`)
+ * @param {object} contexto
+ * @param {string} contexto.especie res|cerdo de la preliquidación
+ * @param {number} [contexto.sedeVersion] versión de la sede tras cerrar el envío (clave de la alerta)
+ * @param {() => (number|null)} [contexto.restante] ms que quedan para un envío (null = no alcanza)
+ * @param {Function} [contexto.enviarVisceras] (recepcionId, {por, restante}) -> resultado
+ */
+export async function enviarViscerasDeSede(sede, contexto = {}) {
+  const {
+    especie,
+    sedeVersion = sede.version,
+    por = null,
+    restante,
+    siesaActivo: encendido = siesaActivo(),
+    enviarVisceras = viscerasPorDefecto,
+    encolar = encolarAlerta,
+    log = console,
+  } = contexto;
+  if (especie !== "res") return { estado: "no_aplica" };
+  if (!encendido) return { estado: "apagado" };
+  try {
+    const r = (await enviarVisceras(sede.recepcion_id, { por, restante })) ?? { estado: "error" };
+    if (r.estado === "error" && !r.repetido) {
+      try {
+        await encolar(
+          {
+            evento: "visceras_error",
+            preliquidacionId: sede.preliquidacion_id,
+            sedeId: sede.id,
+            ocurrencia: sedeVersion,
+            detalle: { error: r.error ?? null, recepcion_id: sede.recepcion_id },
+          },
+          { log },
+        );
+      } catch (error) {
+        log.warn?.(`No se pudo encolar la alerta visceras_error de la sede ${sede.id}: ${error?.message}`);
+      }
+    }
+    return r;
+  } catch (error) {
+    log.error?.(`Vísceras de la sede ${sede.id} fallaron: ${error?.message}`);
+    return { estado: "error", error: error?.message ?? String(error) };
+  }
+}
+
+// ─── Barrido horario de las vísceras ───────────────────────────────────────
+
+/** Cuánto se mira hacia atrás: una sede enviada hace más que esto sin CEI ya no se reintenta sola. */
+export const VENTANA_BARRIDO_VISCERAS_DIAS = 14;
+/** CEI que se intentan por corrida del cron (el resto lo toma la siguiente). */
+export const LIMITE_BARRIDO_VISCERAS = 20;
+const LECTURA_BARRIDO_VISCERAS = 200;
+const ESTADOS_ENVIO_VIGENTE = ["enviando", "ok", "sin_confirmar"];
+
+/**
+ * Sedes de res con la entrada oficial ya enviada cuya recepción NO tiene un CEI de vísceras vigente
+ * (ok, enviando o sin_confirmar), de preliquidaciones abiertas o cerradas. Solo mira las enviadas dentro
+ * de `VENTANA_BARRIDO_VISCERAS_DIAS`: nunca reenvía historia antigua. Sede por sede, el envío vuelve a
+ * verificar todo (oficial ok, ajuste previo, tope de intentos, dedupe), esto solo acota el trabajo.
+ *
+ * @returns {Promise<Array<{sede: object, especie: string}>>}
+ */
+export async function viscerasPendientes({ ahora = new Date() } = {}) {
+  const desde = new Date(ahora.getTime() - VENTANA_BARRIDO_VISCERAS_DIAS * 86400000).toISOString();
+  const { data: sedes, error } = await supabase
+    .from(T_SEDES)
+    .select("id, preliquidacion_id, recepcion_id, version, estado, updated_at")
+    .eq("estado", "enviada")
+    .gte("updated_at", desde)
+    .order("updated_at", { ascending: true })
+    .limit(LECTURA_BARRIDO_VISCERAS);
+  if (error) throw new Error(`Error al leer las sedes enviadas: ${error.message}`);
+  if (!sedes?.length) return [];
+
+  const { data: preliqs, error: e2 } = await supabase
+    .from(T_PRELIQ)
+    .select("id, especie")
+    .in("id", [...new Set(sedes.map((x) => x.preliquidacion_id))]);
+  if (e2) throw new Error(`Error al leer las preliquidaciones: ${e2.message}`);
+  const especies = new Map((preliqs || []).map((p) => [String(p.id), p.especie]));
+  const deRes = sedes.filter((x) => especies.get(String(x.preliquidacion_id)) === "res");
+  if (!deRes.length) return [];
+
+  const { data: envios, error: e3 } = await supabase
+    .from("carnes_siesa_envios")
+    .select("recepcion_id")
+    .in("recepcion_id", deRes.map((x) => x.recepcion_id))
+    .eq("tipo", "visceras_recepcion")
+    .in("estado", ESTADOS_ENVIO_VIGENTE);
+  if (e3) throw new Error(`Error al leer los envíos de vísceras: ${e3.message}`);
+  const hechas = new Set((envios || []).map((e) => String(e.recepcion_id)));
+  return deRes.filter((x) => !hechas.has(String(x.recepcion_id))).map((sede) => ({ sede, especie: "res" }));
+}
+
+/**
+ * Reintenta el CEI de las sedes de res con la oficial ok y sin CEI (primer envío que no alcanzó el tiempo,
+ * CEI que falló, o sede enviada por un camino que no lo mandó). Lo corre el cron horario. Nunca lanza.
+ * Se detiene al agotarse el presupuesto o el tiempo seguro para un POST (`sin_tiempo`).
+ *
+ * @returns {Promise<{candidatas: number, enviadas: number, errores: number, agotado: boolean, error?: string}>}
+ */
+export async function barrerVisceras(opciones = {}) {
+  const {
+    ahora = new Date(),
+    hayPresupuesto = () => true,
+    restante,
+    siesaActivo: encendido = siesaActivo(),
+    listarPendientes = viscerasPendientes,
+    enviarVisceras,
+    encolar,
+    log = console,
+    por = null,
+  } = opciones;
+  const resumen = { candidatas: 0, enviadas: 0, errores: 0, agotado: false };
+  if (!encendido) return resumen;
+  try {
+    const pendientes = await listarPendientes({ ahora });
+    resumen.candidatas = pendientes.length;
+    for (const { sede, especie } of pendientes.slice(0, LIMITE_BARRIDO_VISCERAS)) {
+      if (!hayPresupuesto()) {
+        resumen.agotado = true;
+        break;
+      }
+      const r = await enviarViscerasDeSede(sede, {
+        especie,
+        por,
+        restante,
+        siesaActivo: encendido,
+        enviarVisceras,
+        encolar,
+        log,
+      });
+      if (r.estado === "ok" && !r.repetido) resumen.enviadas += 1;
+      else if (r.estado === "error" && !r.repetido) resumen.errores += 1;
+      else if (r.estado === "sin_tiempo") {
+        resumen.agotado = true;
+        break;
+      }
+    }
+  } catch (error) {
+    log.error?.(`Barrido de vísceras falló: ${error?.message}`);
+    resumen.error = error?.message ?? String(error);
+  }
+  return resumen;
+}
+
 /**
  * Con SIESA apagado ninguna sede se reclama ni se envía: la `calculada` pasa a `simulada`
  * (M5/D8) y el resto se informa como `siesa_apagado`.
@@ -1153,6 +1312,8 @@ async function simularSede(sede) {
  * @param {Date}   [contexto.ahora]
  * @param {boolean} [contexto.siesaActivo]
  * @param {Function} [contexto.enviar] (recepcionId, {por, terceroId, timeoutMs}) -> {fila, armadoBloqueos}
+ * @param {Function} [contexto.enviarVisceras] (recepcionId, {por, restante}) -> resultado del CEI de vísceras
+ * @param {() => (number|null)} [contexto.restante] ms que le quedan a la función para un envío (null = no alcanza)
  * @param {Function} [contexto.encolar] puerto de alertas
  * @returns {Promise<{resultado: string, efectos?: object[]}>}
  */
@@ -1166,6 +1327,8 @@ export async function procesarSede(sede, contexto = {}) {
     terceroId,
     timeoutMs,
     enviar = enviarPorDefecto,
+    enviarVisceras = viscerasPorDefecto,
+    restante,
     encolar = encolarAlerta,
     generarToken = randomUUID,
     log = console,
@@ -1251,12 +1414,29 @@ export async function procesarSede(sede, contexto = {}) {
     log,
   });
 
+  // La oficial quedó ok (envio_ok o envio_repetido_ok): el CEI de vísceras de la recepción la acompaña,
+  // en el mismo proceso y SOLO después de cerrar el envío. Nunca antes ni con la oficial fallida.
+  const visceras =
+    transicion.estado === "enviada"
+      ? await enviarViscerasDeSede(sede, {
+          especie: header?.especie,
+          sedeVersion: cierre.sede_version,
+          por,
+          restante,
+          siesaActivo: siesaEncendido,
+          enviarVisceras,
+          encolar,
+          log,
+        })
+      : undefined;
+
   return {
     resultado: transicion.estado,
     evento,
     sede_version: cierre.sede_version,
     paridad_armado: paridadArmado,
     efectos: transicion.efectos.filter((e) => e.tipo === "intentar_autocierre" || e.tipo === "avisar_anulacion"),
+    ...(visceras ? { visceras } : {}),
   };
 }
 
@@ -1414,6 +1594,9 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     encolar = encolarAlerta,
     log = console,
   } = opciones;
+  // Tiempo que queda para un envío (el CEI de vísceras sigue a la oficial en el mismo proceso). Sin un
+  // cálculo propio del llamador, solo se sabe si hay presupuesto: con él se asume lo mínimo seguro.
+  const restante = opciones.restante ?? (() => (hayPresupuesto() ? ESPERA_MINIMA_CIERRE_MS + 10_000 : null));
   const corrida = opciones.corrida ?? { id: opciones.corridaId };
   if (corrida.id == null) throw new Error("procesarPreliquidacion requiere corridaId (R14: nunca NULL)");
   corrida.resumen ??= {};
@@ -1608,6 +1791,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
         siesaActivo: siesaEncendido,
         por,
         timeoutMs: typeof timeoutMs === "function" ? timeoutMs() : timeoutMs,
+        restante,
         encolar,
         log,
       });
@@ -1671,6 +1855,7 @@ async function correrComoAdmin(preliquidacionId, { soloSedeId = null, por = null
       soloSedeId,
       hayPresupuesto: () => restante() !== null,
       timeoutMs: () => restante() ?? ESPERA_MINIMA_CIERRE_MS,
+      restante,
       log,
     });
     await progreso(corrida, { preliquidacionId, resultado: resumen });

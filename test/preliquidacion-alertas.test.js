@@ -121,8 +121,8 @@ function transporte(respuestas = [{ success: true }]) {
 
 const base = (extra = {}) => ({ db: extra.db, log: logger(), env: ENV_ON, ...extra });
 
-test("EVENTOS_ALERTA lista los 18 tipos del diseño y REGLA_OCURRENCIA cubre cada uno", () => {
-  assert.equal(EVENTOS_ALERTA.length, 18);
+test("EVENTOS_ALERTA lista los 19 tipos (los 18 del diseño y visceras_error) y REGLA_OCURRENCIA cubre cada uno", () => {
+  assert.equal(EVENTOS_ALERTA.length, 19);
   for (const e of EVENTOS_ALERTA) assert.ok(REGLA_OCURRENCIA[e], `falta regla para ${e}`);
 });
 

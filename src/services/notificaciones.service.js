@@ -636,6 +636,14 @@ const AVISOS_PRELIQUIDACION = {
     texto: "El envío de la sede a SIESA falló. Se puede reintentar desde el panel.",
     campos: ["error", "intentos"],
   },
+  visceras_error: {
+    titulo: "Error al enviar las vísceras de la sede a SIESA",
+    grave: true,
+    texto:
+      "La entrada oficial de la sede ya está en SIESA, pero el CEI de vísceras de su recepción falló. " +
+      "El barrido horario lo reintenta unas veces; después se puede reenviar desde el panel de SIESA Talleres.",
+    campos: ["error"],
+  },
   reintentos_agotados: {
     titulo: "Reintentos agotados al enviar la sede a SIESA",
     grave: true,

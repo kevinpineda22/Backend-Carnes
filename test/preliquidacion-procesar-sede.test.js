@@ -319,3 +319,102 @@ test("códigos 040 de la tabla de errores HTTP", () => {
     assert.equal(error.statusCode, 409, codigo);
   }
 });
+
+// ─── Vísceras (CEI) que acompañan a la oficial de la sede ──────────────────
+
+let visceras = [];
+let respuestaVisceras;
+const enviarVisceras = async (recepcionId, opciones) => {
+  visceras.push({ recepcionId, opciones });
+  if (respuestaVisceras instanceof Error) throw respuestaVisceras;
+  return respuestaVisceras;
+};
+const restanteAmplio = () => 120000;
+const conVisceras = (s, extra = {}) =>
+  procesar(s, { enviarVisceras, restante: restanteAmplio, ...extra });
+const preparaOk = () => {
+  visceras = [];
+  respuestaVisceras = { estado: "ok", tipo: "visceras_recepcion", recepcion_id: 101 };
+  respuestasRpc.carnes_preliq_reclamar_sede = [reclamoOk()];
+  respuestasRpc.carnes_preliq_cerrar_envio = [{ resultado: "ok", estado: "enviada", sede_version: 9 }];
+};
+
+test("vísceras: tras la oficial ok de una sede de res se manda el CEI de su recepción, DESPUÉS del cierre", async () => {
+  preparaOk();
+  const orden = [];
+  const rpcOriginal = supabaseFalso.rpc;
+  supabaseFalso.rpc = async (n, a) => { orden.push(n); return rpcOriginal(n, a); };
+  const original = enviarVisceras;
+  const r = await procesar(sede(), {
+    enviarVisceras: async (...a) => { orden.push("visceras"); return original(...a); },
+    restante: restanteAmplio,
+  });
+  supabaseFalso.rpc = rpcOriginal;
+  assert.equal(r.resultado, "enviada");
+  assert.equal(visceras.length, 1);
+  assert.equal(visceras[0].recepcionId, 101);
+  assert.equal(visceras[0].opciones.por, "cron");
+  assert.equal(visceras[0].opciones.restante, restanteAmplio);
+  assert.ok(orden.indexOf("visceras") > orden.indexOf("carnes_preliq_cerrar_envio"));
+  assert.equal(r.visceras.estado, "ok");
+});
+
+test("vísceras: envío repetido ok (otra corrida ya mandó la oficial) también dispara el CEI idempotente", async () => {
+  preparaOk();
+  respuestaEnvio = { fila: { id: 500, estado: "ok", repetido: true }, armadoBloqueos: [] };
+  await conVisceras(sede());
+  assert.equal(visceras.length, 1);
+});
+
+test("vísceras: oficial con error, sin_confirmar, bloqueo de armado, en vuelo o simulada NO mandan CEI", async () => {
+  const casos = [
+    { fila: { id: 500, estado: "error", http_status: 400, error: "x" }, armadoBloqueos: [] },
+    { fila: { id: 500, estado: "sin_confirmar" }, armadoBloqueos: [] },
+    { fila: { id: 500, estado: "enviando", repetido: true }, armadoBloqueos: [] },
+    { fila: { id: 500, estado: "error", error: "b" }, armadoBloqueos: ["b"] },
+  ];
+  for (const c of casos) {
+    preparaOk();
+    respuestaEnvio = c;
+    respuestasRpc.carnes_preliq_cerrar_envio = [{ resultado: "ok", estado: "x", sede_version: 9 }];
+    await conVisceras(sede());
+    assert.equal(visceras.length, 0, JSON.stringify(c.fila));
+  }
+  preparaOk();
+  await conVisceras(sede(), { siesaActivo: false });
+  assert.equal(visceras.length, 0, "SIESA apagado: simulada, nada sale");
+});
+
+test("vísceras: cerdo no manda CEI", async () => {
+  preparaOk();
+  await conVisceras(sede(), { header: header({ especie: "cerdo" }) });
+  assert.equal(visceras.length, 0);
+});
+
+test("vísceras: si el CEI falla la sede sigue enviada, nunca lanza, y se encola la alerta visceras_error", async () => {
+  preparaOk();
+  respuestaVisceras = { estado: "error", error: "SIESA dijo no", tipo: "visceras_recepcion", recepcion_id: 101 };
+  const r = await conVisceras(sede());
+  assert.equal(r.resultado, "enviada");
+  const a = alertas.find((x) => x.evento === "visceras_error");
+  assert.ok(a);
+  assert.equal(a.sedeId, 11);
+  assert.equal(a.ocurrencia, 9);
+  assert.equal(a.detalle.error, "SIESA dijo no");
+});
+
+test("vísceras: una excepción del envío no tumba la sede ni el resultado", async () => {
+  preparaOk();
+  respuestaVisceras = new Error("boom");
+  const r = await conVisceras(sede(), { log: { error() {}, warn() {} } });
+  assert.equal(r.resultado, "enviada");
+});
+
+test("vísceras: sin_tiempo / repetido / ok no encolan alerta", async () => {
+  for (const resp of [{ estado: "sin_tiempo" }, { estado: "error", repetido: true }, { estado: "ok" }, { estado: "agotado" }]) {
+    preparaOk();
+    respuestaVisceras = resp;
+    await conVisceras(sede());
+    assert.equal(alertas.some((x) => x.evento === "visceras_error"), false, JSON.stringify(resp));
+  }
+});

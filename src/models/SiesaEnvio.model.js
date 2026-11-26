@@ -1629,13 +1629,51 @@ async function sincronizarSedeDePreliquidacion(envio, evento) {
       });
       if (errorRpc) throw errorRpc;
       if (res?.resultado === "version_cambiada") continue;
-      return { resultado: res?.resultado ?? null, transicion, preliquidacionId: sede.preliquidacion_id };
+      return {
+        resultado: res?.resultado ?? null,
+        transicion,
+        preliquidacionId: sede.preliquidacion_id,
+        sedeId: sede.id,
+        sedeVersion: res?.sede_version ?? Number(sede.version) + 1,
+      };
     }
     console.error(`🟠 SIESA envío #${envio.id}: la sede de preliquidación cambió de versión ${REINTENTOS_SINCRONIZAR_SEDE} veces; queda para la próxima corrida.`);
     return null;
   } catch (e) {
     console.error(`🔴 SIESA envío #${envio.id}: no se pudo sincronizar la sede de preliquidación (${e?.message}).`);
     return null;
+  }
+}
+
+/**
+ * Tras confirmar a mano una oficial `sin_confirmar` de una sede de la preliquidación, manda el CEI de
+ * vísceras de la recepción (mismo camino que al quedar ok en una corrida) y avisa si falla. Nunca lanza.
+ */
+async function viscerasTrasConfirmarOficial(oficial, sincronizada, { inicio }) {
+  try {
+    const r = await enviarViscerasPreliquidacion(oficial.recepcion_id, {
+      por: oficial.resuelto_por ?? undefined,
+      restante: () =>
+        esperaParaEnvio(Date.now() - inicio, {
+          maxEsperaMs: TIMEOUT_INICIAL_MS,
+          minimoMs: ESPERA_MINIMA_CIERRE_MS,
+        }),
+    });
+    if (r.estado === "error" && !r.repetido) {
+      const { encolarAlerta } = await import("../services/preliquidacionAlertas.js");
+      await encolarAlerta(
+        {
+          evento: "visceras_error",
+          preliquidacionId: sincronizada.preliquidacionId,
+          sedeId: sincronizada.sedeId,
+          ocurrencia: sincronizada.sedeVersion,
+          detalle: { error: r.error ?? null, recepcion_id: oficial.recepcion_id },
+        },
+        { log: console },
+      );
+    }
+  } catch (e) {
+    console.error(`🔴 SIESA envío #${oficial.id}: las vísceras de la sede no se pudieron mandar (${e?.message}).`);
   }
 }
 
@@ -1655,6 +1693,7 @@ async function sincronizarSedeDePreliquidacion(envio, evento) {
  * @param {{ resultado: "ok"|"no_llego", por?: string }} p
  */
 export async function resolver(id, { resultado, por } = {}) {
+  const inicioResolver = Date.now();
   if (!["ok", "no_llego"].includes(resultado)) {
     throw createError(400, 'resultado tiene que ser "ok" o "no_llego".');
   }
@@ -1741,6 +1780,10 @@ export async function resolver(id, { resultado, por } = {}) {
     // La sede pasó a enviada: puede completar la preliquidación (D3). No lanza.
     if (sincronizada?.resultado === "ok" && sincronizada.transicion?.efectos?.some((e) => e.tipo === "intentar_autocierre")) {
       await intentarAutocierre(sincronizada.preliquidacionId);
+    }
+    // La oficial acaba de quedar ok por confirmación humana: el CEI de vísceras la acompaña. No lanza.
+    if (sincronizada?.resultado === "ok" && sincronizada.transicion?.estado === "enviada") {
+      await viscerasTrasConfirmarOficial(data, sincronizada, { inicio: inicioResolver });
     }
   }
 
@@ -2674,14 +2717,24 @@ const alcanceLiquidacion = (ev, item, liquidacionId, { esperaPrimerEnvioMs } = {
  * al cerrar la recepción todavía no hay liquidación, y el índice de sql/021 que
  * limita los envíos en vuelo por liquidación no tiene por qué aplicarles.
  */
-const alcanceRecepcion = (recepcion, armado, { alCierre = false } = {}) => ({
+const alcanceRecepcion = (
+  recepcion,
+  armado,
+  { alCierre = false, presupuestoMs = null, maxEsperaMs = null } = {},
+) => ({
   armado,
   // Al cerrar, el recibidor espera la respuesta (el front corta a los 120 s): la
   // misma espera que la inicial y un presupuesto total para todo lo que se haga
   // acá. Lo que no alcance queda sin_confirmar / pendiente para el flujo de siempre.
+  //
+  // Desde la preliquidación el presupuesto es el tiempo que le queda a la función
+  // que acaba de mandar la entrada oficial (`presupuestoMs`), con la misma espera
+  // máxima por POST.
   ...(alCierre
     ? { maxEsperaMs: TIMEOUT_INICIAL_MS, presupuestoMs: PRESUPUESTO_CIERRE_RECEPCION_MS }
-    : {}),
+    : presupuestoMs != null
+      ? { maxEsperaMs: maxEsperaMs ?? TIMEOUT_INICIAL_MS, presupuestoMs }
+      : {}),
   base: {
     recepcion_id: recepcion.id,
     liquidacion_id: recepcion.liquidacion_id ?? null,
@@ -3095,9 +3148,17 @@ function resultadoVisceras(fila, extra = {}) {
  *
  * @returns {{completo: boolean, resultado: object, compensaciones: object[]}}
  */
-async function mandarViscerasRecepcion({ recepcion, armado, por, inicio, alCierre = false }) {
+async function mandarViscerasRecepcion({
+  recepcion,
+  armado,
+  por,
+  inicio,
+  alCierre = false,
+  presupuestoMs = null,
+  maxEsperaMs = null,
+}) {
   const r = await ejecutarAjuste({
-    alcance: alcanceRecepcion(recepcion, armado, { alCierre }),
+    alcance: alcanceRecepcion(recepcion, armado, { alCierre, presupuestoMs, maxEsperaMs }),
     por,
     inicio,
   });
@@ -3118,15 +3179,29 @@ const armarViscerasDe = (recepcion) =>
     config: DOCUMENTO_AJUSTE_VISCERAS,
   });
 
+/** El resultado de `mandarViscerasRecepcion` en la forma que devuelven los envíos de vísceras. */
+const respuestaViscerasMandadas = (base, r) => ({
+  ...base,
+  ...r.resultado,
+  // Un rechazo por faltante cuenta el motivo en `detalle`: no se pierde.
+  error: r.resultado.error ?? r.resultado.detalle ?? null,
+  repetido: r.repetido,
+});
+
 /**
- * Se llama al CERRAR la recepción de res. Nunca lanza: si algo falla la
- * recepción ya está cerrada, y lo que falle se reintenta desde el panel
- * (`reintentarViscerasRecepcion`) o desde la liquidación.
+ * Se llama al CERRAR la recepción de res, y SOLO para las que la preliquidación no
+ * lleva (las vinculadas mandan su CEI cuando su entrada oficial queda ok:
+ * `enviarViscerasPreliquidacion`). Nunca lanza: si algo falla la recepción ya está
+ * cerrada, y lo que falle se reintenta desde el panel (`reintentarViscerasRecepcion`)
+ * o desde la liquidación.
  *
  * Sin vísceras con código y cantidad no se registra nada. Con la bandera
  * apagada ni siquiera lee la base: el cierre queda como siempre.
+ *
+ * `inicio` es cuándo empezó el pedido de cierre: el presupuesto de 90 s se cuenta
+ * desde ahí. Por defecto, ahora (el cierre las manda en paralelo con la inicial).
  */
-export async function enviarViscerasRecepcion(recepcionId, por) {
+export async function enviarViscerasRecepcion(recepcionId, por, { inicio = Date.now() } = {}) {
   const base = { tipo: TIPO_VISCERAS_RECEPCION, recepcion_id: recepcionId };
   if (!siesaActivo() || !viscerasAlCierre()) return { ...base, estado: "apagado" };
   try {
@@ -3143,28 +3218,198 @@ export async function enviarViscerasRecepcion(recepcionId, por) {
       recepcion,
       armado,
       por,
-      inicio: Date.now(),
+      inicio,
       alCierre: true,
     });
-    return {
-      ...base,
-      ...r.resultado,
-      // Un rechazo por faltante cuenta el motivo en `detalle`: no se pierde.
-      error: r.resultado.error ?? r.resultado.detalle ?? null,
-      repetido: r.repetido,
-    };
+    return respuestaViscerasMandadas(base, r);
   } catch (e) {
     console.error(`🔴 SIESA vísceras recepción #${recepcionId}: ${e.message}`);
     return { ...base, estado: "error", error: e.message };
   }
 }
 
-/** Reintento manual del CEI de una recepción, desde el panel. Sí lanza si no se puede. */
+// ─── Vísceras que acompañan a la entrada oficial de la preliquidación ───────
+//
+// Las recepciones de res de una preliquidación mandan su CEI (el mismo documento
+// `visceras_recepcion`, uno por recepción) en cuanto la entrada OFICIAL de su sede
+// queda ok, sea cual sea el camino que la dejó ok: el corte de las 21:30, el envío
+// inmediato, el admin, un reintento del cron, otro día o la confirmación de un
+// `sin_confirmar`. NO depende de CARNES_SIESA_VISCERAS_AL_CIERRE (esa bandera es del
+// esquema de antes, que manda al cerrar la recepción) sino solo de SIESA activo.
+//
+// ─── Por qué hay un tiempo mínimo ───────────────────────────────────────────
+//
+// Cada POST a SIESA necesita al menos ESPERA_MINIMA_CIERRE_MS de espera. Mandar el
+// CEI con menos tiempo que ese arriesga un POST cortado por el límite de la función:
+// queda `sin_confirmar`, y un `sin_confirmar` bloquea el reintento hasta que una
+// persona lo resuelva. Si no alcanza el tiempo, NO se arranca y no se deja fila: la
+// recepción queda con la oficial ok y sin CEI, que es justo lo que el barrido horario
+// de la preliquidación busca y reintenta.
+//
+// ─── Duplicados ─────────────────────────────────────────────────────────────
+//
+// El índice único de sql/010 (recepcion_id, tipo) sobre enviando/ok/sin_confirmar es el
+// candado: aunque dos corridas (cron + inmediato) lleguen a la vez, solo una reserva y
+// la otra recibe `repetido` sin mandar nada. La lectura previa (`envioVigente`) solo
+// ahorra trabajo.
+
+/** Intentos automáticos con error antes de dejar de insistir: el resto lo decide una persona. */
+export const MAX_INTENTOS_VISCERAS_AUTOMATICOS = 3;
+
+/** Margen sobre el mínimo del POST, para que el presupuesto no se agote leyendo la base. */
+const MARGEN_VISCERAS_PRELIQUIDACION_MS = 5_000;
+
+/** El ajuste de vísceras del esquema anterior (por sede o consolidado) que ya lleva esta recepción, o null. */
+async function ajusteViscerasVigenteDe(recepcionId) {
+  const id = Number(recepcionId);
+  const [porSede, consolidado] = await Promise.all([
+    supabase
+      .from(TABLA)
+      .select("id, estado, referencia")
+      .eq("recepcion_id", id)
+      .eq("tipo", TIPO_AJUSTE_VISCERAS)
+      .in("estado", VIGENTES)
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from(TABLA)
+      .select("id, estado, referencia")
+      .eq("tipo", TIPO_AJUSTE_VISCERAS)
+      .in("estado", VIGENTES)
+      .overlaps("recepcion_ids", [id])
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  for (const r of [porSede, consolidado]) {
+    if (r.error) fallarSiFaltaMigracion(r.error, "Error al leer los envíos", MIGRACIONES);
+  }
+  return porSede.data || consolidado.data || null;
+}
+
+/** Cuántos intentos del CEI de esta recepción terminaron en error. */
+async function intentosFallidosViscerasDe(recepcionId) {
+  const { data, error } = await supabase
+    .from(TABLA)
+    .select("id")
+    .eq("recepcion_id", recepcionId)
+    .eq("tipo", TIPO_VISCERAS_RECEPCION)
+    .eq("estado", "error");
+  if (error) fallarSiFaltaMigracion(error, "Error al leer los envíos", MIGRACIONES);
+  return (data || []).length;
+}
+
+/**
+ * Manda el CEI de vísceras de UNA recepción de res de la preliquidación, DESPUÉS de que
+ * su entrada oficial quedó ok. Nunca lanza: devuelve el resultado.
+ *
+ * Estados de la respuesta (además de los de un envío: ok, error, enviando, sin_confirmar):
+ *   apagado      CARNES_SIESA_ACTIVO no es true: no se lee ni se manda nada
+ *   no_aplica    no es de res (el cerdo no lleva vísceras)
+ *   sin_oficial  la entrada oficial de la recepción no está ok: el CEI nunca va antes
+ *   bloqueado    ya hay un ajuste de vísceras del esquema anterior: mandarlo duplicaría el inventario
+ *   agotado      el CEI ya falló MAX_INTENTOS_VISCERAS_AUTOMATICOS veces: lo retoma una persona
+ *   sin_visceras la recepción no tiene vísceras con código y cantidad
+ *   sin_tiempo   no alcanza el tiempo seguro para un POST: lo retoma el barrido horario
+ * Un CEI ya vigente (ok, enviando o sin_confirmar) responde con su estado y `repetido: true`.
+ *
+ * @param {number|string} recepcionId
+ * @param {object} [opciones]
+ * @param {string} [opciones.por]
+ * @param {() => (number|null)} [opciones.restante] ms que le quedan a la función para un envío
+ *   (null = ya no alcanza). Se mide DESPUÉS de las lecturas, justo antes de mandar.
+ * @param {boolean} [opciones.automatico=true] aplica el tope de intentos automáticos
+ */
+export async function enviarViscerasPreliquidacion(
+  recepcionId,
+  { por, restante, automatico = true } = {},
+) {
+  const base = { tipo: TIPO_VISCERAS_RECEPCION, recepcion_id: recepcionId };
+  if (!siesaActivo()) return { ...base, estado: "apagado" };
+  try {
+    const recepcion = await cargarRecepcion(recepcionId);
+    if (recepcion.especie !== "res") return { ...base, estado: "no_aplica" };
+
+    // El CEI es una entrada de inventario que sigue a la CEA: sin la oficial ok, nada.
+    const oficial = await envioVigente(recepcionId, TIPO_ENVIO.OFICIAL);
+    if (oficial?.estado !== "ok") return { ...base, estado: "sin_oficial" };
+
+    const previa = await envioVigente(recepcionId, TIPO_VISCERAS_RECEPCION);
+    if (previa) return { ...base, ...resultadoVisceras(previa), repetido: true };
+
+    const ajuste = await ajusteViscerasVigenteDe(recepcionId);
+    if (ajuste) {
+      return {
+        ...base,
+        estado: "bloqueado",
+        error:
+          `Sus vísceras ya están en SIESA en el ajuste ${ajuste.referencia}: ` +
+          "anulalo (y registrá la anulación) antes de mandar el documento de la recepción.",
+      };
+    }
+
+    if (automatico && (await intentosFallidosViscerasDe(recepcionId)) >= MAX_INTENTOS_VISCERAS_AUTOMATICOS) {
+      return { ...base, estado: "agotado" };
+    }
+
+    const armado = armarViscerasDe(recepcion);
+    if (armado.vacio) return { ...base, estado: "sin_visceras" };
+
+    const ms = restante ? restante() : PRESUPUESTO_CIERRE_RECEPCION_MS;
+    if (ms == null || ms < ESPERA_MINIMA_CIERRE_MS + MARGEN_VISCERAS_PRELIQUIDACION_MS) {
+      return { ...base, estado: "sin_tiempo" };
+    }
+
+    const r = await mandarViscerasRecepcion({
+      recepcion,
+      armado,
+      por,
+      inicio: Date.now(),
+      presupuestoMs: ms,
+      maxEsperaMs: Math.min(TIMEOUT_INICIAL_MS, ms),
+    });
+    return respuestaViscerasMandadas(base, r);
+  } catch (e) {
+    console.error(`🔴 SIESA vísceras (preliquidación) recepción #${recepcionId}: ${e.message}`);
+    return { ...base, estado: "error", error: e.message };
+  }
+}
+
+/** La sede de preliquidación de esta recepción (id y estado), o null si no está vinculada. */
+async function sedePreliquidacionDeRecepcion(recepcionId) {
+  const { data, error } = await supabase
+    .from("carnes_preliquidacion_sedes")
+    .select("id, estado")
+    .eq("recepcion_id", recepcionId)
+    .maybeSingle();
+  if (error) throw createError(500, `Error al leer la sede de la preliquidación: ${error.message}`);
+  return data || null;
+}
+
+/**
+ * Reintento manual del CEI de una recepción, desde el panel. Sí lanza si no se puede.
+ *
+ * Una recepción de la preliquidación se puede reintentar sin CARNES_SIESA_VISCERAS_AL_CIERRE,
+ * pero solo cuando su sede ya está `enviada` (el CEI sigue a la entrada oficial). Las demás
+ * siguen exigiendo la bandera, como siempre.
+ */
 export async function reintentarViscerasRecepcion(recepcionId, por) {
   if (!siesaActivo()) {
     throw createError(409, "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
   }
-  if (!viscerasAlCierre()) {
+  const sede = await sedePreliquidacionDeRecepcion(recepcionId);
+  if (sede) {
+    if (sede.estado !== "enviada") {
+      throw createError(
+        409,
+        "La sede de la preliquidación todavía no tiene su entrada oficial en SIESA: " +
+          "las vísceras salen después de ella.",
+      );
+    }
+    const oficial = await envioVigente(recepcionId, TIPO_ENVIO.OFICIAL);
+    if (oficial?.estado !== "ok") {
+      throw createError(409, "La entrada oficial de la recepción no está ok en SIESA: las vísceras salen después de ella.");
+    }
+  } else if (!viscerasAlCierre()) {
     throw createError(
       409,
       "El envío de vísceras al cierre está apagado (CARNES_SIESA_VISCERAS_AL_CIERRE no es true).",

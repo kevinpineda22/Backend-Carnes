@@ -10,6 +10,17 @@
  * factura y solo lleva cortes. El inventario de vísceras entra por un ajuste de
  * inventario aparte, después de que la entrada oficial ya está en SIESA.
  *
+ * ─── Quién lo manda y cuándo (hoy) ────────────────────────────────────────
+ *
+ *   · Recepciones de res de una PRELIQUIDACIÓN: el CEI de UNA recepción (tipo
+ *     `visceras_recepcion`) acompaña a la entrada oficial de su sede. En cuanto esa
+ *     oficial queda ok —corte de las 21:30, envío inmediato, admin, reintento del cron,
+ *     otro día o la confirmación de un `sin_confirmar`— sale su CEI, en el mismo proceso;
+ *     lo que no alcance (tiempo, SIESA) lo reintenta el barrido horario. No depende de
+ *     CARNES_SIESA_VISCERAS_AL_CIERRE y NO sale al cerrar la recepción. El cerdo no lleva.
+ *   · Recepciones que no están en una preliquidación: al cerrar la recepción si
+ *     CARNES_SIESA_VISCERAS_AL_CIERRE está prendida, o por liquidación (abajo).
+ *
  * ─── Un documento por LIQUIDACIÓN ─────────────────────────────────────────
  *
  * Primero fue un documento por sede, y el 30/09/2026 la quinta sede (#16 Villa

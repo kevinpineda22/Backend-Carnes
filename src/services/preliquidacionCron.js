@@ -68,6 +68,7 @@ function dependenciasPorDefecto() {
     revisarCorridasPerdidas: Vigilancia.revisarCorridasPerdidas,
     listarAbiertas: PreliquidacionModel.listar,
     procesar: PreliquidacionModel.procesarPreliquidacion,
+    barrerVisceras: PreliquidacionModel.barrerVisceras,
     despacharAlertas,
     log: console,
   };
@@ -110,6 +111,7 @@ export async function ejecutarCron(entrada, dependencias = {}) {
   let pendientes = 0;
   let agotado = false;
   let fallo = null;
+  let visceras = null;
 
   try {
     // Barrido de ventanas vencidas: independiente de si hay sedes pendientes. Nunca detiene la corrida.
@@ -149,6 +151,7 @@ export async function ejecutarCron(entrada, dependencias = {}) {
           corrida,
           hayPresupuesto,
           timeoutMs: () => restante() ?? ESPERA_MINIMA_CIERRE_MS,
+          restante,
         });
         await deps.registrarProgreso(corrida, { preliquidacionId: preliq.id, resultado: resumen });
         pendientes += resumen?.pendientes ?? 0;
@@ -164,6 +167,17 @@ export async function ejecutarCron(entrada, dependencias = {}) {
         fallo ??= error;
         log.error?.(`Cron preliquidación ${preliq.id} falló: ${error?.message}`);
         procesadas.push({ id: preliq.id, especie: preliq.especie, resultado: "error", error: error?.message ?? String(error) });
+      }
+    }
+    // Vísceras (CEI) de las sedes de res con la oficial ya ok y sin CEI: reintento horario. Va DESPUÉS de las
+    // preliquidaciones (lo nuevo primero) y con el mismo presupuesto. Sus pendientes NO cuentan en `pendientes`:
+    // un CEI que SIESA rechaza de forma permanente mantendría la corrida en curso para siempre.
+    if (!dryRun && (!especie || especie === "res")) {
+      try {
+        const barrido = await deps.barrerVisceras({ ahora, hayPresupuesto, restante, log });
+        if (barrido && (barrido.candidatas > 0 || barrido.error)) visceras = barrido;
+      } catch (error) {
+        log.error?.(`Cron preliquidación: el barrido de vísceras falló: ${error?.message}`);
       }
     }
   } catch (error) {
@@ -197,6 +211,7 @@ export async function ejecutarCron(entrada, dependencias = {}) {
     pendientes,
     presupuesto_agotado: agotado,
   };
+  if (visceras) respuesta.visceras = visceras;
   if (dryRun) respuesta.dry_run = true;
   return respuesta;
 }

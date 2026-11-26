@@ -234,6 +234,7 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
           soloSedeId: sede.id,
           timeoutMs,
           hayPresupuesto: () => restante() !== null,
+          restante,
           por: recepcion.recibido_por ?? null,
           siesaActivo: siesaEncendido,
         });

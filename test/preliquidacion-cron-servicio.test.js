@@ -279,3 +279,51 @@ test("el envío del cron recibe timeoutMs acotado por el límite de la función 
   assert.equal(opciones.hayPresupuesto(), false);
   assert.equal(opciones.timeoutMs(), 30_000);
 });
+
+// ─── Barrido horario de vísceras ───────────────────────────────────────────
+
+test("barrido de vísceras: tras procesar las abiertas, con presupuesto y el tiempo que queda", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }] });
+  deps.barrerVisceras = async (opciones) => {
+    llamadas.push({ nombre: "barrerVisceras", args: [opciones] });
+    return { candidatas: 2, enviadas: 1, errores: 1, agotado: false };
+  };
+  const r = await ejecutarCron({ origen: "sweep" }, deps);
+  const orden = llamadas.map((l) => l.nombre);
+  assert.ok(orden.indexOf("barrerVisceras") > orden.indexOf("procesar"));
+  const [{ args: [o] }] = por(llamadas, "barrerVisceras");
+  assert.equal(typeof o.hayPresupuesto, "function");
+  assert.equal(typeof o.restante, "function");
+  assert.deepEqual(r.visceras, { candidatas: 2, enviadas: 1, errores: 1, agotado: false });
+});
+
+test("barrido de vísceras: sin candidatas no agrega nada a la respuesta", async () => {
+  const { deps } = armar();
+  deps.barrerVisceras = async () => ({ candidatas: 0, enviadas: 0, errores: 0, agotado: false });
+  const r = await ejecutarCron({ origen: "sweep" }, deps);
+  assert.equal("visceras" in r, false);
+});
+
+test("barrido de vísceras: no corre en dry_run, con el flag apagado ni para especie cerdo", async () => {
+  for (const [entrada, apagado] of [[{ origen: "dispatch", dryRun: true }, null], [{ origen: "sweep" }, "flag_apagado"], [{ origen: "sweep", especie: "cerdo" }, null]]) {
+    const { deps, llamadas } = armar({ apagado });
+    deps.barrerVisceras = async () => { llamadas.push({ nombre: "barrerVisceras" }); return {}; };
+    await ejecutarCron(entrada, deps);
+    assert.equal(por(llamadas, "barrerVisceras").length, 0, JSON.stringify(entrada));
+  }
+});
+
+test("barrido de vísceras: una falla no altera la corrida ni la respuesta ok", async () => {
+  const { deps } = armar({ abiertas: [{ id: 1, especie: "res" }] });
+  deps.barrerVisceras = async () => { throw new Error("boom"); };
+  const r = await ejecutarCron({ origen: "sweep" }, deps);
+  assert.equal(r.ok, true);
+});
+
+test("barrido de vísceras: sus pendientes NO mantienen la corrida en curso (un CEI rechazado no la haría terminar nunca)", async () => {
+  const { deps, llamadas } = armar();
+  deps.barrerVisceras = async () => ({ candidatas: 5, enviadas: 0, errores: 5, agotado: true });
+  const r = await ejecutarCron({ origen: "sweep" }, deps);
+  assert.equal(r.pendientes, 0);
+  assert.equal(por(llamadas, "terminarCorrida")[0].args[1].continua, false);
+});

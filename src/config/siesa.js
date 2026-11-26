@@ -348,6 +348,12 @@ export function siesaActivo() {
  * Apagado por defecto, y TAMBIÉN necesita `CARNES_SIESA_ACTIVO`: el CEI se
  * contabiliza al importarse y es una entrada de inventario, así que no se
  * prende por accidente. Apagado, todo funciona como antes.
+ *
+ * NO aplica a las recepciones de res que lleva la preliquidación: su CEI sale cuando
+ * la entrada oficial de la sede queda ok (`enviarViscerasPreliquidacion`), con solo
+ * `CARNES_SIESA_ACTIVO`, y nunca al cerrar la recepción aunque esta bandera esté
+ * prendida. Solo las recepciones que no entran en una preliquidación (sin preliquidación
+ * abierta, fuera de ventana, oficial del flujo anterior) siguen saliendo al cierre.
  */
 export function viscerasAlCierre() {
   return String(process.env.CARNES_SIESA_VISCERAS_AL_CIERRE || "").toLowerCase() === "true";
