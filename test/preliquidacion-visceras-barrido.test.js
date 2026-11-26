@@ -23,10 +23,13 @@ class Q {
     lecturas.push(this.t);
     if (this.falla) return Promise.resolve({ data: null, error: { message: "db caída" } }).then(res, rej);
     let rows = (db[this.t] ?? []).filter((r) => this.f.every((g) => g(r)));
+    if (this.t === "carnes_recepcion_items" && db.falloItems) return Promise.resolve({ data: null, error: { message: "db caída" } }).then(res, rej);
     if (this.t === "carnes_recepcion_items") rows = itemsDe(this.ids ?? [], rows);
     for (const [c, asc] of [...this.ord].reverse()) rows = [...rows].sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0) * (asc ? 1 : -1));
     if (this.rango) rows = rows.slice(this.rango[0], this.rango[1] + 1);
     if (this.lim != null) rows = rows.slice(0, this.lim);
+    // PostgREST corta en silencio en 1000 filas
+    if (this.t === "carnes_recepcion_items") rows = rows.slice(0, 1000);
     return Promise.resolve({ data: rows, error: null }).then(res, rej);
   }
 }
@@ -77,6 +80,28 @@ beforeEach(() => {
   db.carnes_recepcion_items = [];
   db.sinVisceras = [];
   db.falloCompensaciones = false;
+  db.falloItems = false;
+});
+
+test("con más de 1000 renglones de vísceras entre las recepciones, ninguna se pierde por el corte de PostgREST", async () => {
+  const sedes = Array.from({ length: 150 }, (_, i) => ({
+    id: 1000 + i, preliquidacion_id: 1, recepcion_id: 2000 + i, estado: "enviada", version: 1, updated_at: hace(1),
+  }));
+  db.carnes_preliquidacion_sedes = sedes;
+  db.carnes_siesa_envios = [];
+  // 12 vísceras por recepción: 1800 renglones, más que el corte de 1000 filas
+  let n = 0;
+  db.carnes_recepcion_items = sedes.flatMap((s) =>
+    Array.from({ length: 12 }, (_, k) => ({ id: (n += 1), recepcion_id: s.recepcion_id, tipo: "vicera", codigo_item: `2010${k}`, cantidad: 5, unidad: "KL" })));
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => x.sede.recepcion_id).sort(), sedes.map((s) => s.recepcion_id).sort());
+});
+
+test("si falla la lectura de los renglones de vísceras, falla ABIERTO: las recepciones siguen como candidatas", async () => {
+  db.sinVisceras = [101];
+  db.falloItems = true;
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => x.sede.id).sort(), [11, 15]);
 });
 
 test("selecciona sedes de res enviadas, recientes y sin CEI vigente (también de preliquidaciones cerradas)", async () => {

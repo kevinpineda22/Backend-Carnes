@@ -180,6 +180,23 @@ test("si no se puede leer el vínculo real antes de mandar, se difiere (el CEI n
   assert.equal(llamadas.enviar.length, 0);
 });
 
+test("sin_tiempo al cierre de una recepción NO vinculada se informa como error con aviso de reenviar desde el panel", async () => {
+  const { deps } = armar({ vincularia: false, sede: null });
+  deps.enviarViscerasRecepcion = async (id) => ({ tipo: "visceras_recepcion", recepcion_id: id, estado: "sin_tiempo" });
+  const r = await viscerasAlCerrar(recepcion(), { inicioPeticion: 1 }, deps);
+  assert.equal(r.diferidas, false);
+  assert.equal(r.resultado.estado, "error");
+  assert.match(r.resultado.error, /reenv[ií]elas desde el panel/);
+});
+
+test("sin_tiempo tras el vínculo (no quedó vinculada) también se informa como error", async () => {
+  const { deps } = armar({ sede: null });
+  deps.enviarViscerasRecepcion = async (id) => ({ tipo: "visceras_recepcion", recepcion_id: id, estado: "sin_tiempo" });
+  const r = await viscerasTrasVinculo(recepcion(), { inicioPeticion: 1 }, deps);
+  assert.equal(r.estado, "error");
+  assert.match(r.error, /desde el panel/);
+});
+
 test("cerdo, módulo apagado o bandera apagada: no se lee el vínculo (nada que decidir)", async () => {
   for (const [rec, cfg] of [[recepcion({ especie: "cerdo" }), {}], [recepcion(), { habilitada: false }], [recepcion(), { alCierre: false }]]) {
     const { deps, llamadas } = armar(cfg);

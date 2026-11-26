@@ -36,6 +36,19 @@ import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
  * oficial en esa ventana de segundos, algo que la operación acepta a cambio de no serializar el cierre.
  */
 
+/**
+ * `sin_tiempo` (el pedido de cierre ya gastó su presupuesto antes del primer POST) es un resultado neutro SOLO para
+ * las vísceras de la preliquidación, que las retoma el barrido horario. Las de una recepción que NO está vinculada
+ * no las retoma nadie: se informan como `error` para que quien cierra las reenvíe desde el panel.
+ */
+export const MENSAJE_VISCERAS_SIN_TIEMPO_AL_CIERRE =
+  "No hubo tiempo para enviar las vísceras al cerrar la recepción; reenvíelas desde el panel.";
+
+function sinTiempoComoError(resultado) {
+  if (resultado?.estado !== "sin_tiempo") return resultado;
+  return { ...resultado, estado: "error", error: MENSAJE_VISCERAS_SIN_TIEMPO_AL_CIERRE };
+}
+
 function dependenciasPorDefecto() {
   return {
     moduloActivo: () => motivoApagado() === null,
@@ -52,11 +65,13 @@ function dependenciasPorDefecto() {
  * Se llama DENTRO del `Promise.all` del cierre. Nunca lanza.
  *
  * @returns {Promise<{diferidas: true} | {diferidas: false, resultado: object}>} `resultado` tiene el contrato de
- *   `enviarViscerasRecepcion` (`estado`, `referencia`, `error`).
+ *   `enviarViscerasRecepcion` (`estado`, `referencia`, `error`), salvo que `sin_tiempo` se devuelve como `error` con un
+ *   mensaje para reenviar desde el panel: estas recepciones no son de la preliquidación y ningún barrido las retoma.
  */
 export async function viscerasAlCerrar(recepcion, { inicioPeticion }, dependencias = {}) {
   const deps = { ...dependenciasPorDefecto(), ...dependencias };
-  const alCierre = () => deps.enviarViscerasRecepcion(recepcion.id, recepcion.recibido_por, { inicio: inicioPeticion });
+  const alCierre = async () =>
+    sinTiempoComoError(await deps.enviarViscerasRecepcion(recepcion.id, recepcion.recibido_por, { inicio: inicioPeticion }));
 
   // Solo la res con el módulo habilitado y con algo que mandar al cierre puede ser de la preliquidación.
   // Sin SIESA o sin la bandera `enviarViscerasRecepcion` responde "apagado" sin tocar la base: no hay nada que decidir.
@@ -98,5 +113,5 @@ export async function viscerasTrasVinculo(recepcion, { inicioPeticion }, depende
     deps.log.error?.(`Vísceras al cierre de la recepción ${recepcion.id}: no se pudo leer su sede (${error?.message}).`);
     return { ...base, estado: "error", error: "No se pudo comprobar si la recepción está en una preliquidación." };
   }
-  return deps.enviarViscerasRecepcion(recepcion.id, recepcion.recibido_por, { inicio: inicioPeticion });
+  return sinTiempoComoError(await deps.enviarViscerasRecepcion(recepcion.id, recepcion.recibido_por, { inicio: inicioPeticion }));
 }

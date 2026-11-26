@@ -1225,19 +1225,55 @@ async function recepcionesConViscerasHechas(ids) {
  * Las recepciones (de las dadas) con ALGO que mandar: una víscera con código y cantidad que no quede en cero al
  * llevarla a los decimales de su unidad. Es la misma regla de `enviarViscerasPreliquidacion` (`armado.vacio`), pero
  * leída en LOTE y solo con las columnas que importan, para no gastar ~7 lecturas por sede en las que nunca saldrán.
+ *
+ * PostgREST corta en silencio las respuestas en 1000 filas (una res trae ~11 vísceras), así que se lee por TANDAS de
+ * pocas recepciones y cada tanda se pagina con `.range()` hasta que una página venga corta. FALLA ABIERTO: una
+ * recepción solo se descarta si su tanda se leyó completa y no tiene nada que mandar; si la lectura de una tanda
+ * falla (o no se agota), todas sus recepciones se tratan como CON vísceras y que decida el envío.
  */
+const TANDA_RECEPCIONES_VISCERAS = 40;
+const PAGINA_ITEMS_VISCERAS = 500;
+const MAX_PAGINAS_ITEMS_VISCERAS = 20;
+
+async function leerItemsViscerasDeTanda(ids) {
+  const items = [];
+  for (let pagina = 0; pagina < MAX_PAGINAS_ITEMS_VISCERAS; pagina += 1) {
+    const inicio = pagina * PAGINA_ITEMS_VISCERAS;
+    const { data, error } = await supabase
+      .from("carnes_recepcion_items")
+      .select("id, recepcion_id, tipo, codigo_item, cantidad, unidad")
+      .in("recepcion_id", ids)
+      .eq("tipo", "vicera")
+      .order("id", { ascending: true })
+      .range(inicio, inicio + PAGINA_ITEMS_VISCERAS - 1);
+    if (error) throw new Error(`Error al leer los renglones de vísceras: ${error.message}`);
+    items.push(...(data || []));
+    if ((data || []).length < PAGINA_ITEMS_VISCERAS) return items;
+  }
+  throw new Error("Los renglones de vísceras exceden el tope de páginas por tanda.");
+}
+
 async function recepcionesConVisceras(ids) {
-  const { data, error } = await supabase
-    .from("carnes_recepcion_items")
-    .select("recepcion_id, tipo, codigo_item, cantidad, unidad")
-    .in("recepcion_id", ids)
-    .eq("tipo", "vicera");
-  if (error) throw new Error(`Error al leer los renglones de vísceras: ${error.message}`);
-  const porRecepcion = new Map();
-  for (const i of data || []) porRecepcion.set(String(i.recepcion_id), [...(porRecepcion.get(String(i.recepcion_id)) || []), i]);
   const conVisceras = new Set();
-  for (const [id, items] of porRecepcion) {
-    if (!armarViscerasRecepcion({ recepcion: { id }, items }).vacio) conVisceras.add(id);
+  for (let i = 0; i < ids.length; i += TANDA_RECEPCIONES_VISCERAS) {
+    const tanda = ids.slice(i, i + TANDA_RECEPCIONES_VISCERAS);
+    let items;
+    try {
+      items = await leerItemsViscerasDeTanda(tanda);
+    } catch (error) {
+      console.error(`Vísceras: no se pudieron leer los renglones de ${tanda.length} recepciones (${error?.message}); se tratan como con vísceras.`);
+      for (const id of tanda) conVisceras.add(String(id));
+      continue;
+    }
+    const porRecepcion = new Map();
+    for (const it of items) {
+      const k = String(it.recepcion_id);
+      if (!porRecepcion.has(k)) porRecepcion.set(k, []);
+      porRecepcion.get(k).push(it);
+    }
+    for (const [id, suyos] of porRecepcion) {
+      if (!armarViscerasRecepcion({ recepcion: { id }, items: suyos }).vacio) conVisceras.add(id);
+    }
   }
   return conVisceras;
 }
