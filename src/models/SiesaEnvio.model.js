@@ -67,7 +67,7 @@ import {
   oficialCompleta,
   decidirCierreOficial,
 } from "../shared/siesaPorFecha.js";
-import { alertaDeViscerasSede } from "../shared/viscerasPreliquidacion.js";
+import { alertaDeViscerasSede, MAX_INTENTOS_VISCERAS_AUTOMATICOS } from "../shared/viscerasPreliquidacion.js";
 import {
   armarAjustesViscerasLiquidacion,
   guardaAjustesPorSede,
@@ -3236,6 +3236,9 @@ export async function enviarViscerasRecepcion(recepcionId, por, { inicio = Date.
     });
     return respuestaViscerasMandadas(base, r);
   } catch (e) {
+    // `ejecutarAjuste` se quedó sin tiempo antes del primer POST (el pedido ya gastó su presupuesto): no es un
+    // fallo del CEI, y el 503 "Leer la liquidación tardó demasiado" no le dice nada a quien cierra la recepción.
+    if (e?.sinTiempo) return { ...base, estado: "sin_tiempo" };
     console.error(`🔴 SIESA vísceras recepción #${recepcionId}: ${e.message}`);
     return { ...base, estado: "error", error: e.message };
   }
@@ -3266,8 +3269,8 @@ export async function enviarViscerasRecepcion(recepcionId, por, { inicio = Date.
 // la otra recibe `repetido` sin mandar nada. La lectura previa (`envioVigente`) solo
 // ahorra trabajo.
 
-/** Intentos automáticos con error antes de dejar de insistir: el resto lo decide una persona. */
-export const MAX_INTENTOS_VISCERAS_AUTOMATICOS = 3;
+// El tope vive en shared/viscerasPreliquidacion.js: el barrido lo usa para descartar las agotadas sin leer el envío.
+export { MAX_INTENTOS_VISCERAS_AUTOMATICOS };
 
 /** El ajuste de vísceras del esquema anterior (por sede o consolidado) que ya lleva esta recepción, o null. */
 async function ajusteViscerasVigenteDe(recepcionId) {
@@ -3364,6 +3367,8 @@ function motivoSinActivacionVisceras(oficial) {
  *   agotado      el CEI ya falló MAX_INTENTOS_VISCERAS_AUTOMATICOS INTENTOS (no filas): lo retoma una persona
  *   sin_visceras la recepción no tiene vísceras con código y cantidad
  *   sin_tiempo   no alcanza el tiempo seguro para un POST (o ejecutarAjuste no lo tuvo): lo retoma el barrido
+ *   compensacion_en_curso una compensación por faltante de esta recepción sigue `enviando`: reenviar encima la
+ *                pisaría; se reintenta después
  * Un CEI ya vigente (ok, enviando o sin_confirmar) responde con su estado y `repetido: true`.
  *
  * Es el único camino de envío automático del CEI (inline, resolver, barrido), así que aquí viven el piso de
@@ -3432,6 +3437,13 @@ export async function enviarViscerasPreliquidacion(
       };
     }
 
+    // Mismo candado que el reintento manual: una compensación en vuelo de esta recepción no se pisa. No es un
+    // fallo (sin alerta ni fila): se reintenta en la siguiente pasada del barrido.
+    const enCurso = ((await compensacionesDeRecepciones([recepcionId])).get(Number(recepcionId)) || []).find(
+      (c) => c.estado === "enviando",
+    );
+    if (enCurso) return { ...base, estado: "compensacion_en_curso", error: mensajeCompensacionEnCurso(enCurso) };
+
     const ms = restante ? restante() : PRESUPUESTO_CIERRE_RECEPCION_MS;
     if (ms == null || ms < MINIMO_CEI_PRELIQUIDACION_MS) {
       return { ...base, estado: "sin_tiempo" };
@@ -3479,6 +3491,7 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
     throw createError(409, "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).");
   }
   const sede = await sedePreliquidacionDeRecepcion(recepcionId);
+  let oficialDeLaSede = null;
   if (sede) {
     if (sede.estado !== "enviada") {
       throw createError(
@@ -3491,6 +3504,7 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
     if (oficial?.estado !== "ok") {
       throw createError(409, "La entrada oficial de la recepción no está ok en SIESA: las vísceras salen después de ella.");
     }
+    oficialDeLaSede = oficial;
     // Mismo piso que el envío automático: la historia anterior a la activación no se reenvía.
     const sinActivar = motivoSinActivacionVisceras(oficial);
     if (sinActivar === "sin_activacion") {
@@ -3538,6 +3552,22 @@ export async function reintentarViscerasRecepcion(recepcionId, por) {
   const armado = armarViscerasDe(recepcion);
   if (armado.vacio) {
     throw createError(409, "La recepción no tiene vísceras con código y cantidad para mandar.");
+  }
+  // Mismo candado que el envío automático: las CEA anteriores al 29/09/2026 llevaban las vísceras como un renglón
+  // más y el CEI las entraría dos veces.
+  if (oficialDeLaSede) {
+    const yaEstan = viscerasEnCea({
+      payload: oficialDeLaSede.payload,
+      items: recepcion.items,
+      bodega: recepcion.sede?.bodega_siesa,
+    });
+    if (yaEstan.length) {
+      throw createError(
+        409,
+        `La entrada oficial que ya está en SIESA trae estas vísceras: ${yaEstan.join(", ")}. ` +
+          "Mandar el CEI las entraría dos veces. Anulá esa entrada oficial y volvela a enviar (ya sin vísceras).",
+      );
+    }
   }
   const r = await mandarViscerasRecepcion({ recepcion, armado, por, inicio: Date.now() });
   // Otro pedido la reservó entre la pregunta de arriba y la reserva.

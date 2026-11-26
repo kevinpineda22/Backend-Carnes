@@ -152,6 +152,9 @@ export async function ejecutarCron(entrada, dependencias = {}) {
           hayPresupuesto,
           timeoutMs: () => restante() ?? ESPERA_MINIMA_CIERRE_MS,
           restante,
+          // Los CEI de vísceras los manda el barrido de abajo, DESPUÉS de todas las preliquidaciones: uno en línea
+          // le quitaría tiempo a las oficiales de las preliquidaciones que faltan por procesar.
+          viscerasInline: false,
         });
         await deps.registrarProgreso(corrida, { preliquidacionId: preliq.id, resultado: resumen });
         pendientes += resumen?.pendientes ?? 0;
@@ -172,7 +175,13 @@ export async function ejecutarCron(entrada, dependencias = {}) {
     // Vísceras (CEI) de las sedes de res con la oficial ya ok y sin CEI: reintento horario. Va DESPUÉS de las
     // preliquidaciones (lo nuevo primero) y con el mismo presupuesto. Sus pendientes NO cuentan en `pendientes`:
     // un CEI que SIESA rechaza de forma permanente mantendría la corrida en curso para siempre.
-    if (!dryRun && (!especie || especie === "res")) {
+    //
+    // Solo en la PRIMERA iteración de la cadena (sin `corrida_id`): el workflow repite hasta 6 iteraciones con el
+    // mismo `corrida_id` mientras queden pendientes y barrer en cada una repetiría las lecturas del barrido y
+    // retrasaría las oficiales de las iteraciones siguientes. Se eligió la primera y no la última porque la última
+    // solo se alcanza si los pendientes llegan a 0: una sede pendiente permanente dejaría al barrido sin correr nunca.
+    // Costo: los CEI de las sedes que se envían en iteraciones 2+ esperan al barrido de la siguiente hora.
+    if (!dryRun && corridaId == null && (!especie || especie === "res")) {
       try {
         const barrido = await deps.barrerVisceras({ ahora, hayPresupuesto, restante, log });
         if (barrido && (barrido.candidatas > 0 || barrido.error)) visceras = barrido;

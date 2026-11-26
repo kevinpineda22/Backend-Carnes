@@ -18,6 +18,9 @@
  * (ok, sin_visceras, bloqueado, anterior_a_activacion...) generan alerta.
  */
 
+/** Intentos automáticos con error antes de dejar de insistir: el resto lo decide una persona. */
+export const MAX_INTENTOS_VISCERAS_AUTOMATICOS = 3;
+
 export const MENSAJE_VISCERAS_AGOTADAS =
   "Se agotaron los reintentos automáticos del CEI de vísceras: el barrido horario ya no lo reenvía. " +
   "Una persona debe reintentarlo manualmente desde el panel de SIESA Talleres (reenviar las vísceras de la recepción).";

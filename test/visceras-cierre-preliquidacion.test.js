@@ -148,3 +148,42 @@ test("controlador: viscerasAlCerrar corre dentro del Promise.all; viscerasTrasVi
   assert.match(cuerpoFinalizar, /diferidas\s*\?/);
   assert.equal(cuerpoFinalizar.includes("viscerasSeDifieren"), false);
 });
+
+// ─── Carrera: la recepción ya quedó vinculada (p. ej. a mano, a una preliquidación en Borrador) ───
+
+test("predicha NO vinculable pero la base ya la tiene vinculada: NO se manda al cierre, se difiere", async () => {
+  const { deps, llamadas } = armar({ vincularia: false, sede: { sede: { id: 1 }, cabecera: { id: 1 } } });
+  const r = await viscerasAlCerrar(recepcion(), { inicioPeticion: 1000 }, deps);
+  assert.equal(r.diferidas, true);
+  assert.equal(llamadas.enviar.length, 0);
+  assert.deepEqual(llamadas.leer, [7]);
+});
+
+test("predicha NO vinculable y la base confirma que no tiene sede: se manda al cierre, en paralelo con la inicial", async () => {
+  const eventos = [];
+  const { deps, llamadas } = armar({ vincularia: false, sede: null, eventos });
+  const inicial = (async () => {
+    eventos.push("inicial:inicio");
+    await new Promise((r) => setTimeout(r, 30));
+    eventos.push("inicial:fin");
+  })();
+  const [r] = await Promise.all([viscerasAlCerrar(recepcion(), { inicioPeticion: 1000 }, deps), inicial]);
+  assert.equal(r.diferidas, false);
+  assert.equal(llamadas.enviar.length, 1);
+  assert.ok(eventos.indexOf("visceras:fin") < eventos.indexOf("inicial:fin"), "la lectura extra no serializa el cierre");
+});
+
+test("si no se puede leer el vínculo real antes de mandar, se difiere (el CEI nunca antes de la oficial)", async () => {
+  const { deps, llamadas } = armar({ vincularia: false, falloLectura: new Error("db caída") });
+  const r = await viscerasAlCerrar(recepcion(), { inicioPeticion: 1000 }, deps);
+  assert.equal(r.diferidas, true);
+  assert.equal(llamadas.enviar.length, 0);
+});
+
+test("cerdo, módulo apagado o bandera apagada: no se lee el vínculo (nada que decidir)", async () => {
+  for (const [rec, cfg] of [[recepcion({ especie: "cerdo" }), {}], [recepcion(), { habilitada: false }], [recepcion(), { alCierre: false }]]) {
+    const { deps, llamadas } = armar(cfg);
+    await viscerasAlCerrar(rec, { inicioPeticion: 5 }, deps);
+    assert.equal(llamadas.leer.length, 0);
+  }
+});

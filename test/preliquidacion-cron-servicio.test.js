@@ -327,3 +327,40 @@ test("barrido de vísceras: sus pendientes NO mantienen la corrida en curso (un 
   assert.equal(r.pendientes, 0);
   assert.equal(por(llamadas, "terminarCorrida")[0].args[1].continua, false);
 });
+
+// ─── Vísceras: el cron no las manda en línea, las lleva el barrido ─────────
+
+test("el cron pide procesar SIN el CEI en línea (viscerasInline: false) para cada preliquidación", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }, { id: 2, especie: "res" }] });
+  deps.barrerVisceras = async () => ({ candidatas: 0 });
+  await ejecutarCron({ origen: "schedule" }, deps);
+  const procesadas = por(llamadas, "procesar");
+  assert.equal(procesadas.length, 2);
+  for (const p of procesadas) assert.equal(p.args[1].viscerasInline, false);
+});
+
+test("dos preliquidaciones abiertas: las oficiales de la segunda se procesan ANTES de mandar cualquier CEI", async () => {
+  const orden = [];
+  const { deps } = armar({ abiertas: [{ id: 1, especie: "res" }, { id: 2, especie: "res" }] });
+  // Imita el contrato de `procesarPreliquidacion`: oficiales y, solo si es en línea, el CEI al final.
+  deps.procesar = async (id, opciones) => {
+    orden.push(`oficial:${id}`);
+    if (opciones.viscerasInline !== false) orden.push(`cei:${id}`);
+    return { preliquidacion_id: id, resultado: "ok", enviadas: 1, pendientes: 0 };
+  };
+  deps.barrerVisceras = async () => {
+    orden.push("barrido");
+    return { candidatas: 2 };
+  };
+  await ejecutarCron({ origen: "schedule" }, deps);
+  assert.deepEqual(orden, ["oficial:1", "oficial:2", "barrido"]);
+});
+
+test("el barrido de vísceras corre solo en la PRIMERA iteración de la cadena (sin corrida_id); las que continúan no lo repiten", async () => {
+  const { deps, llamadas } = armar({ abiertas: [{ id: 1, especie: "res" }] });
+  deps.barrerVisceras = async () => { llamadas.push({ nombre: "barrerVisceras" }); return { candidatas: 0 }; };
+  await ejecutarCron({ origen: "schedule" }, deps);
+  assert.equal(por(llamadas, "barrerVisceras").length, 1, "primera iteración");
+  await ejecutarCron({ origen: "schedule", corridaId: 77 }, deps);
+  assert.equal(por(llamadas, "barrerVisceras").length, 1, "la continuación no lo repite");
+});

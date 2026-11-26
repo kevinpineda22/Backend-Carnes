@@ -672,3 +672,12 @@ test("CEI: sin `restante` propio se deriva del presupuesto: con presupuesto alca
   assert.equal(orden.cei.length, 2);
   assert.ok(orden.cei[0].ctx.restante() >= MINIMO_CEI);
 });
+
+test("CEI: con viscerasInline: false (el cron) no se manda ningún CEI en línea y no se reporta `visceras`", async () => {
+  const orden = [];
+  const r = await procesar({ ...conRegistro(orden), restante: () => 200_000, viscerasInline: false });
+  assert.deepEqual(orden.filter((x) => typeof x === "string"), ["oficial:11", "oficial:12"]);
+  assert.equal(orden.cei, undefined);
+  assert.equal(r.enviadas, 2);
+  assert.equal(r.visceras, undefined);
+});

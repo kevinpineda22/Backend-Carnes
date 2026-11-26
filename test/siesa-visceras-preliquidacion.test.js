@@ -590,3 +590,54 @@ test("una oficial sin las vísceras en su payload no bloquea", async () => {
   oficial.payload = { Movimientos: [{ ITEM: "1", BODEGA: "00201", CANTIDAD: 10 }] };
   assert.equal((await M.enviarViscerasPreliquidacion(2, { restante: amplio })).estado, "ok");
 });
+
+// ─── Sin tiempo en el CEI del cierre: resultado claro, no el 503 de la liquidación ──────
+
+test("enviarViscerasRecepcion: si el pedido ya gastó su tiempo responde sin_tiempo (no 'Leer la liquidación tardó demasiado')", async () => {
+  nuevo();
+  process.env.CARNES_SIESA_VISCERAS_AL_CIERRE = "true";
+  const r = await M.enviarViscerasRecepcion(2, "recibidor", { inicio: Date.now() - 10 * 60 * 1000 });
+  assert.equal(r.estado, "sin_tiempo");
+  assert.equal(r.error ?? null, null);
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});
+
+// ─── Compensación en vuelo: el camino automático no reenvía encima ──────────────────────
+
+const compensacionEnVuelo = () => ({
+  id: 40, tipo: "ajuste_faltante", estado: "enviando", recepcion_id: null, liquidacion_id: null, recepcion_ids: [2],
+  referencia: "TC FALT R2", bodega: "00201", enviado_at: "2026-11-20T03:00:30Z",
+});
+
+test("camino automático: una compensación por faltante en vuelo bloquea el reenvío (no manda, no deja fila)", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push(compensacionEnVuelo());
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "compensacion_en_curso");
+  assert.match(r.error, /TC FALT R2/);
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});
+
+test("camino automático: una compensación ya terminada (ok) no estorba", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push({ ...compensacionEnVuelo(), estado: "ok" });
+  const r = await M.enviarViscerasPreliquidacion(2, { restante: amplio });
+  assert.equal(r.estado, "ok");
+});
+
+// ─── Reintento manual: mismo candado de "vísceras ya en la CEA" ─────────────────────────
+
+test("reintento manual de una recepción vinculada: si la oficial anterior ya trae las vísceras, 409 (no las entra dos veces)", async () => {
+  nuevo();
+  db.carnes_preliquidacion_sedes = [{ id: 11, recepcion_id: 2, estado: "enviada" }];
+  const oficial = db.carnes_siesa_envios.find((f) => f.tipo === "oficial");
+  oficial.payload = { Movimientos: [{ ITEM: "20101", BODEGA: "00201", CANTIDAD: "33.30", UNIDAD_MEDIDA: "KL" }] };
+  await assert.rejects(
+    () => M.reintentarViscerasRecepcion(2, "admin"),
+    (e) => e.statusCode === 409 && /Mondongo/.test(e.message),
+  );
+  assert.equal(llamadas.length, 0);
+  assert.equal(cei().length, 0);
+});

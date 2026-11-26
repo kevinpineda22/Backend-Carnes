@@ -13,7 +13,7 @@ class Q {
   constructor(t) { this.t = t; this.f = []; this.lim = null; this.ord = []; this.rango = null; }
   select() { return this; }
   eq(c, v) { this.f.push((r) => String(r[c]) === String(v)); return this; }
-  in(c, a) { this.f.push((r) => a.map(String).includes(String(r[c]))); return this; }
+  in(c, a) { if (c === "recepcion_id") this.ids = a; if (c === "envio_origen_id" && db.falloCompensaciones) this.falla = true; this.f.push((r) => a.map(String).includes(String(r[c]))); return this; }
   overlaps(c, a) { this.f.push((r) => Array.isArray(r[c]) && r[c].some((x) => a.map(Number).includes(Number(x)))); return this; }
   gte(c, v) { this.f.push((r) => r[c] >= v); return this; }
   order(c, o) { this.ord.push([c, o?.ascending !== false]); return this; }
@@ -21,7 +21,9 @@ class Q {
   range(a, b) { this.rango = [a, b]; return this; }
   then(res, rej) {
     lecturas.push(this.t);
+    if (this.falla) return Promise.resolve({ data: null, error: { message: "db caída" } }).then(res, rej);
     let rows = (db[this.t] ?? []).filter((r) => this.f.every((g) => g(r)));
+    if (this.t === "carnes_recepcion_items") rows = itemsDe(this.ids ?? [], rows);
     for (const [c, asc] of [...this.ord].reverse()) rows = [...rows].sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0) * (asc ? 1 : -1));
     if (this.rango) rows = rows.slice(this.rango[0], this.rango[1] + 1);
     if (this.lim != null) rows = rows.slice(0, this.lim);
@@ -29,6 +31,15 @@ class Q {
   }
 }
 mock.module(url("config/supabase.js"), { namedExports: { supabase: { from: (t) => new Q(t), rpc: async () => ({ data: { resultado: "ok" }, error: null }) } } });
+// Renglones de las recepciones: las que no tienen renglones propios en `db.carnes_recepcion_items` llevan una víscera
+// con código y cantidad (lo normal); `db.sinVisceras` son las recepciones que no tienen ninguna.
+const itemsDe = (ids, propios) =>
+  ids.flatMap((id) => {
+    if ((db.sinVisceras ?? []).includes(Number(id))) return [];
+    const suyos = propios.filter((r) => Number(r.recepcion_id) === Number(id));
+    if (suyos.length || (db.carnes_recepcion_items ?? []).some((r) => Number(r.recepcion_id) === Number(id))) return suyos;
+    return [{ recepcion_id: id, tipo: "vicera", codigo_item: "20101", cantidad: 10, unidad: "KL" }];
+  });
 const Modelo = await import(url("models/Preliquidacion.model.js"));
 const Cfg = await import(url("config/siesa.js"));
 
@@ -63,6 +74,9 @@ beforeEach(() => {
     { id: 16, preliquidacion_id: 1, recepcion_id: 106, estado: "enviada", version: 4, updated_at: hace(60) },
   ];
   db.carnes_siesa_envios = [{ id: 1, recepcion_id: 102, tipo: "visceras_recepcion", estado: "ok" }];
+  db.carnes_recepcion_items = [];
+  db.sinVisceras = [];
+  db.falloCompensaciones = false;
 });
 
 test("selecciona sedes de res enviadas, recientes y sin CEI vigente (también de preliquidaciones cerradas)", async () => {
@@ -236,4 +250,72 @@ test("piso de activación: sin la variable o inválida el barrido no lee sedes n
     assert.equal(lecturas.length, 0, "ni siquiera consulta la base");
     assert.equal(avisos.filter((m) => /CARNES_VISCERAS_PRELIQ_DESDE/.test(m)).length, 1, `un solo aviso (${valor})`);
   }
+});
+
+// ─── Exclusiones baratas primero: lo que nunca va a mandar nada no cuesta lecturas cada hora ────────────
+
+test("sin vísceras que mandar (ninguna, sin código o en cero) la sede NO es candidata", async () => {
+  db.sinVisceras = [101]; // ni un renglón de víscera
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => x.sede.id), [15]);
+
+  db.sinVisceras = [];
+  db.carnes_recepcion_items = [
+    { recepcion_id: 101, tipo: "vicera", codigo_item: "", cantidad: 5, unidad: "KL" }, // sin código
+    { recepcion_id: 101, tipo: "carne", codigo_item: "1", cantidad: 5, unidad: "KL" }, // no es víscera
+    { recepcion_id: 105, tipo: "vicera", codigo_item: "20101", cantidad: 0, unidad: "KL" }, // en cero
+  ];
+  assert.deepEqual((await Modelo.viscerasPendientes({ ahora: AHORA })).map((x) => x.sede.id), []);
+});
+
+test("una recepción con UNA víscera con código y cantidad sí es candidata aunque tenga otros renglones", async () => {
+  db.carnes_recepcion_items = [
+    { recepcion_id: 101, tipo: "carne", codigo_item: "1", cantidad: 5, unidad: "KL" },
+    { recepcion_id: 101, tipo: "vicera", codigo_item: "20101", cantidad: 3.3, unidad: "KL" },
+    { recepcion_id: 105, tipo: "vicera", codigo_item: "20102", cantidad: 2, unidad: "UND" },
+  ];
+  assert.deepEqual((await Modelo.viscerasPendientes({ ahora: AHORA })).map((x) => x.sede.id), [11, 15]);
+});
+
+test("los renglones se leen en lote por página (una lectura), no uno por sede", async () => {
+  lecturas = [];
+  await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.equal(lecturas.filter((t) => t === "carnes_recepcion_items").length, 1);
+});
+
+test("las sedes sin vísceras ni siquiera llegan a la lectura de envíos (las baratas primero)", async () => {
+  db.sinVisceras = [101, 102, 105, 106];
+  lecturas = [];
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista, []);
+  assert.equal(lecturas.filter((t) => t === "carnes_siesa_envios").length, 0);
+});
+
+const hecha102 = [{ id: 1, recepcion_id: 102, tipo: "visceras_recepcion", estado: "ok" }];
+const errorCei = (id, recepcion) => ({ id, recepcion_id: recepcion, tipo: "visceras_recepcion", estado: "error" });
+const compensacion = (id, origen) => ({ id, tipo: "ajuste_faltante", estado: "ok", envio_origen_id: origen });
+
+test("recepción en el tope de intentos (3 con error): no se reintenta, pero el aviso de agotada sigue saliendo sin leer más", async () => {
+  db.carnes_siesa_envios = [...hecha102, errorCei(31, 101), errorCei(32, 101), errorCei(33, 101)];
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => [x.sede.id, Boolean(x.agotada)]), [[11, true], [15, false]]);
+
+  const r = await barrer();
+  assert.deepEqual(enviados.map((e) => e.recepcionId), [105], "la agotada no pasa por el envío completo (≈7 lecturas)");
+  assert.equal(r.resultados.agotado, 1);
+  assert.deepEqual(alertas.map((a) => a.evento), ["visceras_agotadas"]);
+  assert.equal(alertas[0].sedeId, 11);
+});
+
+test("con 2 intentos con error NO está agotada; una compensación ok detrás de un error no lo cuenta como intento", async () => {
+  db.carnes_siesa_envios = [...hecha102, errorCei(31, 101), errorCei(32, 101), errorCei(41, 105), errorCei(42, 105), errorCei(43, 105), compensacion(51, 43)];
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => [x.sede.id, Boolean(x.agotada)]), [[11, false], [15, false]]);
+});
+
+test("una falla al leer las compensaciones NO excluye a nadie (sin dato no se descarta)", async () => {
+  db.carnes_siesa_envios = [...hecha102, errorCei(31, 101), errorCei(32, 101), errorCei(33, 101)];
+  db.falloCompensaciones = true; // sin saber si hubo compensaciones, lo seguro es dejar que el envío decida
+  const lista = await Modelo.viscerasPendientes({ ahora: AHORA });
+  assert.deepEqual(lista.map((x) => [x.sede.id, Boolean(x.agotada)]), [[11, false], [15, false]]);
 });

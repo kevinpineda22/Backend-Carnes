@@ -77,7 +77,13 @@ CARNES_SIESA_VISCERAS_AL_CIERRE=false
 
 # ─── SIESA: vísceras de res que lleva la preliquidación (OBLIGATORIA al desplegar) ───
 # Fecha de activación del CEI de vísceras de las recepciones de res de la preliquidación de talleres
-# (ISO; se recomienda con zona: 2026-12-01T00:00:00-05:00). Solo mandan su CEI las sedes cuya entrada
+# Formatos aceptados (estrictos, nada más): (a) YYYY-MM-DD, que se toma como 00:00 hora de Bogotá
+# (UTC-05:00); (b) YYYY-MM-DDTHH:mm, :ss o :ss.fff CON zona explícita: Z o ±HH:MM.
+# Ejemplo recomendado: CARNES_VISCERAS_PRELIQ_DESDE=2026-11-26T00:00:00-05:00
+# Se rechazan (= inválida, no sale nada y se avisa): 01/12/2026, 12, 2026-11-26T00:00:00 (sin zona),
+# 2026-11-26 00:00, y fechas imposibles como 2026-02-30. Si el piso queda a más de 1 día en el futuro o
+# a más de 14 días en el pasado se acepta pero se deja un aviso en el log (una vez por proceso).
+# Solo mandan su CEI las sedes cuya entrada
 # OFICIAL quedó ok a partir de ese instante (inclusive; una oficial confirmada a mano cuenta desde que se
 # confirmó). Las anteriores se omiten (`anterior_a_activacion`) y el barrido horario nunca las reintenta:
 # es el freno contra reenviar a SIESA el historial de sedes ya enviadas al desplegar.

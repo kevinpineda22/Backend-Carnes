@@ -25,9 +25,15 @@ import * as SiesaEnvio from "../models/SiesaEnvio.model.js";
  *                            perder una carrera) y, si no, la manda al cierre.
  *   · no se pudo decidir  -> se difiere (camino seguro: un CEI nunca debe adelantarse a la oficial).
  *
- * Si la decisión de "no se vincularía" fallara por una carrera (se abrió una preliquidación entre la lectura y
- * el vínculo), las vísceras se mandan al cierre Y la preliquidación las vería después con un CEI vigente:
- * el índice único de `carnes_siesa_envios` evita el duplicado (`repetido`).
+ * Antes de mandar al cierre una recepción que se predijo "no vinculable" se lee su vínculo REAL en la base
+ * (`leerSedeDeRecepcion`): una recepción en Borrador puede haberse vinculado a mano
+ * (POST /preliquidaciones/:id/recepciones) y la predicción no lo ve. Si ya tiene sede, se difiere como si se
+ * hubiera predicho vinculable. Esa lectura va DENTRO del `Promise.all` del cierre (no serializa las no vinculadas).
+ *
+ * Ventana ACEPTADA: si el admin crea o vincula una preliquidación en los segundos entre esa lectura y
+ * `preliquidacionAlFinalizar`, las vísceras se mandan al cierre Y la preliquidación las vería después con un CEI
+ * vigente: el índice único de `carnes_siesa_envios` evita el duplicado (`repetido`) y el CEI solo adelanta a la
+ * oficial en esa ventana de segundos, algo que la operación acepta a cambio de no serializar el cierre.
  */
 
 function dependenciasPorDefecto() {
@@ -65,6 +71,13 @@ export async function viscerasAlCerrar(recepcion, { inicioPeticion }, dependenci
     return { diferidas: true };
   }
   if (seVincularia) return { diferidas: true };
+  // Predicha "no vinculable": confirmar en la base que de verdad no tiene sede (vínculo manual de un Borrador).
+  try {
+    if (await deps.leerSedeDeRecepcion(recepcion.id)) return { diferidas: true };
+  } catch (error) {
+    deps.log.error?.(`Vísceras al cierre de la recepción ${recepcion.id}: no se pudo leer su sede (${error?.message}).`);
+    return { diferidas: true };
+  }
   return { diferidas: false, resultado: await alCierre() };
 }
 

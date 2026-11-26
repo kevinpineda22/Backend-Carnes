@@ -12,7 +12,7 @@ import {
 import { valorRetomasSedes, valorVicerasSede } from "../shared/preliquidacionFuentes.js";
 import { randomUUID } from "node:crypto";
 import { siesaActivo, viscerasPreliquidacionDesde } from "../config/siesa.js";
-import { alertaDeViscerasSede } from "../shared/viscerasPreliquidacion.js";
+import { alertaDeViscerasSede, MAX_INTENTOS_VISCERAS_AUTOMATICOS } from "../shared/viscerasPreliquidacion.js";
 import { encolarAlerta } from "../services/preliquidacionAlertas.js";
 import {
   AVISO_SERVICIO_DESBLOQUEO,
@@ -31,6 +31,7 @@ import {
   ESPERA_MINIMA_CIERRE_MS,
   MINIMO_CEI_PRELIQUIDACION_MS,
   PRESUPUESTO_CIERRE_RECEPCION_MS,
+  armarViscerasRecepcion,
   esperaParaEnvio,
 } from "../shared/siesaAjusteVisceras.js";
 import { TIMEOUT_OFICIAL_MS } from "../services/siesa.service.js";
@@ -1221,6 +1222,61 @@ async function recepcionesConViscerasHechas(ids) {
 }
 
 /**
+ * Las recepciones (de las dadas) con ALGO que mandar: una víscera con código y cantidad que no quede en cero al
+ * llevarla a los decimales de su unidad. Es la misma regla de `enviarViscerasPreliquidacion` (`armado.vacio`), pero
+ * leída en LOTE y solo con las columnas que importan, para no gastar ~7 lecturas por sede en las que nunca saldrán.
+ */
+async function recepcionesConVisceras(ids) {
+  const { data, error } = await supabase
+    .from("carnes_recepcion_items")
+    .select("recepcion_id, tipo, codigo_item, cantidad, unidad")
+    .in("recepcion_id", ids)
+    .eq("tipo", "vicera");
+  if (error) throw new Error(`Error al leer los renglones de vísceras: ${error.message}`);
+  const porRecepcion = new Map();
+  for (const i of data || []) porRecepcion.set(String(i.recepcion_id), [...(porRecepcion.get(String(i.recepcion_id)) || []), i]);
+  const conVisceras = new Set();
+  for (const [id, items] of porRecepcion) {
+    if (!armarViscerasRecepcion({ recepcion: { id }, items }).vacio) conVisceras.add(id);
+  }
+  return conVisceras;
+}
+
+/**
+ * Las recepciones (de las dadas) cuyo CEI ya llegó al tope de intentos automáticos, en lote. Cuenta INTENTOS, no
+ * filas, igual que `intentosFallidosViscerasDe` (una fila `error` con una compensación `ok` detrás no cerró el
+ * intento). FALLA ABIERTO: si no se puede leer una compensación no se descarta a nadie, que decida el envío.
+ */
+async function recepcionesAgotadas(ids) {
+  const { data: errores, error } = await supabase
+    .from("carnes_siesa_envios")
+    .select("id, recepcion_id")
+    .in("recepcion_id", ids)
+    .eq("tipo", "visceras_recepcion")
+    .eq("estado", "error");
+  if (error) throw new Error(`Error al leer los envíos de vísceras: ${error.message}`);
+  const agotadas = new Set();
+  const porRecepcion = new Map();
+  for (const f of errores || []) porRecepcion.set(String(f.recepcion_id), [...(porRecepcion.get(String(f.recepcion_id)) || []), f]);
+  // Con menos filas que el tope ninguna puede estar agotada: ahorra la segunda lectura.
+  const candidatas = [...porRecepcion.entries()].filter(([, fs]) => fs.length >= MAX_INTENTOS_VISCERAS_AUTOMATICOS);
+  if (!candidatas.length) return agotadas;
+
+  const { data: compensadas, error: errorCompensadas } = await supabase
+    .from("carnes_siesa_envios")
+    .select("envio_origen_id")
+    .eq("tipo", "ajuste_faltante")
+    .eq("estado", "ok")
+    .in("envio_origen_id", candidatas.flatMap(([, fs]) => fs.map((f) => f.id)));
+  if (errorCompensadas) return agotadas;
+  const continuadas = new Set((compensadas || []).map((c) => String(c.envio_origen_id)));
+  for (const [recepcionId, fs] of candidatas) {
+    if (fs.filter((f) => !continuadas.has(String(f.id))).length >= MAX_INTENTOS_VISCERAS_AUTOMATICOS) agotadas.add(recepcionId);
+  }
+  return agotadas;
+}
+
+/**
  * Sedes de res con la entrada oficial ya enviada cuya recepción NO tiene el CEI de vísceras hecho (un CEI vigente
  * —ok, enviando o sin_confirmar— ni un ajuste de vísceras del esquema anterior), de preliquidaciones abiertas o
  * cerradas, de la MÁS NUEVA a la más vieja.
@@ -1229,11 +1285,17 @@ async function recepcionesConViscerasHechas(ids) {
  * (`CARNES_VISCERAS_PRELIQ_DESDE`; sin él, o inválido, no devuelve nada): nunca reenvía historia antigua.
  *
  * Sin hambruna: se lee por PÁGINAS hasta agotar la ventana (no un único bloque de 200 filas), y en cada página
- * se descartan las de cerdo y las que ya tienen su CEI. Una sede atascada (sin vísceras, bloqueada, agotada...)
- * no tapa a las demás: el tope de la corrida cuenta solo los envíos reales (ver `barrerVisceras`).
- * Sede por sede, el envío vuelve a verificar todo (oficial ok, piso, tope de intentos, dedupe).
+ * se descartan las de cerdo y las que ya tienen su CEI. Una sede atascada (bloqueada, sin oficial...) no tapa a las
+ * demás: el tope de la corrida cuenta solo los envíos reales (ver `barrerVisceras`).
  *
- * @returns {Promise<Array<{sede: object, especie: string}>>}
+ * Las exclusiones BARATAS van primero y en lote por página (no por sede), para que las que nunca mandarán nada no
+ * cuesten ~7 lecturas cada hora: (1) la recepción no tiene ninguna víscera para mandar (misma regla del envío),
+ * (2) ya tiene su CEI o un ajuste anterior, (3) ya está en el tope de intentos automáticos: esa NO se descarta del
+ * todo, se devuelve marcada `agotada: true` para que el barrido solo emita su aviso (deduplicado) sin releer nada.
+ * Ninguna sede elegible se excluye: todo lo que se descarta es algo que el envío completo también descartaría.
+ * Sede por sede, el envío vuelve a verificar todo (oficial ok, piso, dedupe, compensaciones...).
+ *
+ * @returns {Promise<Array<{sede: object, especie: string, agotada?: true}>>}
  */
 export async function viscerasPendientes({ ahora = new Date(), log = console } = {}) {
   const { desde: piso } = viscerasPreliquidacionDesde({ log });
@@ -1263,8 +1325,16 @@ export async function viscerasPendientes({ ahora = new Date(), log = console } =
     const especies = new Map((preliqs || []).map((x) => [String(x.id), x.especie]));
     const deRes = sedes.filter((x) => especies.get(String(x.preliquidacion_id)) === "res");
     if (deRes.length) {
-      const hechas = await recepcionesConViscerasHechas(deRes.map((x) => x.recepcion_id));
-      for (const sede of deRes) if (!hechas.has(String(sede.recepcion_id))) pendientes.push({ sede, especie: "res" });
+      const conVisceras = await recepcionesConVisceras(deRes.map((x) => x.recepcion_id));
+      const conAlgo = deRes.filter((x) => conVisceras.has(String(x.recepcion_id)));
+      if (conAlgo.length) {
+        const hechas = await recepcionesConViscerasHechas(conAlgo.map((x) => x.recepcion_id));
+        const porHacer = conAlgo.filter((x) => !hechas.has(String(x.recepcion_id)));
+        const agotadas = porHacer.length ? await recepcionesAgotadas(porHacer.map((x) => x.recepcion_id)) : new Set();
+        for (const sede of porHacer) {
+          pendientes.push(agotadas.has(String(sede.recepcion_id)) ? { sede, especie: "res", agotada: true } : { sede, especie: "res" });
+        }
+      }
     }
     if (sedes.length < PAGINA_BARRIDO_VISCERAS) break;
   }
@@ -1308,18 +1378,19 @@ export async function barrerVisceras(opciones = {}) {
   try {
     const pendientes = await listarPendientes({ ahora, log });
     resumen.candidatas = pendientes.length;
-    for (const { sede, especie } of pendientes) {
+    for (const { sede, especie, agotada } of pendientes) {
       if (resumen.intentadas >= LIMITE_BARRIDO_VISCERAS) break;
       if (!hayPresupuesto()) {
         resumen.agotado = true;
         break;
       }
+      // Ya en el tope de intentos: no se relee nada, solo el aviso de agotadas (deduplicado por versión de la sede).
       const r = await enviarViscerasDeSede(sede, {
         especie,
         por,
         restante,
         siesaActivo: encendido,
-        enviarVisceras,
+        enviarVisceras: agotada ? async () => ({ estado: "agotado" }) : enviarVisceras,
         encolar,
         log,
       });
@@ -1625,6 +1696,9 @@ async function liquidarCabecera(id, contexto) {
  * @param {string}  [opciones.origen] schedule|sweep|dispatch|inmediato|admin
  * @param {Function} [opciones.hayPresupuesto] se consulta antes de cada envío; false = agotado
  * @param {Function} [opciones.procesarSede] inyectable para pruebas
+ * @param {boolean} [opciones.viscerasInline=true] false = NO mandar los CEI de vísceras al final de la corrida. Lo
+ *   pasa el cron: sus preliquidaciones se procesan una tras otra y un CEI en línea retrasaría las oficiales de las
+ *   siguientes; el barrido de vísceras (`barrerVisceras`), que el cron corre al final, las recoge todas.
  */
 export async function procesarPreliquidacion(id, opciones = {}) {
   const {
@@ -1639,6 +1713,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
     enviarVisceras,
     por = null,
     timeoutMs,
+    viscerasInline = true,
     encolar = encolarAlerta,
     log = console,
   } = opciones;
@@ -1877,7 +1952,7 @@ export async function procesarPreliquidacion(id, opciones = {}) {
   // de datos y no depende del CEI, así que no debe esperar sus POST ni quedar sin hacer si el tiempo se acaba.
   // Cada CEI tiene su propio presupuesto, min(lo que queda, 90 s), y si no alcanza el mínimo seguro para un POST
   // no se arranca (`sin_tiempo`): lo toma el barrido horario.
-  if (siesaEncendido && contexto.cabecera.especie === "res") {
+  if (viscerasInline && siesaEncendido && contexto.cabecera.especie === "res") {
     const presupuestoCei = () => {
       const ms = restante();
       return ms == null ? null : Math.min(ms, PRESUPUESTO_CIERRE_RECEPCION_MS);

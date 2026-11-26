@@ -367,28 +367,80 @@ export function reiniciarAvisoViscerasPreliquidacionDesde() {
   avisosPisoVisceras.clear();
 }
 
+const DIA_MS = 24 * 60 * 60 * 1000;
+/** Bogotá es UTC-5 fijo (sin horario de verano), igual que en `shared/preliquidacionTiempo.js`. */
+const OFFSET_BOGOTA_MS = 5 * 60 * 60 * 1000;
+
+/** Fecha calendario real (rechaza 2026-02-30). */
+function calendarioValido(anio, mes, dia) {
+  const c = new Date(Date.UTC(anio, mes - 1, dia));
+  return c.getUTCFullYear() === anio && c.getUTCMonth() === mes - 1 && c.getUTCDate() === dia;
+}
+
+/**
+ * Parseo ESTRICTO del piso. Solo `YYYY-MM-DD` (00:00 Bogotá) o `YYYY-MM-DDTHH:mm(:ss(.fff)?)?` con `Z` o `±HH:MM`.
+ * `Date.parse` a secas aceptaría "01/12/2026" (12 de enero), "12" (año 2001) y leería fechas sin zona en la hora
+ * del servidor: un piso mal entendido hacia atrás reenvía la historia.
+ * @returns {Date|null}
+ */
+function parsearPisoVisceras(crudo) {
+  let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(crudo);
+  if (m) {
+    const [anio, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    if (!calendarioValido(anio, mes, dia)) return null;
+    return new Date(Date.UTC(anio, mes - 1, dia) + OFFSET_BOGOTA_MS);
+  }
+  m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/.exec(crudo);
+  if (!m) return null;
+  const [anio, mes, dia, hh, mm] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5])];
+  const ss = m[6] === undefined ? 0 : Number(m[6]);
+  if (!calendarioValido(anio, mes, dia) || hh > 23 || mm > 59 || ss > 59) return null;
+  let offsetMin = 0;
+  if (m[7] !== "Z") {
+    const oh = Number(m[7].slice(1, 3));
+    const om = Number(m[7].slice(4, 6));
+    if (oh > 23 || om > 59) return null;
+    offsetMin = (m[7][0] === "-" ? -1 : 1) * (oh * 60 + om);
+  }
+  return new Date(Date.UTC(anio, mes - 1, dia, hh, mm, ss) - offsetMin * 60 * 1000);
+}
+
 /**
  * Piso de activación del CEI de vísceras que lleva la preliquidación: `CARNES_VISCERAS_PRELIQ_DESDE`
- * (fecha o fecha y hora ISO; se recomienda con zona, p. ej. `2026-12-01T00:00:00-05:00`). Se lee en cada llamada.
+ * (formato estricto: `YYYY-MM-DD` = 00:00 Bogotá, o `YYYY-MM-DDTHH:mm(:ss)` con `Z` o `±HH:MM`, p. ej.
+ * `2026-12-01T00:00:00-05:00`). Se lee en cada llamada.
  *
  * Solo salen CEI de sedes cuya entrada OFICIAL quedó ok a partir de ese instante (inclusive): al desplegar, las
  * sedes enviadas antes no se mandan ni las reintenta el barrido. Es el freno contra el reenvío masivo de la historia.
  *
- * FALLA SEGURO: sin la variable, vacía o con una fecha inválida NO sale ningún CEI por la preliquidación. Se avisa
+ * FALLA SEGURO: sin la variable, vacía o con un formato/fecha inválidos NO sale ningún CEI por la preliquidación. Se avisa
  * una sola vez por proceso (log.warn). En el despliegue hay que definirla explícitamente.
  *
  * @returns {{desde: Date|null, motivo: null|"sin_definir"|"invalida"}}
  */
-export function viscerasPreliquidacionDesde({ log = console } = {}) {
+export function viscerasPreliquidacionDesde({ log = console, ahora = new Date() } = {}) {
   const crudo = leer("CARNES_VISCERAS_PRELIQ_DESDE");
-  const t = crudo ? Date.parse(crudo) : NaN;
-  if (Number.isFinite(t)) return { desde: new Date(t), motivo: null };
+  const desde = crudo ? parsearPisoVisceras(crudo) : null;
+  if (desde) {
+    // Plausibilidad: se acepta igual, pero un piso en el futuro (> 1 día) frena todo y uno muy viejo reenvía historia.
+    const dif = desde.getTime() - ahora.getTime();
+    const sospechoso = dif > DIA_MS ? "futuro" : dif < -14 * DIA_MS ? "antiguo" : null;
+    if (sospechoso && !avisosPisoVisceras.has(sospechoso)) {
+      avisosPisoVisceras.add(sospechoso);
+      log?.warn?.(
+        sospechoso === "futuro"
+          ? `CARNES_VISCERAS_PRELIQ_DESDE ("${crudo}") está a más de un día en el futuro: no sale ningún CEI de vísceras hasta esa fecha. Verifica que sea la activación prevista.`
+          : `CARNES_VISCERAS_PRELIQ_DESDE ("${crudo}") es de hace más de 14 días: las sedes enviadas desde entonces pueden reenviarse a SIESA. Verifica que sea la activación prevista.`,
+      );
+    }
+    return { desde, motivo: null };
+  }
   const motivo = crudo ? "invalida" : "sin_definir";
   if (!avisosPisoVisceras.has(motivo)) {
     avisosPisoVisceras.add(motivo);
     log?.warn?.(
       motivo === "invalida"
-        ? `CARNES_VISCERAS_PRELIQ_DESDE tiene una fecha inválida ("${crudo}"): no sale ningún CEI de vísceras por la preliquidación hasta corregirla.`
+        ? `CARNES_VISCERAS_PRELIQ_DESDE tiene un formato inválido ("${crudo}"): use YYYY-MM-DD o YYYY-MM-DDTHH:mm:ss con Z o ±HH:MM. No sale ningún CEI de vísceras por la preliquidación hasta corregirla.`
         : "CARNES_VISCERAS_PRELIQ_DESDE no está definida: no sale ningún CEI de vísceras por la preliquidación hasta definirla (fecha ISO de activación).",
     );
   }
