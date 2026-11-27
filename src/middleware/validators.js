@@ -1289,6 +1289,23 @@ export const validators = {
       .strict(),
   ),
 
+  // Anular una preliquidación ya enviada a SIESA (sql/046): confirmación explícita de que los oficiales ya se
+  // anularon a mano en SIESA, más el motivo (trazabilidad).
+  anularPreliquidacionEnviada: validar(
+    z
+      .object({
+        confirmo_anulacion_siesa: z.literal(true, {
+          errorMap: () => ({ message: "Confirme que todos los documentos oficiales ya se anularon en SIESA." }),
+        }),
+        motivo: z
+          .string({ required_error: "Escriba el motivo de la anulación.", invalid_type_error: "El motivo no es válido." })
+          .trim()
+          .min(3, "Escriba el motivo de la anulación.")
+          .max(500, "El motivo no puede pasar de 500 caracteres."),
+      })
+      .strict(),
+  ),
+
   // Descartar el aviso "requiere corrección": decisión humana, queda el motivo en el log.
   descartarCorreccionPreliquidacion: validar(
     z

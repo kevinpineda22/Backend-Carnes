@@ -66,6 +66,9 @@ router.post("/:id/procesar", PreliquidacionesController.procesar);
 router.post("/:id/cerrar", PreliquidacionesController.cerrar);
 // Anular la preliquidación completa: rollback mientras nada haya salido a SIESA (drenaje).
 router.post("/:id/anular", validators.anularPreliquidacion, PreliquidacionesController.anular);
+// Anular una ya enviada (sql/046): el admin confirma que los oficiales se anularon a mano en SIESA y las
+// recepciones quedan libres para otra preliquidación. Admin (guard del router). Escritura normal: NO es drenaje, respeta el interruptor.
+router.post("/:id/anular-enviada", validators.anularPreliquidacionEnviada, PreliquidacionesController.anularEnviada);
 
 // Correcciones de una sede ya enviada. Anular confirma lo hecho a mano en SIESA (drenaje: sigue con el
 // interruptor apagado); descartar la corrección es una escritura normal.

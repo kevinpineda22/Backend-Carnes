@@ -342,6 +342,20 @@ export async function anular(req, res, next) {
 }
 
 /**
+ * POST /api/preliquidaciones/:id/anular-enviada — Body: { confirmo_anulacion_siesa: true, motivo }.
+ * El admin confirma que TODOS los oficiales de la preliquidación ya se anularon a mano en SIESA; se anula la
+ * preliquidación y se liberan sus recepciones para vincularlas a otra (sql/046). Nunca toca SIESA.
+ */
+export async function anularEnviada(req, res, next) {
+  try {
+    const { motivo } = req.body;
+    res.json({ ok: true, data: await CorreccionesModel.anularPreliquidacionEnviada(req.idPreliquidacion, { por: quien(req), motivo }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * POST /api/preliquidaciones/sedes/:sedeId/omitir-inicial — sin cuerpo.
  * Un admin decide que la recepción de la sede NO manda la CEA inicial: solo sale la oficial (sql/044).
  * Idempotente. 409 si la recepción ya tiene una inicial vigente o la oficial de la sede ya salió.

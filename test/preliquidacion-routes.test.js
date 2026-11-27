@@ -53,6 +53,7 @@ mock.module(url("models/PreliquidacionCorrecciones.model.js"), {
     anularSede: falso("anularSede"),
     descartarCorreccion: falso("descartarCorreccion"),
     anularPreliquidacion: falso("anularPreliquidacion"),
+    anularPreliquidacionEnviada: falso("anularPreliquidacionEnviada"),
   },
 });
 
@@ -805,6 +806,72 @@ test("anular es drenaje: con el interruptor apagado sigue disponible (rollback),
     const bloqueada = await llamar("POST", "/5/anular", { motivo: "rollback" });
     assert.equal(bloqueada.estado, 503);
     assert.equal(bloqueada.json.codigo, "auth_requerida");
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
+});
+
+// ─── Anular una preliquidación ya enviada a SIESA (sql/046) ────────────────
+
+test("POST /:id/anular-enviada pasa id, quién y motivo al modelo", async () => {
+  encendida();
+  respuestas.anularPreliquidacionEnviada = { resultado: "ok", sedes_liberadas: 10 };
+  const r = await llamar("POST", "/19/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "conteo de animales erróneo" });
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { resultado: "ok", sedes_liberadas: 10 } });
+  assert.equal(llamadas[0].nombre, "anularPreliquidacionEnviada");
+  assert.equal(llamadas[0].args[0], 19);
+  assert.deepEqual(llamadas[0].args[1], { por: null, motivo: "conteo de animales erróneo" });
+});
+
+test("anular-enviada: sin confirmar lo hecho en SIESA o sin motivo es 400 (strict), id inválido 400, guard 403", async () => {
+  encendida();
+  const cuerpos = [
+    {},
+    { motivo: "por error de conteo" },
+    { confirmo_anulacion_siesa: true },
+    { confirmo_anulacion_siesa: false, motivo: "por error de conteo" },
+    { confirmo_anulacion_siesa: "true", motivo: "por error de conteo" },
+    { confirmo_anulacion_siesa: true, motivo: "" },
+    { confirmo_anulacion_siesa: true, motivo: "   " },
+    { confirmo_anulacion_siesa: true, motivo: "y".repeat(501) },
+    { confirmo_anulacion_siesa: true, motivo: "por error de conteo", otro: 1 },
+  ];
+  for (const cuerpo of cuerpos) {
+    assert.equal((await llamar("POST", "/19/anular-enviada", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.equal((await llamar("POST", "/abc/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "por error" })).estado, 400);
+  assert.deepEqual(llamadas, []);
+  guardPasa = false;
+  assert.equal((await llamar("POST", "/19/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "por error" })).estado, 403);
+  assert.deepEqual(llamadas, []);
+});
+
+test("anular-enviada no anulable: 409 con codigo y motivo para el panel", async () => {
+  encendida();
+  respuestas.anularPreliquidacionEnviada = Object.assign(createError(409, "Sedes ambiguas", "no_anulable"), { motivo: "sede_ambigua" });
+  const r = await llamar("POST", "/19/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "por error" });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "no_anulable");
+  assert.equal(r.json.motivo, "sede_ambigua");
+});
+
+test("anular-enviada es escritura normal: apagado responde 409 preliquidacion_apagada y no toca el modelo", async () => {
+  const r = await llamar("POST", "/19/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "por error" });
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "preliquidacion_apagada");
+  assert.deepEqual(llamadas, []);
+});
+
+test("C3: en producción sin CARNES_AUTH=exigir anular-enviada responde 503 auth_requerida", async () => {
+  encendida();
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    const r = await llamar("POST", "/19/anular-enviada", { confirmo_anulacion_siesa: true, motivo: "por error" });
+    assert.equal(r.estado, 503);
+    assert.equal(r.json.codigo, "auth_requerida");
+    assert.deepEqual(llamadas, []);
   } finally {
     delete process.env.VERCEL_ENV;
   }

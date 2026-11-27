@@ -146,6 +146,14 @@ const MENSAJES_NO_ANULABLE = {
   sede_enviada:
     "Ya hay sedes enviadas a SIESA: la preliquidación no se puede anular. Corrija cada sede con la anulación por sede.",
   saldo_aplicado: "Un saldo generado por esta preliquidación ya se aplicó en otra: no se puede anular.",
+  // Anulación de una preliquidación ya enviada (sql/046).
+  ya_anulada: "La preliquidación ya está anulada.",
+  sede_ambigua:
+    "Hay sedes enviando o sin confirmar en SIESA (estado ambiguo): resuélvalas antes de anular la preliquidación.",
+  visceras_vigentes:
+    "Alguna recepción tiene una CEI de vísceras vigente en SIESA: anúlela por su propio flujo antes de anular la preliquidación.",
+  envio_compartido:
+    "Un envío oficial vigente cubre también recepciones de otra preliquidación o liquidación: no se puede anular desde aquí.",
 };
 
 /**

@@ -1,6 +1,6 @@
 import { supabase } from "../config/supabase.js";
 import { transicionSede } from "../shared/preliquidacionEstados.js";
-import { decidirAnulacionPreliquidacion } from "../shared/preliquidacionAnulacion.js";
+import { decidirAnulacionPreliquidacion, decidirAnulacionEnviada } from "../shared/preliquidacionAnulacion.js";
 import { conReintentoVersion, resultadoAError } from "./Preliquidacion.model.js";
 
 /**
@@ -204,5 +204,51 @@ export async function anularPreliquidacion(id, { por = null, motivo = null } = {
 
   if (respuesta?.resultado !== "ok") throw resultadoAError(respuesta);
   log.info?.(`Preliquidación ${id}: anulada por ${por ?? "—"} (${texto}).`);
+  return respuesta;
+}
+
+/**
+ * Anula una preliquidación YA enviada a SIESA y libera sus recepciones (sql/046).
+ *
+ * El admin confirma (en el endpoint) que TODOS los documentos oficiales ya se anularon a mano en
+ * SIESA; este módulo jamás llama a SIESA ni manda correos. Efectos, todos en la RPC
+ * `carnes_preliq_anular_enviada` (una transacción): marca como `anulado` los envíos oficiales vigentes
+ * (misma regla que `anularOficialRecepcion`, pero atómica con el resto), archiva y borra las sedes
+ * (`carnes_preliquidacion_sedes_anuladas`), deja cada recepción sin vínculo y en `Aprobado` (lista para
+ * vincularse a otra preliquidación de la especie) y anula la cabecera.
+ *
+ * Las guardas se deciden en JS (`decidirAnulacionEnviada`, con los envíos por `recepcion_id`) y la RPC
+ * las revalida bajo lock, incluidos los envíos que cubren varias recepciones (`recepcion_ids`).
+ * Se relee y reintenta con `version_cambiada` (máx. 3).
+ *
+ * @param {number|string} id
+ * @param {{por?: string|null, motivo?: string|null}} datos el motivo es obligatorio (trazabilidad)
+ */
+export async function anularPreliquidacionEnviada(id, { por = null, motivo = null } = {}, opciones = {}) {
+  const log = opciones.log ?? console;
+  const texto = String(motivo ?? "").trim();
+  if (!texto) throw resultadoAError({ resultado: "motivo_requerido" });
+
+  const respuesta = await conReintentoVersion(async () => {
+    const cabecera = await leerCabecera(id);
+    const sedes = await leerFilasPor(T_SEDES, "preliquidacion_id", cabecera.id);
+    const [envios, saldos] = await Promise.all([
+      leerFilas(T_ENVIOS, "recepcion_id", sedes.map((s) => s.recepcion_id)),
+      leerFilasPor(T_SALDOS, "origen_preliquidacion_id", cabecera.id),
+    ]);
+    const decision = decidirAnulacionEnviada({ cabecera, sedes, envios, saldos });
+    if (!decision.ok) throw resultadoAError({ resultado: "no_anulable", motivo: decision.motivo });
+
+    return llamarRpc("carnes_preliq_anular_enviada", {
+      p_id: cabecera.id,
+      p_version: cabecera.version,
+      p_orden_version: cabecera.orden_version,
+      p_por: por,
+      p_motivo: texto,
+    });
+  });
+
+  if (respuesta?.resultado !== "ok") throw resultadoAError(respuesta);
+  log.info?.(`Preliquidación ${id}: anulada tras enviarse a SIESA por ${por ?? "—"} (${texto}); ${respuesta.sedes_liberadas ?? 0} sede(s) liberadas.`);
   return respuesta;
 }
