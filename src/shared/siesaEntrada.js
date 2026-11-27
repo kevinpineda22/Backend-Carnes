@@ -105,6 +105,16 @@ export function referenciaEnvio(recepcionId, tipo) {
  * de reservar el envío), la que tendrá cuando se envíe.
  */
 export function siesaParaRecibidor(siesa, recepcionId) {
+  // Inicial omitida por un admin (sql/044): no existe ni existirá una entrada inicial, así que no hay
+  // referencia que anotar en la factura física. Se informa el motivo y nada más.
+  if (siesa?.estado === "omitida") {
+    return {
+      estado: "omitida",
+      referencia: null,
+      error: null,
+      novedad: siesa.mensaje ?? null,
+    };
+  }
   return {
     estado: siesa?.estado ?? null,
     referencia: siesa?.referencia ?? referenciaEnvio(recepcionId, TIPO_ENVIO.INICIAL),

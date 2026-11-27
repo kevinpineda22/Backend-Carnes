@@ -13,8 +13,8 @@
 --        inicial_omitida_at   TIMESTAMPTZ  cuándo un admin decidió omitirla
 --        inicial_omitida_por  TEXT         quién lo decidió (auditoría)
 --   2. carnes_preliq_omitir_inicial(p_sede_id, p_por)  marca la omisión bajo lock. Rechaza si la
---      recepción ya tiene una inicial vigente (enviando, ok o sin_confirmar) o si su oficial ya salió
---      (o va en vuelo); es idempotente (`ya_omitida`). Al marcar, limpia el motivo_pendiente
+--      recepción ya tiene una inicial vigente (enviando, ok o sin_confirmar), si su oficial ya salió
+--      (o va en vuelo) o si la sede está anulada o bloqueada (`sede_no_enviable`); es idempotente (`ya_omitida`). Al marcar, limpia el motivo_pendiente
 --      'inicial_pendiente' de la sede (con subida de versión) y sus avisos sin enviar.
 --      Orden de bloqueo: cabecera -> sede -> recepción.
 --   3. Trigger BEFORE INSERT en carnes_siesa_envios: ninguna fila de tipo `inicial` puede nacer para una
@@ -56,7 +56,7 @@ COMMENT ON COLUMN carnes_recepciones.inicial_omitida_at IS
 -- Marca la recepción de la sede como "sin inicial". La decisión de quién puede hacerlo es del endpoint
 -- (admin); aquí solo se revalida bajo lock lo que depende del estado de la base.
 --
--- Resultados: ok | ya_omitida | no_encontrada | no_abierta | inicial_vigente | oficial_enviada
+-- Resultados: ok | ya_omitida | no_encontrada | no_abierta | sede_no_enviable | inicial_vigente | oficial_enviada
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carnes_preliq_omitir_inicial(
   p_sede_id BIGINT,
@@ -82,6 +82,12 @@ BEGIN
   END IF;
   IF v_header.estado <> 'abierta' THEN
     RETURN jsonb_build_object('resultado', 'no_abierta');
+  END IF;
+
+  -- Una sede anulada o bloqueada (cualquier motivo, incluido excede_animales) nunca podrá mandar su oficial:
+  -- omitirle la inicial no tiene sentido.
+  IF v_sede.estado IN ('anulada', 'bloqueada') THEN
+    RETURN jsonb_build_object('resultado', 'sede_no_enviable', 'estado', v_sede.estado);
   END IF;
 
   SELECT * INTO v_rec FROM carnes_recepciones WHERE id = v_sede.recepcion_id FOR UPDATE;

@@ -85,8 +85,8 @@ test("un resultado desconocido de la RPC es un 500 sin exponer (no se disfraza d
   await assert.rejects(() => M.omitirInicialSede(1), (e) => e.statusCode === 500 && !e.expose);
 });
 
-test("masivo: omite las sedes sin inicial ok, salta las que ya tienen inicial ok y informa cada una", async () => {
-  const r = await M.omitirInicialPreliquidacion(19, { por: "admin@x.co" });
+test("masivo: omite solo las sedes listadas, salta las que ya tienen inicial ok y informa cada una", async () => {
+  const r = await M.omitirInicialPreliquidacion(19, { por: "admin@x.co", sedeIds: [1, 2, 3] });
   assert.equal(r.preliquidacion_id, 19);
   assert.deepEqual(rpcs.map((c) => c.args.p_sede_id), [1, 2], "la sede 3 tiene inicial ok: no se toca");
   assert.deepEqual(
@@ -97,10 +97,39 @@ test("masivo: omite las sedes sin inicial ok, salta las que ya tienen inicial ok
   assert.deepEqual(r.resumen, { omitidas: 2, ya_omitidas: 0, saltadas: 1, rechazadas: 0 });
 });
 
+test("masivo: no omite nada que no esté listado", async () => {
+  const r = await M.omitirInicialPreliquidacion(19, { por: null, sedeIds: [2] });
+  assert.deepEqual(rpcs.map((c) => c.args.p_sede_id), [2]);
+  assert.deepEqual(r.resultados.map((x) => x.sede_id), [2]);
+});
+
+test("masivo: sin sede_ids (ausente, vacío o no arreglo) es 400 y no toca nada", async () => {
+  await assert.rejects(() => M.omitirInicialPreliquidacion(19), (e) => e.statusCode === 400);
+  await assert.rejects(() => M.omitirInicialPreliquidacion(19, { sedeIds: [] }), (e) => e.statusCode === 400);
+  await assert.rejects(() => M.omitirInicialPreliquidacion(19, { sedeIds: "1" }), (e) => e.statusCode === 400);
+  assert.equal(rpcs.length, 0);
+});
+
+test("masivo: una sede de otra preliquidación o inexistente se rechaza como no_pertenece, sin llegar a la RPC ni frenar las demás", async () => {
+  const r = await M.omitirInicialPreliquidacion(19, { por: null, sedeIds: [9, 1, 99] });
+  assert.deepEqual(rpcs.map((c) => c.args.p_sede_id), [1]);
+  assert.deepEqual(
+    r.resultados.map((x) => [x.sede_id, x.ok, x.codigo ?? x.resultado]),
+    [[9, false, "no_pertenece"], [1, true, "ok"], [99, false, "no_pertenece"]],
+  );
+  assert.match(r.resultados[0].error, /no pertenece/);
+  assert.deepEqual(r.resumen, { omitidas: 1, ya_omitidas: 0, saltadas: 0, rechazadas: 2 });
+});
+
+test("masivo: los ids repetidos se procesan una sola vez", async () => {
+  await M.omitirInicialPreliquidacion(19, { sedeIds: [1, 1, "1"] });
+  assert.equal(rpcs.length, 1);
+});
+
 test("masivo: una sede rechazada no frena las demás y su error viaja en su fila", async () => {
   respuestasRpc[1] = { resultado: "oficial_enviada" };
   respuestasRpc[2] = { resultado: "ya_omitida" };
-  const r = await M.omitirInicialPreliquidacion(19, { por: null });
+  const r = await M.omitirInicialPreliquidacion(19, { por: null, sedeIds: [1, 2, 3] });
   assert.equal(rpcs.length, 2);
   assert.equal(r.resultados[0].ok, false);
   assert.equal(r.resultados[0].codigo, "oficial_enviada");
@@ -109,20 +138,37 @@ test("masivo: una sede rechazada no frena las demás y su error viaja en su fila
   assert.deepEqual(r.resumen, { omitidas: 0, ya_omitidas: 1, saltadas: 1, rechazadas: 1 });
 });
 
+test("sede anulada o bloqueada: 409 sede_no_enviable; en el masivo se informa y no frena el lote", async () => {
+  respuestasRpc[1] = { resultado: "sede_no_enviable", estado: "bloqueada" };
+  await assert.rejects(
+    () => M.omitirInicialSede(1),
+    (e) => e.statusCode === 409 && e.codigo === "sede_no_enviable" && /anulada o bloqueada/.test(e.message),
+  );
+  const r = await M.omitirInicialPreliquidacion(19, { sedeIds: [1, 2] });
+  assert.equal(r.resultados[0].ok, false);
+  assert.equal(r.resultados[0].codigo, "sede_no_enviable");
+  assert.equal(r.resultados[1].resultado, "ok");
+  assert.deepEqual(r.resumen, { omitidas: 1, ya_omitidas: 0, saltadas: 0, rechazadas: 1 });
+});
+
 test("masivo: un error inesperado no se esconde dentro de la lista", async () => {
   respuestasRpc[1] = { resultado: "algo_raro" };
-  await assert.rejects(() => M.omitirInicialPreliquidacion(19), (e) => e.statusCode === 500);
+  await assert.rejects(() => M.omitirInicialPreliquidacion(19, { sedeIds: [1] }), (e) => e.statusCode === 500);
 });
 
 test("masivo: preliquidación inexistente es 404; cerrada o anulada es 409 no_abierta", async () => {
-  await assert.rejects(() => M.omitirInicialPreliquidacion(77), (e) => e.statusCode === 404);
-  await assert.rejects(() => M.omitirInicialPreliquidacion(20), (e) => e.statusCode === 409 && e.codigo === "no_abierta");
+  await assert.rejects(() => M.omitirInicialPreliquidacion(77, { sedeIds: [1] }), (e) => e.statusCode === 404);
+  await assert.rejects(
+    () => M.omitirInicialPreliquidacion(20, { sedeIds: [9] }),
+    (e) => e.statusCode === 409 && e.codigo === "no_abierta",
+  );
   assert.equal(rpcs.length, 0);
 });
 
-test("masivo: sin sedes devuelve una lista vacía", async () => {
+test("masivo: si la preliquidación no tiene sedes, todo lo listado es no_pertenece", async () => {
   tablas.carnes_preliquidacion_sedes = [];
-  const r = await M.omitirInicialPreliquidacion(19);
-  assert.deepEqual(r.resultados, []);
-  assert.deepEqual(r.resumen, { omitidas: 0, ya_omitidas: 0, saltadas: 0, rechazadas: 0 });
+  const r = await M.omitirInicialPreliquidacion(19, { sedeIds: [1] });
+  assert.deepEqual(r.resumen, { omitidas: 0, ya_omitidas: 0, saltadas: 0, rechazadas: 1 });
+  assert.equal(rpcs.length, 0);
 });
+

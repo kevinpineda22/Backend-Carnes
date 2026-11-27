@@ -103,6 +103,8 @@ const ERRORES_RESULTADO = {
   inicial_pendiente: [409, "La CEA inicial de la recepción aún no está enviada a SIESA."],
   inicial_vigente: [409, "La recepción ya tiene una CEA inicial en SIESA o en curso: no se puede omitir."],
   oficial_enviada: [409, "La CEA oficial de la sede ya se envió a SIESA: no se puede omitir la inicial."],
+  sede_no_enviable: [409, "La sede está anulada o bloqueada y no puede enviarse: no se puede omitir la inicial."],
+  no_pertenece: [409, "La sede no pertenece a esta preliquidación."],
   token_invalido: [409, "El envío de la sede fue tomado por otra instancia."],
   siesa_apagado: [409, "El envío a SIESA está apagado."],
   no_abierta: [409, "La preliquidación no está abierta."],

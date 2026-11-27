@@ -1232,6 +1232,18 @@ export const validators = {
   // desconocidos; el motivo no se pide porque la auditoría es quién y cuándo (columnas de la recepción).
   omitirInicialPreliquidacion: validar(z.preprocess((cuerpo) => cuerpo ?? {}, z.object({}).strict())),
 
+  // Omitir la inicial de varias sedes de una preliquidación: las sedes se listan de forma explícita; no se omite
+  // nada que no esté en `sede_ids`.
+  omitirInicialSedesPreliquidacion: validar(
+    z
+      .object({
+        sede_ids: z
+          .array(z.coerce.number().int().positive("Cada sede debe ser un número entero positivo."))
+          .min(1, "Indique al menos una sede."),
+      })
+      .strict(),
+  ),
+
   // Saldos pendientes. La lectura filtra por especie y estado ("todos" = historial).
   listarSaldosPreliquidacion: validar(
     z.object({

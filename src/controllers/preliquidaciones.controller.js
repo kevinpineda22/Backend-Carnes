@@ -355,13 +355,14 @@ export async function omitirInicialSede(req, res, next) {
 }
 
 /**
- * POST /api/preliquidaciones/:id/omitir-inicial — lo mismo para todas las sedes de la preliquidación
- * cuya recepción no tiene una inicial ok. Cada sede se intenta por separado y se informa el resultado
- * de cada una (`resultados`): que una se rechace no frena las demás.
+ * POST /api/preliquidaciones/:id/omitir-inicial — cuerpo `{ sede_ids: number[] }` (obligatorio, no vacío).
+ * Lo mismo, solo para las sedes indicadas. Cada sede se intenta por separado y se informa el resultado
+ * de cada una (`resultados`): que una se rechace (otra preliquidación, anulada, bloqueada, inicial en
+ * curso, oficial ya enviada) no frena las demás.
  */
 export async function omitirInicialPreliquidacion(req, res, next) {
   try {
-    res.json({ ok: true, data: await InicialModel.omitirInicialPreliquidacion(req.idPreliquidacion, { por: quien(req) }) });
+    res.json({ ok: true, data: await InicialModel.omitirInicialPreliquidacion(req.idPreliquidacion, { por: quien(req), sedeIds: req.body.sede_ids }) });
   } catch (error) {
     next(error);
   }

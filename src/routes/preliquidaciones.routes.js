@@ -85,7 +85,7 @@ router.post(
 );
 router.post(
   "/:id/omitir-inicial",
-  validators.omitirInicialPreliquidacion,
+  validators.omitirInicialSedesPreliquidacion,
   PreliquidacionesController.omitirInicialPreliquidacion,
 );
 

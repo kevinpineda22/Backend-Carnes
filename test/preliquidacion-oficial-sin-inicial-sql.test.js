@@ -91,13 +91,20 @@ test("omitir_inicial: rechaza con inicial vigente (enviando/ok/sin_confirmar) o 
   assert.ok(f.includes("v_header.estado <> 'abierta'"));
 });
 
+test("omitir_inicial: rechaza las sedes que nunca podrán enviar (anulada o bloqueada) antes de tocar la recepción", () => {
+  const raw = cuerpoFuncion("carnes_preliq_omitir_inicial");
+  const f = normalizar(raw);
+  assert.ok(f.includes("IF v_sede.estado IN ('anulada', 'bloqueada') THEN RETURN jsonb_build_object('resultado', 'sede_no_enviable'"));
+  assert.ok(raw.search(/'sede_no_enviable'/) < raw.search(/FROM carnes_recepciones WHERE id = v_sede\.recepcion_id FOR UPDATE/));
+});
+
 test("omitir_inicial: idempotente y deja la marca con quién y cuándo", () => {
   const f = normalizar(cuerpoFuncion("carnes_preliq_omitir_inicial"));
   assert.ok(f.includes("IF v_rec.inicial_omitida_at IS NOT NULL THEN v_resultado := 'ya_omitida';"));
   assert.ok(f.includes("SET inicial_omitida_at = now(), inicial_omitida_por = p_por"));
   assert.deepEqual(
     [...new Set([...f.matchAll(/'resultado', '(\w+)'/g)].map((m) => m[1]))].sort(),
-    ["inicial_vigente", "no_abierta", "no_encontrada", "oficial_enviada"],
+    ["inicial_vigente", "no_abierta", "no_encontrada", "oficial_enviada", "sede_no_enviable"],
   );
 });
 

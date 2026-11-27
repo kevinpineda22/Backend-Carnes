@@ -35,12 +35,13 @@ const reiniciar = () => {
 
 const VIG = ["enviando", "ok", "sin_confirmar"];
 let rechazarInicialEnBase = false;
+let fallarLecturaRecepcion = false;
 let rpcLlamadas = [];
 let rpcRespuesta = { resultado: "ok" };
 
 class Q {
   constructor(t) { this.t = t; this.f = []; this.op = "select"; this.pay = null; this.ord = []; this.lim = null; }
-  select() { return this; }
+  select(cols) { this.cols = cols; return this; }
   insert(p) { this.op = "insert"; this.pay = p; return this; }
   update(p) { this.op = "update"; this.pay = p; return this; }
   eq(c, v) { this.f.push((r) => String(r[c]) === String(v) && r[c] != null); return this; }
@@ -52,6 +53,9 @@ class Q {
   single() { this.one = true; return this; }
   run() {
     const tabla = (db[this.t] ??= []);
+    if (fallarLecturaRecepcion && this.t === "carnes_recepciones" && this.op === "select" && this.cols === "inicial_omitida_at") {
+      return { data: null, error: { code: "08006", message: "conexión caída" } };
+    }
     let rows = tabla.filter((r) => this.f.every((g) => g(r)));
     if (this.op === "insert") {
       const omitidaEnBase = rechazarInicialEnBase || (db.carnes_recepciones.find((r) => r.id === this.pay.recepcion_id)?.inicial_omitida_at ?? null) !== null;
@@ -117,7 +121,7 @@ mock.module(url("models/PreliquidacionCierre.model.js"), {
 });
 
 const M = await import(url("models/SiesaEnvio.model.js"));
-const nuevo = () => { reiniciar(); llamadas = []; guion = []; correosAnulacion = []; correosError = []; rpcLlamadas = []; rpcRespuesta = { resultado: "ok" }; rechazarInicialEnBase = false; };
+const nuevo = () => { reiniciar(); llamadas = []; guion = []; correosAnulacion = []; correosError = []; rpcLlamadas = []; rpcRespuesta = { resultado: "ok" }; rechazarInicialEnBase = false; fallarLecturaRecepcion = false; };
 const omitir = () => { db.carnes_recepciones[0].inicial_omitida_at = "2026-11-26T10:00:00Z"; db.carnes_recepciones[0].inicial_omitida_por = "admin@x.co"; };
 const iniciales = () => db.carnes_siesa_envios.filter((f) => f.tipo === "inicial");
 const sinInicial = () => { db.carnes_siesa_envios = []; };
@@ -205,6 +209,24 @@ test("oficial resuelta a mano (sin_confirmar -> ok) con la inicial omitida: tamp
   await M.resolver(50, { resultado: "ok", por: "admin" });
   assert.equal(correosAnulacion.length, 0);
   assert.equal(db.carnes_siesa_envios.find((f) => f.id === 50).aviso_anulacion, true);
+});
+
+test("resolver: si falla la lectura de la marca, el aviso no lanza y se intenta el correo como antes", async () => {
+  nuevo();
+  db.carnes_siesa_envios.push({
+    id: 51, tipo: "oficial", estado: "sin_confirmar", recepcion_id: 2, liquidacion_id: null,
+    referencia: "TC OFI R2", enviado_at: new Date().toISOString(),
+  });
+  fallarLecturaRecepcion = true;
+  const log = mock.method(console, "error", () => {});
+  try {
+    await M.resolver(51, { resultado: "ok", por: "admin" });
+  } finally {
+    log.mock.restore();
+  }
+  assert.equal(db.carnes_siesa_envios.find((f) => f.id === 51).estado, "ok", "la resolución guardada se conserva");
+  assert.equal(correosAnulacion.length, 1, "se intentó el correo");
+  assert.equal(db.carnes_siesa_envios.find((f) => f.id === 51).aviso_anulacion, true);
 });
 
 // ─── Lectura de la marca ───────────────────────────────────────────────────

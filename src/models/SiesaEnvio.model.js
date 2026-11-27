@@ -1625,7 +1625,15 @@ async function avisarAnulacionLiquidacion(liquidacion, recepciones, oficial) {
  */
 async function avisarAnulacion(recepcion, inicial, oficial) {
   // Con la inicial omitida (sql/044) nunca hubo nada que anular: el aviso queda cumplido sin correo.
-  if (await inicialOmitida(recepcion.id)) {
+  // Si la lectura falla no se puede afirmar que fue omitida: se sigue como antes (se intenta el correo) y
+  // el error no sube, porque `resolver()` ya guardó el resultado y no debe volverse un 500.
+  let omitida = false;
+  try {
+    omitida = await inicialOmitida(recepcion.id);
+  } catch (e) {
+    console.error(`🔴 SIESA aviso de anulación recepción #${recepcion.id}: no se pudo leer si la inicial fue omitida: ${e.message}`);
+  }
+  if (omitida) {
     await supabase.from(TABLA).update({ aviso_anulacion: true }).eq("id", oficial.id);
     return;
   }

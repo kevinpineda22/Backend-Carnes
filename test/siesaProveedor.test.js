@@ -131,6 +131,16 @@ test("siesaParaRecibidor: usa la referencia del envío; si no hay, la que tendr�
   assert.equal(siesaParaRecibidor({ estado: "error", error: "boom" }, 162).referencia, "TC INI R162");
 });
 
+test("siesaParaRecibidor: con la inicial omitida no inventa referencia y reenvía el mensaje", () => {
+  assert.deepEqual(siesaParaRecibidor({ estado: "omitida", tipo: "inicial", mensaje: "sin inicial" }, 23), {
+    estado: "omitida",
+    referencia: null,
+    error: null,
+    novedad: "sin inicial",
+  });
+  assert.equal(siesaParaRecibidor({ estado: "omitida" }, 23).referencia, null);
+});
+
 test("referenciaProveedor / referenciaNotaCreditoProveedor: legibles y de hasta 12 caracteres", () => {
   assert.equal(referenciaProveedor(12), "TC PRV R12");
   assert.equal(referenciaNotaCreditoProveedor(12), "TC PRV N12");
