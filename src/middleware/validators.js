@@ -1295,6 +1295,7 @@ export const validators = {
       recepcion_ids: z
         .array(z.coerce.number().int().positive())
         .min(1, "Elegí al menos una recepción."),
+      permitir_anterior: z.boolean().optional(),
     }),
   ),
 

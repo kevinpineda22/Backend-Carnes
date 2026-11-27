@@ -59,18 +59,47 @@ export function ventanaConCorte(fechaPrimerIngreso, dias, corteManual) {
   return delCorte.getTime() > porFecha.getTime() ? delCorte : porFecha;
 }
 
+/** Días calendario (Bogotá) hacia atrás del primer ingreso que admite el vínculo manual "anterior". */
+export const DIAS_ANTERIOR_MAX = 2;
+
+/**
+ * ¿La fecha de ingreso es anterior al primer ingreso pero está dentro de los `dias` días calendario
+ * previos (inclusive)? Aritmética sobre fechas `YYYY-MM-DD` (Bogotá), sin horas ni zona del servidor.
+ * @returns {boolean}
+ */
+export function esIngresoAnteriorPermitido({ fechaPrimerIngreso, fechaIngreso, dias = DIAS_ANTERIOR_MAX }) {
+  if (!fechaPrimerIngreso || !fechaIngreso || fechaIngreso >= fechaPrimerIngreso) return false;
+  const limite = new Date(`${fechaPrimerIngreso}T00:00:00Z`);
+  limite.setUTCDate(limite.getUTCDate() - dias);
+  return fechaIngreso >= limite.toISOString().slice(0, 10);
+}
+
 /**
  * Inicio y fin de ventana tras vincular una recepción: el primer ingreso los fija;
  * un ingreso más temprano los adelanta solo si todavía no se liquidó. Con `corteManual`
  * la ventana llega al menos hasta el fin del día de ese corte (`ventanaConCorte`).
- * @returns {{cambia: boolean, fechaPrimerIngreso: string, ventanaFin: Date}}
+ *
+ * Con `permitirAnterior` (solo el vínculo manual del admin) una preliquidación YA liquidada acepta un
+ * ingreso hasta `DIAS_ANTERIOR_MAX` días antes de su primer ingreso SIN moverlo: la fecha, el corte y la
+ * ventana quedan como están (`cambia: false`) y `anterior: true` avisa a la RPC de que esa excepción se pidió.
+ * @returns {{cambia: boolean, anterior: boolean, fechaPrimerIngreso: string, ventanaFin: Date}}
  */
-export function planearVentana({ fechaPrimerIngreso, liquidadaAt, fechaIngreso, dias = 2, corteManual = null }) {
+export function planearVentana({
+  fechaPrimerIngreso,
+  liquidadaAt,
+  fechaIngreso,
+  dias = 2,
+  corteManual = null,
+  permitirAnterior = false,
+}) {
   const adelanta = !!fechaPrimerIngreso && !liquidadaAt && fechaIngreso < fechaPrimerIngreso;
   const inicia = !fechaPrimerIngreso;
   const inicio = inicia || adelanta ? fechaIngreso : fechaPrimerIngreso;
+  const anterior =
+    permitirAnterior && !!liquidadaAt && esIngresoAnteriorPermitido({ fechaPrimerIngreso, fechaIngreso });
   return {
     cambia: inicia || adelanta,
+    anterior,
     fechaPrimerIngreso: inicio,
     ventanaFin: ventanaConCorte(inicio, dias, corteManual),
   };

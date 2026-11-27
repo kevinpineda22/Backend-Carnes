@@ -91,6 +91,7 @@ const ERRORES_RESULTADO = {
   no_vinculada: [409, "La recepción no está vinculada a una preliquidación."],
   sin_preliquidacion: [409, "No hay una preliquidación abierta para esta especie."],
   fuera_ventana: [422, "La fecha de ingreso queda fuera de la ventana de la preliquidación."],
+  especie_recepcion_distinta: [422, "La recepción es de una especie distinta a la de la preliquidación."],
   excede_capacidad: [409, "Con esos animales la sede supera los de la preliquidación."],
   novillos_invalido: [422, "Los novillos o canales deben ser un entero mayor que cero."],
   invalido: [422, "Los datos enviados no son válidos."],
@@ -258,11 +259,15 @@ const esEnteroPositivo = (n) => typeof n === "number" && Number.isInteger(n) && 
 /**
  * Plan de `carnes_preliq_vincular`. Puro.
  *
- * @param {{cabecera: object, recepcion: {id, fechaIngreso: string, recibidoAt: *, animales: number},
- *   sedes: Array<object>}} p `sedes` ya en la forma de `aSedePlan`
+ * `permitirAnterior` (vínculo manual del admin): una preliquidación liquidada acepta un ingreso hasta 2 días
+ * antes de su primer ingreso sin mover fecha, corte ni ventana; el plan lleva `anterior: true`. Exige la misma
+ * especie (`recepcion.especie`). Sin la bandera el plan es el de siempre.
+ *
+ * @param {{cabecera: object, recepcion: {id, fechaIngreso: string, recibidoAt: *, animales: number, especie?: string},
+ *   sedes: Array<object>, permitirAnterior?: boolean}} p `sedes` ya en la forma de `aSedePlan`
  * @returns {{ok: true, plan: object, ordenVersion: number} | {ok: false, resultado: string}}
  */
-export function armarPlanVincular({ cabecera, recepcion, sedes }) {
+export function armarPlanVincular({ cabecera, recepcion, sedes, permitirAnterior = false }) {
   if (!esEnteroPositivo(recepcion.animales)) return { ok: false, resultado: "novillos_invalido" };
 
   const ventana = planearVentana({
@@ -271,7 +276,9 @@ export function armarPlanVincular({ cabecera, recepcion, sedes }) {
     fechaIngreso: recepcion.fechaIngreso,
     dias: VENTANA_DIAS,
     corteManual: cabecera.corte_manual ?? null,
+    permitirAnterior,
   });
+  if (ventana.anterior && recepcion.especie !== cabecera.especie) return { ok: false, resultado: "especie_recepcion_distinta" };
 
   const { sedesFijas, sedesVinculadas } = particionar(sedes);
   const plan = planearVinculacion({
@@ -298,6 +305,7 @@ export function armarPlanVincular({ cabecera, recepcion, sedes }) {
       fecha_primer_ingreso: ventana.fechaPrimerIngreso,
       ventana_fin: ventana.ventanaFin.toISOString(),
       mueve_fecha: ventana.cambia,
+      ...(ventana.anterior ? { anterior: true } : {}),
       candidata,
       reordenar: reordenarCambiadas(plan.orden, sedesVinculadas, recepcion.id),
       excede: plan.excede.filter((id) => String(id) !== String(recepcion.id)),
@@ -361,7 +369,7 @@ async function leerRecepcion(id) {
  * Vincula una recepción de taller a la preliquidación que le corresponde (o a la
  * indicada). Lee, planea y llama a `carnes_preliq_vincular`; relee si la versión cambió.
  */
-export async function vincularRecepcion(recepcionId, { preliquidacionId = null } = {}) {
+export async function vincularRecepcion(recepcionId, { preliquidacionId = null, permitirAnterior = false } = {}) {
   const recepcion = await leerRecepcion(recepcionId);
   if (recepcion.preliquidacion_id) throw resultadoAError({ resultado: "ya_vinculada" });
 
@@ -387,8 +395,10 @@ export async function vincularRecepcion(recepcionId, { preliquidacionId = null }
         fechaIngreso: recepcion.fecha_ingreso,
         recibidoAt: recepcion.recibido_at,
         animales: Number(recepcion.novillos),
+        especie: recepcion.especie,
       },
       sedes,
+      permitirAnterior,
     });
     if (!armado.ok) throw resultadoAError({ resultado: armado.resultado });
 

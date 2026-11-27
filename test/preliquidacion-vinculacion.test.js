@@ -5,6 +5,7 @@ import {
   elegirPreliquidacion,
   planearVinculacion,
   planearVentana,
+  esIngresoAnteriorPermitido,
   planearDesvinculacion,
 } from "../src/shared/preliquidacionVinculacion.js";
 
@@ -367,4 +368,50 @@ test("desvincular una sede ya enviada se rechaza (flujo de corrección)", () => 
 test("desvincular una recepción que no está vinculada se rechaza", () => {
   const plan = planearDesvinculacion({ animales: 10, sedesVinculadas: [vinculada(1, 4, 1)], recepcionId: 99 });
   assert.deepEqual(plan, { ok: false, motivo: "no_vinculada" });
+});
+
+// ─── Vínculo manual de una recepción anterior (permitirAnterior) ───────────
+
+test("esIngresoAnteriorPermitido: solo hasta 2 días calendario antes del primer ingreso", () => {
+  const base = { fechaPrimerIngreso: "2026-11-26" };
+  assert.equal(esIngresoAnteriorPermitido({ ...base, fechaIngreso: "2026-11-25" }), true);
+  assert.equal(esIngresoAnteriorPermitido({ ...base, fechaIngreso: "2026-11-24" }), true);
+  assert.equal(esIngresoAnteriorPermitido({ ...base, fechaIngreso: "2026-11-23" }), false);
+  assert.equal(esIngresoAnteriorPermitido({ ...base, fechaIngreso: "2026-11-26" }), false, "mismo día no es anterior");
+  assert.equal(esIngresoAnteriorPermitido({ ...base, fechaIngreso: "2026-11-27" }), false);
+  assert.equal(esIngresoAnteriorPermitido({ fechaPrimerIngreso: null, fechaIngreso: "2026-11-25" }), false);
+});
+
+test("esIngresoAnteriorPermitido: cruza fin de mes y de año", () => {
+  assert.equal(esIngresoAnteriorPermitido({ fechaPrimerIngreso: "2026-12-01", fechaIngreso: "2026-11-29" }), true);
+  assert.equal(esIngresoAnteriorPermitido({ fechaPrimerIngreso: "2026-12-01", fechaIngreso: "2026-11-28" }), false);
+  assert.equal(esIngresoAnteriorPermitido({ fechaPrimerIngreso: "2027-01-01", fechaIngreso: "2026-12-30" }), true);
+});
+
+test("planearVentana: permitirAnterior en una liquidada NO mueve fecha ni ventana", () => {
+  const liquidada = "2026-11-27T02:30:00.000Z";
+  const sin = planearVentana({ fechaPrimerIngreso: "2026-11-26", liquidadaAt: liquidada, fechaIngreso: "2026-11-26" });
+  const r = planearVentana({
+    fechaPrimerIngreso: "2026-11-26",
+    liquidadaAt: liquidada,
+    fechaIngreso: "2026-11-25",
+    permitirAnterior: true,
+  });
+  assert.equal(r.anterior, true);
+  assert.equal(r.cambia, false);
+  assert.equal(r.fechaPrimerIngreso, "2026-11-26");
+  assert.equal(r.ventanaFin.toISOString(), sin.ventanaFin.toISOString());
+  assert.equal(r.ventanaFin.toISOString(), "2026-11-28T04:59:59.999Z");
+});
+
+test("planearVentana: sin la bandera, fuera de rango o sin liquidar no hay excepción", () => {
+  const liquidada = "2026-11-27T02:30:00.000Z";
+  const p = { fechaPrimerIngreso: "2026-11-26", fechaIngreso: "2026-11-25" };
+  assert.equal(planearVentana({ ...p, liquidadaAt: liquidada }).anterior, false);
+  assert.equal(planearVentana({ ...p, liquidadaAt: liquidada, fechaIngreso: "2026-11-23", permitirAnterior: true }).anterior, false);
+  // Abierta: se conserva el comportamiento de siempre (adelanta la fecha), no es la excepción.
+  const abierta = planearVentana({ ...p, liquidadaAt: null, permitirAnterior: true });
+  assert.equal(abierta.anterior, false);
+  assert.equal(abierta.cambia, true);
+  assert.equal(abierta.fechaPrimerIngreso, "2026-11-25");
 });

@@ -920,3 +920,105 @@ test("armarPlanVincular: con corte manual posterior la ventana del plan llega al
   assert.equal(r.ok, true);
   assert.equal(r.plan.ventana_fin, "2026-11-28T04:59:59.999Z");
 });
+
+// ─── Vínculo manual de una recepción anterior (permitir_anterior) ──────────
+
+const LIQUIDADA = "2026-11-27T02:30:00.000Z";
+const cabeceraCerdoLiquidada = (extra = {}) =>
+  cabecera({
+    especie: "cerdo",
+    fecha_primer_ingreso: "2026-11-26",
+    ventana_fin: "2026-11-28T04:59:59.999Z",
+    liquidada_at: LIQUIDADA,
+    ...extra,
+  });
+const recepcionAnterior = (extra = {}) => ({
+  id: 215, fechaIngreso: "2026-11-25", recibidoAt: "2026-11-25T15:00:00.000Z", animales: 4, especie: "cerdo", ...extra,
+});
+
+test("armarPlanVincular: con permitirAnterior una liquidada acepta ingreso previo sin mover fecha ni ventana", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada(),
+    recepcion: recepcionAnterior(),
+    sedes: [],
+    permitirAnterior: true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.plan.anterior, true);
+  assert.equal(r.plan.mueve_fecha, false);
+  assert.equal(r.plan.fecha_primer_ingreso, "2026-11-26");
+  assert.equal(r.plan.ventana_fin, "2026-11-28T04:59:59.999Z");
+});
+
+test("armarPlanVincular: sin la bandera el plan no lleva `anterior` (la RPC responde fuera_ventana)", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada(),
+    recepcion: recepcionAnterior(),
+    sedes: [],
+  });
+  assert.equal(r.ok, true);
+  assert.equal("anterior" in r.plan, false);
+  assert.equal(r.plan.mueve_fecha, false);
+});
+
+test("armarPlanVincular: permitirAnterior fuera de 2 días no marca `anterior`", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada(),
+    recepcion: recepcionAnterior({ fechaIngreso: "2026-11-23" }),
+    sedes: [],
+    permitirAnterior: true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal("anterior" in r.plan, false);
+});
+
+test("armarPlanVincular: permitirAnterior exige la misma especie", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada(),
+    recepcion: recepcionAnterior({ especie: "res" }),
+    sedes: [],
+    permitirAnterior: true,
+  });
+  assert.deepEqual(r, { ok: false, resultado: "especie_recepcion_distinta" });
+});
+
+test("armarPlanVincular: preliquidación abierta ignora la bandera y mueve la fecha como siempre", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada({ liquidada_at: null, ventana_fin: "2026-11-28T04:59:59.999Z" }),
+    recepcion: recepcionAnterior(),
+    sedes: [],
+    permitirAnterior: true,
+  });
+  assert.equal(r.ok, true);
+  assert.equal("anterior" in r.plan, false);
+  assert.equal(r.plan.mueve_fecha, true);
+  assert.equal(r.plan.fecha_primer_ingreso, "2026-11-25");
+});
+
+test("armarPlanVincular: la sede anterior entra como vinculada tardía sin tocar las sedes ya costeadas", () => {
+  const fija = filaSede({ recepcionId: 201, orden: 1, estado: "enviada", animales: 4, fechaIngreso: "2026-11-26" });
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabeceraCerdoLiquidada(),
+    recepcion: recepcionAnterior({ animales: 3 }),
+    sedes: [fija],
+    permitirAnterior: true,
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.plan.candidata, { animales: 3, orden: 2, estado: "vinculada" });
+  assert.deepEqual(r.plan.reordenar, [], "las sedes fijas no se reordenan");
+});
+
+test("vincularRecepcion: con permitirAnterior llama a la RPC con anterior:true; sin ella no", async () => {
+  tablas.carnes_preliquidaciones = [cabeceraCerdoLiquidada()];
+  tablas.carnes_recepciones = [recepcion({ id: 215, especie: "cerdo", fecha_ingreso: "2026-11-25", novillos: 4, preliquidacion_id: null })];
+  respuestasRpc = [{ resultado: "vinculada", preliquidacion_id: 1, restantes: 6 }];
+  await Modelo.vincularRecepcion(215, { preliquidacionId: 1, permitirAnterior: true });
+  assert.equal(rpcs[0].nombre, "carnes_preliq_vincular");
+  assert.equal(rpcs[0].args.p_plan.anterior, true);
+  assert.equal(rpcs[0].args.p_plan.mueve_fecha, false);
+
+  rpcs = [];
+  respuestasRpc = [{ resultado: "fuera_ventana" }];
+  await assert.rejects(() => Modelo.vincularRecepcion(215, { preliquidacionId: 1 }), (e) => e.codigo === "fuera_ventana");
+  assert.equal("anterior" in rpcs[0].args.p_plan, false);
+});

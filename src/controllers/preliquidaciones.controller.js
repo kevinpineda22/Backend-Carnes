@@ -156,7 +156,10 @@ export async function guardarGastos(req, res, next) {
 }
 
 /**
- * POST /api/preliquidaciones/:id/recepciones — Body: { recepcion_ids: [...] }
+ * POST /api/preliquidaciones/:id/recepciones — Body: { recepcion_ids: [...], permitir_anterior?: boolean }
+ *
+ * `permitir_anterior` deja entrar a una preliquidación ya liquidada una recepción con ingreso hasta 2 días
+ * antes de su primer ingreso (no mueve fecha, corte ni ventana).
  *
  * Vincula a mano. Cada recepción se intenta por separado y se informa el resultado
  * de cada una: que una no entre (fuera de ventana, ya vinculada) no frena las demás.
@@ -170,6 +173,7 @@ export async function vincular(req, res, next) {
       try {
         const r = await PreliquidacionModel.vincularRecepcion(recepcionId, {
           preliquidacionId: req.idPreliquidacion,
+          permitirAnterior: req.body.permitir_anterior === true,
         });
         resultados.push({ recepcion_id: recepcionId, ok: true, ...r });
       } catch (error) {

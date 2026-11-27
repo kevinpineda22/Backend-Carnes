@@ -490,6 +490,22 @@ test("POST /:id/recepciones: si todas fallan responde con el estado del primer e
   assert.equal(r.json.codigo, "fuera_ventana");
 });
 
+test("POST /:id/recepciones: permitir_anterior llega al modelo; sin él va en false", async () => {
+  encendida();
+  respuestas.vincularRecepcion = { resultado: "vinculada" };
+  await llamar("POST", "/3/recepciones", { recepcion_ids: [10], permitir_anterior: true });
+  await llamar("POST", "/3/recepciones", { recepcion_ids: [11] });
+  await llamar("POST", "/3/recepciones", { recepcion_ids: [12], permitir_anterior: false });
+  assert.deepEqual(llamadas.map((c) => c.args[1].permitirAnterior), [true, false, false]);
+});
+
+test("POST /:id/recepciones: permitir_anterior debe ser booleano", async () => {
+  encendida();
+  const r = await llamar("POST", "/3/recepciones", { recepcion_ids: [10], permitir_anterior: "si" });
+  assert.equal(r.estado, 400);
+  assert.equal(llamadas.length, 0);
+});
+
 test("POST /:id/recepciones valida el cuerpo", async () => {
   encendida();
   assert.equal((await llamar("POST", "/3/recepciones", { recepcion_ids: [] })).estado, 400);
