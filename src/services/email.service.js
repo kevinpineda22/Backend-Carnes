@@ -76,6 +76,15 @@ export function destinatariosProveedores() {
 }
 
 /**
+ * Quien recibe la alerta de recepciones de proveedor que no llegaron a SIESA
+ * (`CARNES_MAIL_SIESA_PROVEEDORES`). Sin dirección por defecto ni respaldo a otra lista:
+ * vacía = la alerta no sale (se avisa una vez en el log). Se lee por llamada.
+ */
+export function destinatariosSiesaProveedores() {
+  return lista(process.env.CARNES_MAIL_SIESA_PROVEEDORES);
+}
+
+/**
  * Quien ANULA en SIESA la entrada inicial cuando sale la oficial. Puede ser
  * otra persona que el admin —alguien de contabilidad, por ejemplo—, por eso es
  * una variable aparte. Si está vacía, cae al admin.

@@ -15,6 +15,7 @@ primeras el módulo queda a medias:
 |---|---|
 | `CARNES_MAIL_ADMIN` | **el aviso al admin no sale**. Queda en el log del server y nada más. |
 | `CARNES_MAIL_PROVEEDORES` | **el aviso de recepción de proveedor no sale** (no cae al admin). Queda en el log del server. |
+| `CARNES_MAIL_SIESA_PROVEEDORES` | **la alerta de recepciones de proveedor que no llegan a SIESA no sale** (sin valor por defecto ni respaldo a otra lista). Se avisa una vez en el log. |
 | `CARNES_MAIL_PRELIQUIDACION` | **las alertas de la preliquidación de talleres no salen** y quedan en cola (cae a `CARNES_MAIL_ADMIN` si esa está definida). Nunca va en el código. |
 | `CARNES_ADMIN_KEY` | `GET /api/sedes/tokens` y `regenerar-token` responden 503. No se pueden imprimir los stickers de QR. |
 | `CARNES_PANEL_URL` | el botón del correo apunta al default. |
@@ -45,6 +46,17 @@ CARNES_MAIL_ADMIN=
 # separados por coma o punto y coma. SIN respaldo al admin: si está vacía ese
 # correo no sale y queda registrado en el log del server.
 CARNES_MAIL_PROVEEDORES=
+
+# Quién recibe la ALERTA de recepciones de proveedor finalizadas que NO llegaron a SIESA
+# (error, sin confirmar, envío trabado o sin ningún intento, p. ej. con SIESA apagado). Acepta
+# varios separados por coma o punto y coma. SIN valor por defecto y SIN respaldo a otra lista:
+# vacía = no sale ninguna alerta ni corre el barrido (se avisa una vez en el log). En producción:
+# inventarios@merkahorrosas.com,logistica@merkahorrosas.com
+CARNES_MAIL_SIESA_PROVEEDORES=
+
+# Minutos que una recepción de proveedor puede estar Finalizada sin entrada ok en SIESA antes de
+# que el barrido la avise (default 30). Solo aplica al barrido; el error de un envío avisa al instante.
+CARNES_ALERTA_SIESA_MIN=30
 
 # Quién recibe las alertas de la preliquidación de talleres (excede animales,
 # utilidad negativa, error de envío, servicio tardío, cierre, etc.). Acepta varios
@@ -107,6 +119,25 @@ CARNES_VISCERAS_PRELIQ_DESDE=
 # En true no sale ni un correo.
 CARNES_SANDBOX=true
 ```
+
+## Alerta: recepciones de proveedor sin subir a SIESA
+
+Dos caminos mandan el mismo correo a `CARNES_MAIL_SIESA_PROVEEDORES`, una sola vez por recepción:
+
+- **Inmediata:** un envío de proveedor (entrada o nota crédito) que termina en `error` o
+  `sin_confirmar` avisa al momento. Nunca cambia el resultado del envío.
+- **Barrido:** `POST /api/cron/proveedores-siesa` (mismo `Authorization: Bearer $CRON_SECRET` que
+  `/api/cron/preliquidaciones`; 401 sin token válido, 503 sin `CRON_SECRET`). Lo llama
+  `.github/workflows/proveedores-siesa.yml` cada 15 minutos con los secrets `PRELIQ_URL`,
+  `CRON_SECRET` y `VERCEL_AUTOMATION_BYPASS_SECRET` (los del workflow de preliquidación). Avisa de las
+  recepciones `Finalizada` hace más de `CARNES_ALERTA_SIESA_MIN` minutos, sin entrada `ok`, y solo de
+  las finalizadas en los últimos 14 días: sin envío (anota si SIESA está apagado), `error`,
+  `sin_confirmar` o `enviando` abandonado (más de 6 min). Máximo 25 correos por corrida; el resto
+  sale en la siguiente.
+- **Dedupe:** requiere `sql/045_alerta_siesa_proveedor.sql` (`alerta_siesa_at`, `alerta_siesa_motivo`).
+  Sin ella la alerta inmediata sale sin dedupe y el barrido se omite. Cuando el admin reintenta el
+  envío la marca se borra, así un nuevo fallo avisa otra vez.
+- Con `CARNES_SANDBOX=true` no sale ningún correo y la marca se libera.
 
 ## Autenticación de la API (`CARNES_AUTH`)
 

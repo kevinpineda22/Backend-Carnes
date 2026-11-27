@@ -73,6 +73,8 @@ const SIN_GUARD_DE_ADMIN = [
   // Cron de la preliquidación: lo llama GitHub Actions con CRON_SECRET (SHA-256 + timingSafeEqual,
   // 401 sin side effects, 503 sin secreto; ver test/cron-preliquidaciones.test.js). No hay sesión de usuario.
   "POST /cron/preliquidaciones",
+  // Barrido de proveedores sin SIESA: mismo CRON_SECRET (ver test/cron-proveedores-siesa.test.js).
+  "POST /cron/proveedores-siesa",
   // Monitoreo: autenticar los deja pasar (RUTAS_SIN_SESION).
   "GET /health",
   "GET /health/email",

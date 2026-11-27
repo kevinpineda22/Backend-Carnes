@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { ejecutarCron, validarCuerpoCron } from "../services/preliquidacionCron.js";
+import { barrerProveedoresSinSiesa } from "../services/alertasSiesaProveedor.js";
 import { createError } from "../middleware/errorHandler.js";
 
 const router = Router();
@@ -38,6 +39,27 @@ router.post("/preliquidaciones", async (req, res, next) => {
     if (!cuerpo.ok) throw createError(400, cuerpo.mensaje, "cuerpo_invalido");
 
     res.json(await ejecutarCron(cuerpo.valor));
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/cron/proveedores-siesa
+ * Lo llama `.github/workflows/proveedores-siesa.yml` cada 15 minutos. Mismo CRON_SECRET que
+ * el cron de preliquidaciones. Avisa por correo de las recepciones de proveedor finalizadas
+ * que no llegaron a SIESA (ver `alertasSiesaProveedor`). Un fallo de lectura es 500.
+ */
+router.post("/proveedores-siesa", async (req, res, next) => {
+  try {
+    const secreto = process.env.CRON_SECRET;
+    if (!secreto || !secreto.trim()) {
+      throw createError(503, "El cron no está configurado (falta CRON_SECRET).", "cron_no_configurado");
+    }
+    if (!secretoValido(req.headers.authorization, secreto)) {
+      throw createError(401, "No autorizado.", "no_autorizado");
+    }
+    res.json(await barrerProveedoresSinSiesa());
   } catch (error) {
     next(error);
   }

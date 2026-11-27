@@ -1,0 +1,59 @@
+name: proveedores-siesa
+
+# Barrido cada 15 minutos: avisa por correo de las recepciones de proveedor finalizadas que no
+# llegaron a SIESA (sin envío, con error, sin confirmar o trabadas). El backend decide qué avisar y
+# no repite el aviso; este workflow solo lo dispara.
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+# Una sola corrida a la vez; la que está en curso NO se cancela.
+concurrency:
+  group: proveedores-siesa
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  barrido:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Llamar al cron de proveedores sin SIESA
+        env:
+          PRELIQ_URL: ${{ secrets.PRELIQ_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -uo pipefail
+
+          args=(--silent --show-error --fail-with-body --max-time 120
+            -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${CRON_SECRET}")
+          # Los previews de Vercel exigen el bypass de la protección de despliegues.
+          if [ -n "${BYPASS:-}" ]; then
+            args+=(-H "x-vercel-protection-bypass: ${BYPASS}")
+          fi
+
+          if ! respuesta=$(curl "${args[@]}" --data '{}' "${PRELIQ_URL%/}/api/cron/proveedores-siesa"); then
+            echo "::error::El cron de proveedores-siesa falló (401/5xx/timeout)"
+            echo "$respuesta"
+            exit 1
+          fi
+          echo "$respuesta"
+
+          if [ "$(echo "$respuesta" | jq -r '.ok')" != "true" ]; then
+            echo "::error::El cron de proveedores-siesa respondió ok distinto de true"
+            exit 1
+          fi
+
+          omitido=$(echo "$respuesta" | jq -r '.omitido // empty')
+          if [ -n "$omitido" ]; then
+            echo "::warning::Barrido omitido (${omitido}): revisá CARNES_MAIL_SIESA_PROVEEDORES o sql/045"
+          fi
+
+          pendientes=$(echo "$respuesta" | jq -r '.pendientes // 0')
+          if [ "$pendientes" -gt 0 ]; then
+            echo "::warning::Quedan ${pendientes} alertas por enviar; el siguiente barrido las retoma"
+          fi

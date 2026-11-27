@@ -147,6 +147,10 @@ import {
   notificarAnularIniciales,
   notificarErrorEnvioSiesa,
 } from "../services/notificaciones.service.js";
+import {
+  alertarEnvioProveedorFallido,
+  limpiarAlertaSiesa,
+} from "../services/alertasSiesaProveedor.js";
 
 const TABLA = "carnes_siesa_envios";
 
@@ -749,10 +753,12 @@ async function registrarYEnviar({
   // Lo que se dejó fuera del documento y por qué. La clave solo viaja si hay
   // novedad: así los envíos sin ella no dependen de la columna (sql/035).
   const novedad = (armado.novedades || []).join(" ") || null;
-  // Solo Talleres avisa por correo; los envíos de proveedor no.
-  const avisaError = !esTipoProveedor(tipo);
+  // Talleres avisa a los destinatarios de Talleres; proveedor, a los de su propia alerta
+  // (`CARNES_MAIL_SIESA_PROVEEDORES`, con dedupe por recepción). Ninguno lanza ni cambia el envío.
+  const esProveedor = esTipoProveedor(tipo);
   const avisarError = async (envio) => {
-    if (avisaError) await avisarErrorEnvio(envio, resumen.sede ?? null, etiqueta);
+    if (esProveedor) await alertarEnvioProveedorFallido(envio);
+    else await avisarErrorEnvio(envio, resumen.sede ?? null, etiqueta);
   };
 
   const fila = {
@@ -891,6 +897,8 @@ async function registrarYEnviar({
   // Solo "error": sin_confirmar no se sabe si falló, y ok no hay nada que avisar.
   // `omitirAviso` deja sin correo el error que el flujo corrige solo (ver `ejecutarAjuste`).
   if (estado === "error" && !omitirAviso?.(data)) await avisarError(data);
+  // Un sin_confirmar de Talleres no avisa; el de proveedor sí: SIESA pudo no haberlo recibido.
+  if (estado === "sin_confirmar" && esProveedor) await alertarEnvioProveedorFallido(data);
   return data;
 }
 
@@ -4204,6 +4212,8 @@ export async function reintentarEntradaProveedor(recepcionId, por) {
   }
 
   await refrescarSnapshotsProveedor(recepcion);
+  // El admin reintenta: si vuelve a fallar tiene que avisar otra vez (best-effort, nunca lanza).
+  await limpiarAlertaSiesa(recepcionId);
 
   // Releída justo antes de reservar: tiene que seguir Finalizada.
   const fresca = await cargarRecepcionProveedor(recepcionId);
