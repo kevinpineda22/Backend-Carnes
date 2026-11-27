@@ -99,27 +99,26 @@ export function referenciaEnvio(recepcionId, tipo) {
 }
 
 /**
- * El bloque `siesa` que el recibidor ve al finalizar Talleres. Siempre lleva la
- * referencia de la entrada inicial para anotarla en la factura física: la del envío
- * si existe (puede ser de formato anterior) y, si no (SIESA apagado o falló antes
- * de reservar el envío), la que tendrá cuando se envíe.
+ * El bloque `siesa` que el recibidor ve al finalizar Talleres. Solo lleva referencia
+ * (la de la entrada inicial, para la factura física) si una inicial anterior a este
+ * cambio sigue vigente; en cualquier otro caso `estado: "omitida"` y `referencia: null`.
  */
 export function siesaParaRecibidor(siesa, recepcionId) {
-  // Inicial omitida por un admin (sql/044): no existe ni existirá una entrada inicial, así que no hay
-  // referencia que anotar en la factura física. Se informa el motivo y nada más.
-  if (siesa?.estado === "omitida") {
+  // Talleres ya no manda entrada inicial (solo la oficial): no hay referencia que anotar en la
+  // factura física. Solo una inicial vieja, ya vigente en SIESA, conserva su referencia.
+  if (!siesa?.referencia) {
     return {
       estado: "omitida",
       referencia: null,
       error: null,
-      novedad: siesa.mensaje ?? null,
+      novedad: siesa?.estado === "omitida" ? (siesa.mensaje ?? null) : null,
     };
   }
   return {
-    estado: siesa?.estado ?? null,
-    referencia: siesa?.referencia ?? referenciaEnvio(recepcionId, TIPO_ENVIO.INICIAL),
-    error: siesa?.error ?? null,
-    novedad: siesa?.novedad ?? null,
+    estado: siesa.estado ?? null,
+    referencia: siesa.referencia,
+    error: siesa.error ?? null,
+    novedad: siesa.novedad ?? null,
   };
 }
 

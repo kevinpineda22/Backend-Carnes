@@ -46,6 +46,7 @@ class Q {
   update(p) { this.op = "update"; this.pay = p; return this; }
   eq(c, v) { this.f.push((r) => String(r[c]) === String(v) && r[c] != null); return this; }
   in(c, a) { this.f.push((r) => r[c] != null && a.map(String).includes(String(r[c]))); return this; }
+  is(c, v) { this.f.push((r) => (v === null ? r[c] == null : r[c] === v)); return this; }
   lt(c, v) { this.f.push((r) => r[c] != null && r[c] < v); return this; }
   order(c, o) { this.ord.push([c, o?.ascending !== false]); return this; }
   limit(n) { this.lim = n; return this; }
@@ -126,60 +127,91 @@ const omitir = () => { db.carnes_recepciones[0].inicial_omitida_at = "2026-11-26
 const iniciales = () => db.carnes_siesa_envios.filter((f) => f.tipo === "inicial");
 const sinInicial = () => { db.carnes_siesa_envios = []; };
 
-// ─── Cierre de la recepción: enviarInicial ─────────────────────────────────
+// ─── Cierre de la recepción: omitirInicialDeTalleres ───────────────────────
 
-test("cierre: con la inicial omitida no se manda, no se registra nada y se informa `omitida`", async () => {
-  nuevo(); sinInicial(); omitir();
-  const r = await M.enviarInicial(2, "recibidor");
+const recepcion2 = () => db.carnes_recepciones.find((r) => r.id === 2);
+
+test("cierre: marca la inicial omitida por `sistema`, no manda ni registra nada", async () => {
+  nuevo(); sinInicial();
+  const r = await M.omitirInicialDeTalleres(2);
   assert.equal(r.estado, "omitida");
   assert.equal(r.tipo, "inicial");
-  assert.match(r.mensaje, /omitida por un administrador/);
+  assert.ok(recepcion2().inicial_omitida_at);
+  assert.equal(recepcion2().inicial_omitida_por, "sistema");
   assert.equal(llamadas.length, 0);
   assert.equal(iniciales().length, 0);
 });
 
-test("cierre: la omisión que llega entre la lectura y la reserva la frena el trigger de la base, sin mandar", async () => {
+test("cierre: marca aunque SIESA esté apagado (la oficial saldrá después)", async () => {
   nuevo(); sinInicial();
-  rechazarInicialEnBase = true; // la lectura previa dice "no omitida"; el INSERT ya la ve omitida
-  const r = await M.enviarInicial(2, "recibidor");
+  const previo = process.env.CARNES_SIESA_ACTIVO;
+  process.env.CARNES_SIESA_ACTIVO = "false";
+  try {
+    const r = await M.omitirInicialDeTalleres(2);
+    assert.equal(r.estado, "omitida");
+    assert.equal(recepcion2().inicial_omitida_por, "sistema");
+    assert.equal(llamadas.length, 0);
+  } finally {
+    process.env.CARNES_SIESA_ACTIVO = previo;
+  }
+});
+
+test("cierre: es idempotente y no pisa una omisión previa de un admin", async () => {
+  nuevo(); sinInicial(); omitir();
+  const r = await M.omitirInicialDeTalleres(2);
   assert.equal(r.estado, "omitida");
-  assert.equal(llamadas.length, 0);
-  assert.equal(iniciales().length, 0);
+  assert.equal(recepcion2().inicial_omitida_at, "2026-11-26T10:00:00Z");
+  assert.equal(recepcion2().inicial_omitida_por, "admin@x.co");
 });
 
-test("cierre: sin omisión la inicial sale como siempre (regresión)", async () => {
-  nuevo(); sinInicial();
-  const r = await M.enviarInicial(2, "recibidor");
+test("cierre: con una inicial vigente (anterior a este cambio) no se toca la recepción", async () => {
+  nuevo(); // la base falsa trae una inicial `ok`
+  const r = await M.omitirInicialDeTalleres(2);
+  assert.equal(r.repetido, true);
   assert.equal(r.estado, "ok");
-  assert.equal(llamadas.length, 1);
-  assert.equal(iniciales().length, 1);
+  assert.equal(recepcion2().inicial_omitida_at, undefined);
+  assert.equal(llamadas.length, 0);
+});
+
+test("cierre: si la base falla no lanza y devuelve `error`", async () => {
+  nuevo(); sinInicial();
+  const original = supabaseFalso.from;
+  supabaseFalso.from = (t) => {
+    const q = new Q(t);
+    if (t === "carnes_recepciones") q.run = () => ({ data: null, error: { code: "08006", message: "conexión caída" } });
+    return q;
+  };
+  try {
+    const r = await M.omitirInicialDeTalleres(2);
+    assert.equal(r.estado, "error");
+    assert.match(r.error, /conexión caída/);
+  } finally {
+    supabaseFalso.from = original;
+  }
+});
+
+test("el cierre ya no exporta ninguna ruta que mande la inicial", () => {
+  assert.equal(M.enviarInicial, undefined);
 });
 
 // ─── Reintento manual: POST /siesa/recepciones/:id/inicial ─────────────────
 
-test("reintento manual: con la inicial omitida es 409 inicial_omitida y no toca SIESA", async () => {
-  nuevo(); sinInicial(); omitir();
-  await assert.rejects(
-    () => M.reintentarInicial(2, "admin"),
-    (e) => e.statusCode === 409 && e.codigo === "inicial_omitida" && /solo sale la oficial/.test(e.message),
-  );
-  assert.equal(llamadas.length, 0);
-  assert.equal(iniciales().length, 0);
-});
-
-test("reintento manual: la omisión concurrente que solo ve el trigger también es 409 inicial_omitida", async () => {
-  nuevo(); sinInicial();
-  rechazarInicialEnBase = true;
-  await assert.rejects(() => M.reintentarInicial(2, "admin"), (e) => e.statusCode === 409 && e.codigo === "inicial_omitida");
-  assert.equal(llamadas.length, 0);
-});
-
-test("reintento manual: sin omisión sigue funcionando (regresión)", async () => {
-  nuevo(); sinInicial();
-  const r = await M.reintentarInicial(2, "admin");
-  assert.equal(r.estado, "ok");
-  assert.equal(llamadas.length, 1);
-});
+for (const [nombre, preparar] of [
+  ["sin omisión", () => sinInicial()],
+  ["con la inicial omitida", () => { sinInicial(); omitir(); }],
+  ["con una inicial en error", () => { db.carnes_siesa_envios[0].estado = "error"; }],
+]) {
+  test(`reintento manual (${nombre}): 409, no toca SIESA ni crea filas`, async () => {
+    nuevo(); preparar();
+    const antes = db.carnes_siesa_envios.length;
+    await assert.rejects(
+      () => M.reintentarInicial(2, "admin"),
+      (e) => e.statusCode === 409 && /solo se envía la oficial/.test(e.message),
+    );
+    assert.equal(llamadas.length, 0);
+    assert.equal(db.carnes_siesa_envios.length, antes);
+  });
+}
 
 // ─── La oficial de una recepción sin inicial ───────────────────────────────
 

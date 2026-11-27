@@ -4,9 +4,8 @@
  * Armar el documento es de `shared/siesaEntrada.js`. Hacer el POST es de
  * `services/siesa.service.js`. Acá está la política:
  *
- *   inicial  automática al cerrar la recepción. Best-effort: si falla, se
- *            registra el error y la recepción se cierra igual. El recibidor
- *            no puede quedar trabado en la cava porque SIESA no responde.
+ *   inicial  YA NO SE ENVÍA en Talleres. Al cerrar la recepción solo se marca
+ *            omitida (`omitirInicialDeTalleres`); sale únicamente la oficial.
  *   oficial  la dispara el admin desde la liquidación costeada. Es UNA CEA POR
  *            FECHA DE INGRESO, cada una con los renglones de todas las sedes que
  *            recibieron ese día (sql/012 las juntó en una; sql/033 las parte por
@@ -404,6 +403,11 @@ const CODIGO_INICIAL_OMITIDA = "inicial_omitida";
 const MENSAJE_INICIAL_OMITIDA =
   "La entrada inicial de esta recepción fue omitida por un administrador: solo sale la oficial.";
 
+const POR_SISTEMA = "sistema";
+const MENSAJE_SIN_INICIAL = "Talleres ya no manda entrada inicial: solo se envía la oficial.";
+const CODIGO_INICIAL_YA_NO_SE_USA = "inicial_ya_no_se_usa";
+const MENSAJE_INICIAL_YA_NO_SE_USA = "La entrada inicial ya no se usa en talleres: solo se envía la oficial.";
+
 const errorInicialOmitida = () => createError(409, MENSAJE_INICIAL_OMITIDA, CODIGO_INICIAL_OMITIDA);
 
 /** El trigger de sql/044 rechazó el insert de una inicial (SQLSTATE CA044 / mensaje `inicial_omitida:`). */
@@ -685,8 +689,10 @@ async function ejecutarEnvio({
   timeoutMs,
   alArmar,
 }) {
-  // Última barrera en JS de toda ruta que manda una inicial (la de la base es el trigger de sql/044).
-  if (tipo === TIPO_ENVIO.INICIAL && (await inicialOmitida(recepcion.id))) throw errorInicialOmitida();
+  // Talleres ya no manda la inicial: ninguna ruta puede llegar a armarla ni a mandarla.
+  if (tipo === TIPO_ENVIO.INICIAL) {
+    throw createError(409, MENSAJE_INICIAL_YA_NO_SE_USA, CODIGO_INICIAL_YA_NO_SE_USA);
+  }
   const consecutivo = consecutivoDe(recepcion.id, tipo);
   const armado = armarEntradaDirecta({
     recepcion,
@@ -889,83 +895,39 @@ async function registrarYEnviar({
 }
 
 /**
- * Entrada INICIAL. Se llama al cerrar la recepción. Nunca lanza: si falla, la
- * fila queda con el error y se devuelve igual.
+ * Talleres ya no manda la entrada INICIAL: solo sale la oficial. Al cerrar la recepción
+ * se deja marcada como omitida (`inicial_omitida_at`, por `sistema`): así la compuerta de la
+ * preliquidación pasa sin inicial y el trigger de sql/044 rechaza cualquier inicial posterior.
+ *
+ * Marca aunque SIESA esté apagado (la oficial puede salir después). No llama a SIESA y nunca
+ * lanza. Idempotente: un segundo llamado no cambia quién ni cuándo la omitió. Si la recepción ya
+ * tiene una inicial vigente (enviando, ok o sin_confirmar; solo las de antes de este cambio) no se
+ * toca: se devuelve esa fila y el flujo de siempre anula la inicial al salir la oficial.
+ *
+ * @returns {Promise<{estado: string, tipo: string, recepcion_id: number|string}>}
  */
-export async function enviarInicial(recepcionId, por) {
-  // Apagado: no se manda ni se registra. Registrar cada cierre como "error"
-  // mientras el interruptor está en off llenaría el panel de filas que no
-  // significan nada.
-  if (!siesaActivo()) {
-    return {
-      estado: "apagado",
-      tipo: TIPO_ENVIO.INICIAL,
-      recepcion_id: recepcionId,
-    };
-  }
+export async function omitirInicialDeTalleres(recepcionId, { por = POR_SISTEMA } = {}) {
+  const base = { tipo: TIPO_ENVIO.INICIAL, recepcion_id: recepcionId };
   try {
-    // Omitida por un admin (sql/044): no se manda ni se registra nada; solo sale la oficial.
-    if (await inicialOmitida(recepcionId)) {
-      return {
-        estado: "omitida",
-        tipo: TIPO_ENVIO.INICIAL,
-        recepcion_id: recepcionId,
-        mensaje: MENSAJE_INICIAL_OMITIDA,
-      };
-    }
-    const recepcion = await cargarRecepcion(recepcionId);
-    // Si ya hay una inicial vigente, no se manda otra: SIESA tendría dos
-    // documentos de la misma carne y el que anula no sabría cuál.
     const previa = await envioVigente(recepcionId, TIPO_ENVIO.INICIAL);
     if (previa) return { ...previa, repetido: true };
-
-    return await ejecutarEnvio({ recepcion, tipo: TIPO_ENVIO.INICIAL, por });
+    // Condicional: si ya estaba omitida (por un admin o por un llamado anterior) no se pisa.
+    const { error } = await supabase
+      .from("carnes_recepciones")
+      .update({ inicial_omitida_at: new Date().toISOString(), inicial_omitida_por: por })
+      .eq("id", recepcionId)
+      .is("inicial_omitida_at", null);
+    if (error) throw new Error(error.message);
+    return { ...base, estado: "omitida", mensaje: MENSAJE_SIN_INICIAL };
   } catch (e) {
-    // Una omisión que llegó entre la lectura y la reserva (la rechazó el trigger): no es un fallo.
-    if (e?.codigo === CODIGO_INICIAL_OMITIDA) {
-      return {
-        estado: "omitida",
-        tipo: TIPO_ENVIO.INICIAL,
-        recepcion_id: recepcionId,
-        mensaje: MENSAJE_INICIAL_OMITIDA,
-      };
-    }
-    console.error(`🔴 SIESA inicial recepción #${recepcionId}: ${e.message}`);
-    return {
-      estado: "error",
-      error: e.message,
-      tipo: TIPO_ENVIO.INICIAL,
-      recepcion_id: recepcionId,
-    };
+    console.error(`🔴 SIESA omitir inicial recepción #${recepcionId}: ${e.message}`);
+    return { ...base, estado: "error", error: e.message };
   }
 }
 
-/** Reintento manual de la inicial, desde el panel. Sí lanza si no se puede. */
-export async function reintentarInicial(recepcionId, por) {
-  if (await inicialOmitida(recepcionId)) throw errorInicialOmitida();
-  if (!siesaActivo()) {
-    throw createError(
-      409,
-      "El envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).",
-    );
-  }
-  const recepcion = await cargarRecepcion(recepcionId);
-  if (
-    ![ESTADOS.RECIBIDO, ESTADOS.APROBADO, ESTADOS.COSTEADO].includes(
-      recepcion.estado,
-    )
-  ) {
-    throw createError(
-      409,
-      `La recepción está en ${recepcion.estado}: la inicial ya no aplica.`,
-    );
-  }
-  const previa = await envioVigente(recepcionId, TIPO_ENVIO.INICIAL);
-  if (previa) throw createError(409, motivoVigente(previa));
-  const fila = await ejecutarEnvio({ recepcion, tipo: TIPO_ENVIO.INICIAL, por });
-  // Otro pedido la reservó entre la pregunta de arriba y la reserva.
-  if (fila.repetido) throw createError(409, motivoVigente(fila));
-  return fila;
+/** La entrada inicial ya no se usa en Talleres: ninguna ruta manual la manda. */
+export async function reintentarInicial() {
+  throw createError(409, MENSAJE_INICIAL_YA_NO_SE_USA, CODIGO_INICIAL_YA_NO_SE_USA);
 }
 
 /**

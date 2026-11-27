@@ -235,14 +235,14 @@ export async function finalizar(req, res, next) {
       conQuienHace(req, req.body || {}, "recibido_por"),
     );
 
-    // Los efectos del cierre —el correo al admin, la entrada inicial a SIESA y
+    // Los efectos del cierre —el correo al admin, la omisión de la entrada inicial de SIESA y
     // la guía anticipada— van en paralelo y ninguno lanza. La recepción YA está
     // cerrada; lo que falle acá se reporta en la respuesta, no como error.
     //
     // La guía NO viaja en la respuesta: esta la lee el recibidor, y la
     // diferencia contra el frigorífico es del admin, que la recibe por correo.
     //
-    // Las vísceras de res (CEI) salen en paralelo con la entrada inicial si
+    // Las vísceras de res (CEI) salen en paralelo con el cierre si
     // CARNES_SIESA_VISCERAS_AL_CIERRE está prendida; apagada devuelve "apagado"
     // sin tocar la base.
     //
@@ -259,7 +259,7 @@ export async function finalizar(req, res, next) {
     const [notificacion, confirmacion, siesa, visceras] = await Promise.all([
       notificarRecepcionFinalizada(data, data.items),
       notificarConfirmacionRecibidor(data, data.items),
-      SiesaEnvio.enviarInicial(data.id, data.recibido_por),
+      SiesaEnvio.omitirInicialDeTalleres(data.id),
       viscerasAlCerrar(data, { inicioPeticion }),
       DesposteModel.vincularAnticipada(data.id),
     ]);

@@ -1520,6 +1520,23 @@ async function simularSede(sede) {
 }
 
 /**
+ * Omite la CEA inicial de la recepción de la sede (talleres ya no la manda) y devuelve la versión
+ * nueva de la sede para reclamarla otra vez; `null` si no se pudo (la RPC la rechazó o falló).
+ */
+async function sanarInicialPendiente(sede, { log = console } = {}) {
+  try {
+    const r = await llamarRpc("carnes_preliq_omitir_inicial", { p_sede_id: sede.id, p_por: "sistema" });
+    if (r?.resultado !== "ok" && r?.resultado !== "ya_omitida") return null;
+    const { data, error } = await supabase.from(T_SEDES).select("version").eq("id", sede.id).maybeSingle();
+    if (error || data?.version == null) return null;
+    return data.version;
+  } catch (error) {
+    log.error?.(`Sede ${sede.id}: no se pudo omitir la inicial pendiente: ${error?.message}`);
+    return null;
+  }
+}
+
+/**
  * Procesa UNA sede de la preliquidación: decide si se puede reclamar, la reclama con un
  * CAS (estado + versión), manda la CEA oficial, traduce la respuesta de SIESA a un evento
  * de `transicionSede` y cierra el intento con el mismo token.
@@ -1574,6 +1591,19 @@ export async function procesarSede(sede, contexto = {}) {
   if (reclamo?.resultado === "no_reclamada" || reclamo?.resultado === "no_abierta") return { resultado: "no_reclamada" };
   if (reclamo?.resultado === "costeo_desactualizado") return { resultado: "costeo_desactualizado" };
   if (reclamo?.resultado === "inicial_pendiente") {
+    // Talleres ya no manda inicial: una sede sin inicial vigente se sana sola. Se omite la inicial de
+    // su recepción (RPC bajo lock: marca, limpia `motivo_pendiente` y sus avisos) y se reclama de nuevo,
+    // una sola vez. Si la RPC no la acepta (inicial en vuelo, oficial ya enviada, sede bloqueada...) o
+    // falla, la sede sigue como hasta ahora.
+    if (!contexto.inicialSaneada) {
+      const version = await sanarInicialPendiente(sede, { log });
+      if (version != null) {
+        return procesarSede(
+          { ...sede, version, motivo_pendiente: null },
+          { ...contexto, inicialSaneada: true },
+        );
+      }
+    }
     // La RPC marca `motivo_pendiente` y sube la versión solo la primera vez: la alerta también.
     if (sede.motivo_pendiente !== "inicial_pendiente") {
       const transicion = transicionSede("calculada", "inicial_no_ok");

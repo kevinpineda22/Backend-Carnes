@@ -154,6 +154,21 @@ test("una sola fecha: un documento, como antes", async () => {
   assert.equal(r.envios.length, 1);
 });
 
+test("liquidación sin ninguna inicial (talleres ya no la manda): sale y cierra, sin correo de anulación", async () => {
+  nuevo();
+  db.carnes_siesa_envios = [];
+  db.carnes_recepciones.forEach((r) => (r.fecha_ingreso = "2026-09-23"));
+  const prev = await M.previsualizarOficial(6);
+  assert.equal(prev.puedeEnviar, true);
+
+  const r = await M.enviarOficial(6, "admin");
+  assert.equal(r.cerrada, true);
+  assert.equal(llamadas.length, 1);
+  assert.equal(correos.length, 0, "no hay iniciales que anular");
+  assert.ok(ofi().every((o) => o.aviso_anulacion === true), "el aviso queda cumplido");
+  assert.equal(db.carnes_liquidaciones[0].estado, "Cerrada");
+});
+
 test("dos fechas: dos documentos en orden, cada uno con su fila; cierra al final", async () => {
   nuevo();
   const prev = await M.previsualizarOficial(6);
@@ -473,99 +488,17 @@ test("vísceras 23505 por el candado en vuelo: se informa el envío que ocupa, n
   assert.match(r.envio.error, /TC FAL X1/);
 });
 
-// ─── Inicial parcial y aviso de error ───
+// ─── Talleres ya no manda inicial ───
 
-const agregarAdicionalSinCodigo = (recepcionId) =>
-  db.carnes_recepcion_items.push({
-    id: 9000 + recepcionId, recepcion_id: recepcionId, tipo: "adicional", orden: 9,
-    codigo_item: null, descripcion: "ASADURA DE CERDO", cantidad: 2, costo_base: 100,
-  });
-
-test("inicial con un producto sin código: sube el resto, guarda la novedad y no avisa error", async () => {
+test("la inicial ya no se manda: reintentar es 409 y no toca SIESA ni la base", async () => {
   nuevo();
   db.carnes_siesa_envios = [];
-  agregarAdicionalSinCodigo(2);
-  const fila = await M.enviarInicial(2, "recibidor");
-  assert.equal(fila.estado, "ok");
-  assert.equal(llamadas.length, 1);
-  assert.equal(llamadas[0].payload.Movimientos.length, 2);
-  assert.equal(fila.renglones, 2);
-  assert.equal(fila.total_kilos, 15);
-  assert.equal(
-    fila.novedad,
-    "1 renglón sin código de SIESA no se subió: ASADURA DE CERDO. Homologarlo antes de liquidar.",
+  await assert.rejects(
+    () => M.reintentarInicial(2, "admin"),
+    (e) => e.statusCode === 409 && /solo se envía la oficial/.test(e.message),
   );
-  assert.equal(db.carnes_siesa_envios[0].novedad, fila.novedad);
-  assert.equal(errores.length, 0);
-});
-
-test("inicial sin novedad: la fila no lleva la clave novedad", async () => {
-  nuevo();
-  db.carnes_siesa_envios = [];
-  const fila = await M.enviarInicial(8, "recibidor");
-  assert.equal(fila.estado, "ok");
-  assert.ok(!("novedad" in db.carnes_siesa_envios[0]));
-  assert.equal(errores.length, 0);
-});
-
-test("inicial: si SIESA la rechaza, queda la novedad y se avisa el error por correo", async () => {
-  nuevo();
-  db.carnes_siesa_envios = [];
-  agregarAdicionalSinCodigo(2);
-  guion = [{ ok: false, error: "Item no existe" }];
-  const fila = await M.enviarInicial(2, "recibidor");
-  assert.equal(fila.estado, "error");
-  assert.match(fila.novedad, /ASADURA DE CERDO/);
-  assert.equal(errores.length, 1);
-  assert.equal(errores[0].envio.estado, "error");
-  assert.equal(errores[0].envio.error, "Item no existe");
-  assert.equal(errores[0].envio.referencia, "TC INI R2");
-  assert.equal(errores[0].extra.sede, "Barbosa");
-});
-
-test("inicial sin_confirmar: no se avisa por correo", async () => {
-  nuevo();
-  db.carnes_siesa_envios = [];
-  guion = [{ ok: false, incierto: true, error: "timeout" }];
-  const fila = await M.enviarInicial(8, "recibidor");
-  assert.equal(fila.estado, "sin_confirmar");
-  assert.equal(errores.length, 0);
-});
-
-test("inicial bloqueada (todos sin código): fila en error y aviso por correo, sin llamar a SIESA", async () => {
-  nuevo();
-  db.carnes_siesa_envios = [];
-  db.carnes_recepcion_items = [];
-  agregarAdicionalSinCodigo(9);
-  const fila = await M.enviarInicial(9, "recibidor");
-  assert.equal(fila.estado, "error");
   assert.equal(llamadas.length, 0);
-  assert.match(fila.novedad, /ASADURA DE CERDO/);
-  assert.equal(errores.length, 1);
-  assert.match(errores[0].envio.error, /Ningún renglón tiene código/);
-});
-
-test("inicial ya vigente: no se intenta ni se avisa", async () => {
-  nuevo();
-  const fila = await M.enviarInicial(2, "recibidor");
-  assert.equal(fila.repetido, true);
-  assert.equal(llamadas.length, 0);
-  assert.equal(errores.length, 0);
-});
-
-test("si el correo de error falla, el resultado del envío no cambia", async () => {
-  nuevo();
-  db.carnes_siesa_envios = [];
-  guion = [{ ok: false, error: "SIESA dijo no" }];
-  correoErrorLanza = true;
-  try {
-    const fila = await M.enviarInicial(8, "recibidor");
-    assert.equal(fila.estado, "error");
-    assert.equal(fila.error, "SIESA dijo no");
-    assert.equal(errores.length, 1);
-  } finally {
-    correoErrorLanza = false;
-  }
+  assert.equal(db.carnes_siesa_envios.length, 0);
 });
 
 // ─── Ajuste de vísceras rechazado por faltante: el flujo lo compensa solo ───

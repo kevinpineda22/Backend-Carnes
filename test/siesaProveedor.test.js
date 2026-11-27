@@ -115,20 +115,24 @@ test("referenciasProveedor: entrada siempre; nota crédito solo con devolución"
   assert.equal(referenciasProveedor(12345, { conDevolucion: true }).nota_credito, "TCPN12345");
 });
 
-test("siesaParaRecibidor: usa la referencia del envío; si no hay, la que tendrá", () => {
+test("siesaParaRecibidor: sin referencia no inventa ninguna (talleres ya no manda inicial)", () => {
+  for (const siesa of [{ estado: "apagado" }, { estado: "error", error: "boom" }, undefined]) {
+    assert.deepEqual(siesaParaRecibidor(siesa, 162), {
+      estado: "omitida",
+      referencia: null,
+      error: null,
+      novedad: null,
+    });
+  }
+});
+
+test("siesaParaRecibidor: una inicial vieja ya vigente conserva su referencia", () => {
   assert.deepEqual(siesaParaRecibidor({ estado: "ok", referencia: "R23I", novedad: "x" }, 23), {
     estado: "ok",
     referencia: "R23I",
     error: null,
     novedad: "x",
   });
-  assert.deepEqual(siesaParaRecibidor({ estado: "apagado" }, 162), {
-    estado: "apagado",
-    referencia: "TC INI R162",
-    error: null,
-    novedad: null,
-  });
-  assert.equal(siesaParaRecibidor({ estado: "error", error: "boom" }, 162).referencia, "TC INI R162");
 });
 
 test("siesaParaRecibidor: con la inicial omitida no inventa referencia y reenvía el mensaje", () => {

@@ -67,6 +67,14 @@ CARNES_ADMIN_KEY=
 # siempre. Ver la sección "Autenticación de la API" más abajo antes de cambiarla.
 CARNES_AUTH=off
 
+# ─── SIESA: Talleres ya no manda entrada inicial ─────────────────────────────
+# Sin variable: no hay interruptor. Al cerrar una recepción de Talleres (res y
+# cerdo) NO se envía la CEA inicial provisional; la recepción queda marcada con
+# inicial_omitida_at / inicial_omitida_por = 'sistema' (se marca también con
+# CARNES_SIESA_ACTIVO=false) y solo sale la oficial. POST /siesa/recepciones/:id/inicial
+# responde 409. Las sedes que quedaron en motivo_pendiente='inicial_pendiente' se
+# sanan solas en la siguiente corrida. Proveedores no cambia. Requiere sql/044.
+
 # ─── SIESA: vísceras de res al cerrar la recepción ───────────────────────────
 # En true, cerrar una recepción de res manda sus vísceras a SIESA (un CEI por
 # recepción) en vez de esperar al ajuste de la liquidación. Necesita también

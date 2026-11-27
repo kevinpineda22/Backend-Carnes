@@ -20,8 +20,8 @@ router.post("/envios/:id/resolver", SiesaController.resolver);
 // es 409.
 router.delete("/envios/:id", SiesaController.eliminarEnvio);
 
-// La inicial sale sola al cerrar la recepción (ver recepciones.controller).
-// Esto es el reintento manual cuando aquella falló.
+// Talleres ya no manda entrada inicial (solo la oficial): esta ruta se conserva solo para
+// responder 409 a quien todavía la llame.
 router.post("/recepciones/:id/inicial", SiesaController.reintentarInicial);
 
 // Las vísceras de res salen al cerrar la recepción (CARNES_SIESA_VISCERAS_AL_CIERRE).

@@ -50,7 +50,7 @@ export async function estado(_req, res) {
   });
 }
 
-/** POST /api/siesa/recepciones/:id/inicial — reintento manual. */
+/** POST /api/siesa/recepciones/:id/inicial — ya no se usa en talleres: responde 409. */
 export async function reintentarInicial(req, res, next) {
   try {
     const data = await SiesaEnvio.reintentarInicial(

@@ -9,9 +9,13 @@ const url = (p) => pathToFileURL(RAIZ + p).href;
 
 let rpcs = [];
 let respuestasRpc = {}; // nombre -> cola de respuestas
+let versionTrasOmitir = 9;
 const supabaseFalso = {
-  from: () => {
-    throw new Error("procesarSede no debe leer tablas directamente");
+  // Lo único que procesarSede lee de una tabla: la versión de la sede tras omitir la inicial.
+  from: (tabla) => {
+    if (tabla !== "carnes_preliquidacion_sedes") throw new Error("procesarSede no debe leer tablas directamente");
+    const q = { select: () => q, eq: () => q, maybeSingle: async () => ({ data: { version: versionTrasOmitir }, error: null }) };
+    return q;
   },
   rpc: async (nombre, args) => {
     rpcs.push({ nombre, args });
@@ -78,6 +82,7 @@ beforeEach(() => {
   enviados = [];
   alertas = [];
   respuestasRpc = {};
+  versionTrasOmitir = 9;
   respuestaEnvio = { fila: { id: 500, estado: "ok", repetido: false, error: null }, armadoBloqueos: [] };
 });
 
@@ -214,8 +219,66 @@ test("I4: con paridad correcta no hay aviso", async () => {
   assert.equal(r.paridad_armado, true);
 });
 
+test("inicial_pendiente sin inicial vigente: se omite como `sistema` y se reclama otra vez con la versión nueva", async () => {
+  respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }, reclamoOk()];
+  respuestasRpc.carnes_preliq_omitir_inicial = [{ resultado: "ok", sede_id: 11, recepcion_id: 101 }];
+  const r = await procesar(sede({ motivo_pendiente: "inicial_pendiente" }));
+  assert.equal(r.resultado, "enviada");
+  assert.equal(enviados.length, 1);
+  assert.deepEqual(rpcDe("carnes_preliq_omitir_inicial").map((c) => c.args), [{ p_sede_id: 11, p_por: "sistema" }]);
+  const reclamos = rpcDe("carnes_preliq_reclamar_sede");
+  assert.equal(reclamos.length, 2);
+  assert.equal(reclamos[0].args.p_sede_version, 7);
+  assert.equal(reclamos[1].args.p_sede_version, 9);
+  assert.equal(alertas.length, 0, "no se avisa de una inicial que ya no se espera");
+});
+
+test("inicial_pendiente ya omitida (ya_omitida): también se reclama otra vez", async () => {
+  respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }, reclamoOk()];
+  respuestasRpc.carnes_preliq_omitir_inicial = [{ resultado: "ya_omitida" }];
+  const r = await procesar(sede());
+  assert.equal(r.resultado, "enviada");
+});
+
+test("inicial_pendiente: solo se sana una vez (no hay bucle si el reclamo vuelve a decir inicial_pendiente)", async () => {
+  respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }, { resultado: "inicial_pendiente" }];
+  respuestasRpc.carnes_preliq_omitir_inicial = [{ resultado: "ok" }, { resultado: "ok" }];
+  const r = await procesar(sede());
+  assert.equal(r.resultado, "inicial_pendiente");
+  assert.equal(rpcDe("carnes_preliq_omitir_inicial").length, 1);
+  assert.equal(rpcDe("carnes_preliq_reclamar_sede").length, 2);
+  assert.equal(enviados.length, 0);
+});
+
+for (const resultado of ["oficial_enviada", "sede_no_enviable", "no_abierta"]) {
+  test(`inicial_pendiente: si la RPC responde ${resultado} no se reintenta y sigue pendiente`, async () => {
+    respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }];
+    respuestasRpc.carnes_preliq_omitir_inicial = [{ resultado }];
+    const r = await procesar(sede());
+    assert.equal(r.resultado, "inicial_pendiente");
+    assert.equal(rpcDe("carnes_preliq_reclamar_sede").length, 1);
+    assert.equal(enviados.length, 0);
+  });
+}
+
+test("inicial_pendiente: si la RPC de omitir falla (migración sin correr) se comporta como antes", async () => {
+  respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }];
+  const rpcOriginal = supabaseFalso.rpc;
+  supabaseFalso.rpc = async (nombre, args) =>
+    nombre === "carnes_preliq_omitir_inicial" ? { data: null, error: { message: "no existe" } } : rpcOriginal(nombre, args);
+  try {
+    const r = await procesar(sede(), { log: { error() {} } });
+    assert.equal(r.resultado, "inicial_pendiente");
+    assert.equal(enviados.length, 0);
+  } finally {
+    supabaseFalso.rpc = rpcOriginal;
+  }
+});
+
 test("inicial_pendiente: no envía, alerta solo la primera vez", async () => {
   respuestasRpc.carnes_preliq_reclamar_sede = [{ resultado: "inicial_pendiente" }, { resultado: "inicial_pendiente" }];
+  // La RPC no acepta omitirla (hay una inicial en vuelo): la sede sigue esperando.
+  respuestasRpc.carnes_preliq_omitir_inicial = [{ resultado: "inicial_vigente" }, { resultado: "inicial_vigente" }];
   const primera = await procesar(sede());
   assert.equal(primera.resultado, "inicial_pendiente");
   assert.equal(enviados.length, 0);
