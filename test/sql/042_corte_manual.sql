@@ -61,6 +61,9 @@ BEGIN
   IF (SELECT version FROM carnes_preliquidaciones WHERE id = pre) <> v + 1 THEN
     RAISE EXCEPTION 'debía subir la version';
   END IF;
+  IF (SELECT orden_version FROM carnes_preliquidaciones WHERE id = pre) <> ov + 1 THEN
+    RAISE EXCEPTION 'debía subir la orden_version';
+  END IF;
 
   -- liquidar respeta el corte manual aunque JS mande un p_corte pasado (la base manda).
   r := carnes_preliq_liquidar(

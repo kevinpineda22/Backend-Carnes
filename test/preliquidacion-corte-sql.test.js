@@ -87,6 +87,7 @@ test("fijar_corte: sube version, escribe la ventana de JS, audita y borra alerta
   assert.match(f, /corte_manual = p_corte/);
   assert.match(f, /ventana_fin = p_ventana_fin/);
   assert.match(f, /version = version \+ 1/);
+  assert.match(f, /orden_version = orden_version \+ 1/);
   assert.match(f, /corte_manual_por = CASE WHEN p_corte IS NULL THEN NULL/);
   assert.match(f, /DELETE FROM carnes_preliquidacion_alertas[\s\S]*enviado_ok = false[\s\S]*evento = 'corrida_perdida'/);
 });

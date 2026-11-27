@@ -78,6 +78,8 @@ COMMENT ON COLUMN carnes_preliquidaciones.corte_manual IS
 -- `servicio_precorte` toma su valor (la primera liquidación lo aplica).
 --
 -- Sube `version`: una `carnes_preliq_liquidar` que ya leyó la cabecera recibe `version_cambiada`.
+-- Sube también `orden_version`: la ventana cambió, así que un vincular/desvincular/congelar_sede
+-- que ya leyó la cabecera (y planificó con la ventana anterior) recibe `version_cambiada`.
 -- Borra las alertas `corrida_perdida` sin enviar: el corte se movió y dejaron de aplicar.
 --
 -- Resultados: ok | no_encontrada | no_abierta | ya_liquidada | version_cambiada |
@@ -148,7 +150,8 @@ BEGIN
            WHEN servicio IS NOT NULL AND servicio_at > v_anterior AND servicio_at <= v_nuevo THEN servicio_at
            ELSE servicio_precorte_at
          END,
-         version = version + 1
+         version = version + 1,
+         orden_version = orden_version + 1
    WHERE id = p_id;
 
   DELETE FROM carnes_preliquidacion_alertas
