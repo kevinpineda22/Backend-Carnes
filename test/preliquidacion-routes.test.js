@@ -63,6 +63,13 @@ mock.module(url("models/PreliquidacionSaldos.model.js"), {
   },
 });
 
+mock.module(url("models/PreliquidacionInicial.model.js"), {
+  namedExports: {
+    omitirInicialSede: falso("omitirInicialSede"),
+    omitirInicialPreliquidacion: falso("omitirInicialPreliquidacion"),
+  },
+});
+
 let despachos = [];
 mock.module(url("services/preliquidacionAlertas.js"), {
   namedExports: {
@@ -852,4 +859,71 @@ test("PUT /:id/corte es solo admin y con el interruptor apagado responde 409 sin
   assert.equal(apagada.estado, 409);
   assert.equal(apagada.json.codigo, "preliquidacion_apagada");
   assert.equal(llamadas.length, 0);
+});
+
+// ─── Oficial sin inicial (sql/044) ─────────────────────────────────────────
+
+test("POST /sedes/:sedeId/omitir-inicial pasa la sede y quién lo pide, sin cuerpo", async () => {
+  encendida();
+  respuestas.omitirInicialSede = { resultado: "ok", sede_id: 7 };
+  const r = await llamar("POST", "/sedes/7/omitir-inicial");
+  assert.equal(r.estado, 200);
+  assert.deepEqual(r.json, { ok: true, data: { resultado: "ok", sede_id: 7 } });
+  assert.equal(llamadas[0].nombre, "omitirInicialSede");
+  assert.equal(llamadas[0].args[0], 7);
+  assert.ok("por" in llamadas[0].args[1]);
+});
+
+test("POST /:id/omitir-inicial pasa la preliquidación y devuelve el resultado por sede", async () => {
+  encendida();
+  respuestas.omitirInicialPreliquidacion = { preliquidacion_id: 19, resultados: [{ sede_id: 1, ok: true, resultado: "ok" }] };
+  const r = await llamar("POST", "/19/omitir-inicial", {});
+  assert.equal(r.estado, 200);
+  assert.equal(r.json.data.resultados.length, 1);
+  assert.equal(llamadas[0].nombre, "omitirInicialPreliquidacion");
+  assert.equal(llamadas[0].args[0], 19);
+});
+
+test("omitir-inicial: id inválido 400, cuerpo con campos extra 400, guard de admin 403; ninguno llega al modelo", async () => {
+  encendida();
+  assert.equal((await llamar("POST", "/sedes/abc/omitir-inicial")).estado, 400);
+  assert.equal((await llamar("POST", "/0/omitir-inicial")).estado, 400);
+  assert.equal((await llamar("POST", "/sedes/7/omitir-inicial", { forzar: true })).estado, 400);
+  assert.equal((await llamar("POST", "/19/omitir-inicial", { forzar: true })).estado, 400);
+  guardPasa = false;
+  assert.equal((await llamar("POST", "/sedes/7/omitir-inicial")).estado, 403);
+  assert.equal((await llamar("POST", "/19/omitir-inicial")).estado, 403);
+  assert.equal(llamadas.length, 0);
+});
+
+test("omitir-inicial: los errores del modelo se propagan (409 inicial_vigente / oficial_enviada)", async () => {
+  encendida();
+  respuestas.omitirInicialSede = createError(409, "ya hay inicial", "inicial_vigente");
+  const r = await llamar("POST", "/sedes/7/omitir-inicial");
+  assert.equal(r.estado, 409);
+  assert.equal(r.json.codigo, "inicial_vigente");
+});
+
+test("omitir-inicial es escritura normal: con el interruptor apagado es 409 preliquidacion_apagada y no toca el modelo", async () => {
+  for (const ruta of ["/sedes/7/omitir-inicial", "/19/omitir-inicial"]) {
+    const r = await llamar("POST", ruta);
+    assert.equal(r.estado, 409, ruta);
+    assert.equal(r.json.codigo, "preliquidacion_apagada", ruta);
+  }
+  assert.equal(llamadas.length, 0);
+});
+
+test("C3: en producción sin CARNES_AUTH=exigir omitir-inicial responde 503 auth_requerida", async () => {
+  encendida();
+  process.env.VERCEL_ENV = "production";
+  delete process.env.CARNES_AUTH;
+  try {
+    for (const ruta of ["/sedes/7/omitir-inicial", "/19/omitir-inicial"]) {
+      const r = await llamar("POST", ruta);
+      assert.equal(r.estado, 503, ruta);
+      assert.equal(r.json.codigo, "auth_requerida");
+    }
+  } finally {
+    delete process.env.VERCEL_ENV;
+  }
 });

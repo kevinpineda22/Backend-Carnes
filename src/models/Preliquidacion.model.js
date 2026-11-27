@@ -73,7 +73,7 @@ const VENTANA_DIAS = 2;
 // ─── Código de resultado de la RPC -> error HTTP ───────────────────────────
 
 /** Resultados que no son error (el primero es el caso normal; `excede` y `tardio` son avisos). */
-const RESULTADOS_OK = new Set(["ok", "vinculada", "excede", "tardio", "sin_cambios"]);
+const RESULTADOS_OK = new Set(["ok", "vinculada", "excede", "tardio", "sin_cambios", "ya_omitida"]);
 
 /** Resultado de negocio -> [HTTP, mensaje]. Los mensajes llegan al navegador. */
 const ERRORES_RESULTADO = {
@@ -101,6 +101,8 @@ const ERRORES_RESULTADO = {
   no_reclamada: [409, "La sede cambió de estado y otra corrida la tomó o ya no aplica."],
   costeo_desactualizado: [409, "Los montos de la sede están desactualizados: hay que recalcularlos."],
   inicial_pendiente: [409, "La CEA inicial de la recepción aún no está enviada a SIESA."],
+  inicial_vigente: [409, "La recepción ya tiene una CEA inicial en SIESA o en curso: no se puede omitir."],
+  oficial_enviada: [409, "La CEA oficial de la sede ya se envió a SIESA: no se puede omitir la inicial."],
   token_invalido: [409, "El envío de la sede fue tomado por otra instancia."],
   siesa_apagado: [409, "El envío a SIESA está apagado."],
   no_abierta: [409, "La preliquidación no está abierta."],

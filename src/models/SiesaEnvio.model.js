@@ -398,6 +398,35 @@ const archivoMigracionFaltante = (error, tipo) => {
 const errorFaltaMigracion = (archivo) =>
   createError(503, `A la base le falta ${archivo}. Corrélo en Supabase y volvé a intentar.`);
 
+// ─── Inicial omitida (sql/044) ─────────────────────────────────────────────
+
+const CODIGO_INICIAL_OMITIDA = "inicial_omitida";
+const MENSAJE_INICIAL_OMITIDA =
+  "La entrada inicial de esta recepción fue omitida por un administrador: solo sale la oficial.";
+
+const errorInicialOmitida = () => createError(409, MENSAJE_INICIAL_OMITIDA, CODIGO_INICIAL_OMITIDA);
+
+/** El trigger de sql/044 rechazó el insert de una inicial (SQLSTATE CA044 / mensaje `inicial_omitida:`). */
+const esRechazoInicialOmitida = (error) =>
+  error?.code === "CA044" || String(error?.message ?? "").startsWith(`${CODIGO_INICIAL_OMITIDA}:`);
+
+/**
+ * ¿Un admin decidió que esta recepción no manda la entrada inicial? Antes de correr sql/044 la
+ * columna no existe: ahí nadie pudo omitirla y se responde false.
+ */
+export async function inicialOmitida(recepcionId) {
+  const { data, error } = await supabase
+    .from("carnes_recepciones")
+    .select("inicial_omitida_at")
+    .eq("id", recepcionId)
+    .maybeSingle();
+  if (error) {
+    if (error.code === "42703" || /inicial_omitida_at/.test(error.message ?? "")) return false;
+    throw new Error(`Error al leer la recepción: ${error.message}`);
+  }
+  return Boolean(data?.inicial_omitida_at);
+}
+
 /** Por qué no se puede mandar, dicho para una persona. */
 function motivoVigente(envio) {
   if (envio.estado === "ok") return `Ya está en SIESA (${envio.referencia}).`;
@@ -656,6 +685,8 @@ async function ejecutarEnvio({
   timeoutMs,
   alArmar,
 }) {
+  // Última barrera en JS de toda ruta que manda una inicial (la de la base es el trigger de sql/044).
+  if (tipo === TIPO_ENVIO.INICIAL && (await inicialOmitida(recepcion.id))) throw errorInicialOmitida();
   const consecutivo = consecutivoDe(recepcion.id, tipo);
   const armado = armarEntradaDirecta({
     recepcion,
@@ -747,6 +778,7 @@ async function registrarYEnviar({
       .insert({ ...fila, estado: "error", error: noSale })
       .select("*")
       .single();
+    if (esRechazoInicialOmitida(error)) throw errorInicialOmitida();
     const faltaNoSale = archivoMigracionFaltante(error, tipo);
     if (faltaNoSale) throw errorFaltaMigracion(faltaNoSale);
     if (error) fallarSiFaltaMigracion(error, "No se pudo registrar el envío", MIGRACIONES);
@@ -764,6 +796,7 @@ async function registrarYEnviar({
     .select("*")
     .single();
   if (errorReserva) {
+    if (esRechazoInicialOmitida(errorReserva)) throw errorInicialOmitida();
     if (errorReserva.code === "23505") {
       let ocupado = await vigente();
       // El choque pudo venir del candado "un envío en curso por liquidación"
@@ -871,6 +904,15 @@ export async function enviarInicial(recepcionId, por) {
     };
   }
   try {
+    // Omitida por un admin (sql/044): no se manda ni se registra nada; solo sale la oficial.
+    if (await inicialOmitida(recepcionId)) {
+      return {
+        estado: "omitida",
+        tipo: TIPO_ENVIO.INICIAL,
+        recepcion_id: recepcionId,
+        mensaje: MENSAJE_INICIAL_OMITIDA,
+      };
+    }
     const recepcion = await cargarRecepcion(recepcionId);
     // Si ya hay una inicial vigente, no se manda otra: SIESA tendría dos
     // documentos de la misma carne y el que anula no sabría cuál.
@@ -879,6 +921,15 @@ export async function enviarInicial(recepcionId, por) {
 
     return await ejecutarEnvio({ recepcion, tipo: TIPO_ENVIO.INICIAL, por });
   } catch (e) {
+    // Una omisión que llegó entre la lectura y la reserva (la rechazó el trigger): no es un fallo.
+    if (e?.codigo === CODIGO_INICIAL_OMITIDA) {
+      return {
+        estado: "omitida",
+        tipo: TIPO_ENVIO.INICIAL,
+        recepcion_id: recepcionId,
+        mensaje: MENSAJE_INICIAL_OMITIDA,
+      };
+    }
     console.error(`🔴 SIESA inicial recepción #${recepcionId}: ${e.message}`);
     return {
       estado: "error",
@@ -891,6 +942,7 @@ export async function enviarInicial(recepcionId, por) {
 
 /** Reintento manual de la inicial, desde el panel. Sí lanza si no se puede. */
 export async function reintentarInicial(recepcionId, por) {
+  if (await inicialOmitida(recepcionId)) throw errorInicialOmitida();
   if (!siesaActivo()) {
     throw createError(
       409,
@@ -1572,6 +1624,11 @@ async function avisarAnulacionLiquidacion(liquidacion, recepciones, oficial) {
  * marca el aviso como cumplido y no se manda.
  */
 async function avisarAnulacion(recepcion, inicial, oficial) {
+  // Con la inicial omitida (sql/044) nunca hubo nada que anular: el aviso queda cumplido sin correo.
+  if (await inicialOmitida(recepcion.id)) {
+    await supabase.from(TABLA).update({ aviso_anulacion: true }).eq("id", oficial.id);
+    return;
+  }
   if (!inicial) {
     const { data: anulada } = await supabase
       .from(TABLA)

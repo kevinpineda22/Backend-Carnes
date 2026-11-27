@@ -2,6 +2,7 @@ import * as PreliquidacionModel from "../models/Preliquidacion.model.js";
 import * as RetomasModel from "../models/PreliquidacionRetomas.model.js";
 import * as CorreccionesModel from "../models/PreliquidacionCorrecciones.model.js";
 import * as SaldosModel from "../models/PreliquidacionSaldos.model.js";
+import * as InicialModel from "../models/PreliquidacionInicial.model.js";
 import { conQuienHace } from "../middleware/auth.js";
 import { createError } from "../middleware/errorHandler.js";
 import { authRequeridaEnProduccion, avisarAuthRequerida, motivoApagado } from "../config/preliquidacion.js";
@@ -335,6 +336,32 @@ export async function anular(req, res, next) {
   try {
     const { motivo } = req.body;
     res.json({ ok: true, data: await CorreccionesModel.anularPreliquidacion(req.idPreliquidacion, { por: quien(req), motivo }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/preliquidaciones/sedes/:sedeId/omitir-inicial — sin cuerpo.
+ * Un admin decide que la recepción de la sede NO manda la CEA inicial: solo sale la oficial (sql/044).
+ * Idempotente. 409 si la recepción ya tiene una inicial vigente o la oficial de la sede ya salió.
+ */
+export async function omitirInicialSede(req, res, next) {
+  try {
+    res.json({ ok: true, data: await InicialModel.omitirInicialSede(req.idSede, { por: quien(req) }) });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/preliquidaciones/:id/omitir-inicial — lo mismo para todas las sedes de la preliquidación
+ * cuya recepción no tiene una inicial ok. Cada sede se intenta por separado y se informa el resultado
+ * de cada una (`resultados`): que una se rechace no frena las demás.
+ */
+export async function omitirInicialPreliquidacion(req, res, next) {
+  try {
+    res.json({ ok: true, data: await InicialModel.omitirInicialPreliquidacion(req.idPreliquidacion, { por: quien(req) }) });
   } catch (error) {
     next(error);
   }

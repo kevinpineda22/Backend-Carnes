@@ -76,6 +76,19 @@ router.post(
   PreliquidacionesController.descartarCorreccion,
 );
 
+// Oficial sin inicial (sql/044): el admin decide que la recepción no manda la CEA inicial, solo la oficial.
+// Escritura normal (con interruptor): no es drenaje. Una sede o todas las de la preliquidación.
+router.post(
+  "/sedes/:sedeId/omitir-inicial",
+  validators.omitirInicialPreliquidacion,
+  PreliquidacionesController.omitirInicialSede,
+);
+router.post(
+  "/:id/omitir-inicial",
+  validators.omitirInicialPreliquidacion,
+  PreliquidacionesController.omitirInicialPreliquidacion,
+);
+
 // Previsualizar es GET porque no escribe nada.
 router.get("/:id/previsualizar", PreliquidacionesController.previsualizar);
 

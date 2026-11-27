@@ -162,6 +162,13 @@ test("inicial no ok con SIESA encendido: inicial_pendiente y no se programa env�
   assert.equal(registro.waitUntil, 0);
 });
 
+test("inicial omitida (sql/044) con SIESA encendido: no es inicial_pendiente, el envío sigue su curso", async () => {
+  const { deps, registro } = armar();
+  const r = await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES, inicialEstado: "omitida" }, deps);
+  assert.notEqual(r.envio, "inicial_pendiente");
+  assert.equal(registro.waitUntil, 1);
+});
+
 test("desborde: sede bloqueada, alerta excede_animales con la versión de la sede y sin envío", async () => {
   const { deps, registro } = armar({
     vincular: async () => ({ resultado: "excede", preliquidacion_id: 1, restantes: 1 }),

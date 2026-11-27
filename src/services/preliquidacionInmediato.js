@@ -211,7 +211,8 @@ export async function alFinalizar(recepcion, opciones = {}, dependencias = {}) {
 
     const siesaEncendido = deps.siesaActivo();
     // Con SIESA encendido la CEA inicial de ESTA recepción debe estar ok: si no, el barrido la reintenta.
-    if (siesaEncendido && inicialEstado !== undefined && inicialEstado !== "ok") {
+    // `omitida` (sql/044): un admin decidió que no sale inicial, solo la oficial.
+    if (siesaEncendido && inicialEstado !== undefined && inicialEstado !== "ok" && inicialEstado !== "omitida") {
       return { resultado, envio: "inicial_pendiente" };
     }
 

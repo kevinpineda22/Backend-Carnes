@@ -1228,6 +1228,10 @@ export const validators = {
       .strict(),
   ),
 
+  // Omitir la CEA inicial de una recepción (sql/044): el cuerpo va vacío (o ausente). `.strict()` rechaza campos
+  // desconocidos; el motivo no se pide porque la auditoría es quién y cuándo (columnas de la recepción).
+  omitirInicialPreliquidacion: validar(z.preprocess((cuerpo) => cuerpo ?? {}, z.object({}).strict())),
+
   // Saldos pendientes. La lectura filtra por especie y estado ("todos" = historial).
   listarSaldosPreliquidacion: validar(
     z.object({
