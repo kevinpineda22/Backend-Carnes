@@ -44,6 +44,7 @@ mock.module(url("models/Preliquidacion.model.js"), {
     procesarSedeAdmin: falso("procesarSedeAdmin"),
     cerrar: falso("cerrar"),
     recalcular: falso("recalcular"),
+    fijarCorte: falso("fijarCorte"),
   },
 });
 
@@ -784,4 +785,55 @@ test("anular es drenaje: con el interruptor apagado sigue disponible (rollback),
   } finally {
     delete process.env.VERCEL_ENV;
   }
+});
+
+// ─── Corte manual ──────────────────────────────────────────────────────────
+
+test("PUT /:id/corte pasa id, corte y quién al modelo y devuelve la preliquidación", async () => {
+  encendida();
+  respuestas.fijarCorte = { id: 3, corte: "2026-11-24T23:00:00.000Z", corte_manual: "2026-11-24T23:00:00+00:00" };
+  const r = await llamar("PUT", "/3/corte", { corte: "2026-11-24T18:00:00-05:00" });
+  assert.equal(r.estado, 200);
+  assert.equal(r.json.data.corte, "2026-11-24T23:00:00.000Z");
+  const [id, corte, ctx] = llamadas[0].args;
+  assert.equal(id, 3);
+  assert.equal(corte, "2026-11-24T18:00:00-05:00");
+  assert.ok("por" in ctx);
+});
+
+test("PUT /:id/corte con null restablece el automático", async () => {
+  encendida();
+  respuestas.fijarCorte = { id: 3, corte_manual: null };
+  const r = await llamar("PUT", "/3/corte", { corte: null });
+  assert.equal(r.estado, 200);
+  assert.equal(llamadas[0].args[1], null);
+});
+
+test("PUT /:id/corte rechaza cuerpos inválidos con 400 sin llamar al modelo", async () => {
+  encendida();
+  for (const cuerpo of [{}, { corte: 123 }, { corte: true }, { corte: "x", otro: 1 }, []]) {
+    assert.equal((await llamar("PUT", "/3/corte", cuerpo)).estado, 400, JSON.stringify(cuerpo));
+  }
+  assert.equal((await llamar("PUT", "/abc/corte", { corte: null })).estado, 400);
+  assert.equal(llamadas.length, 0);
+});
+
+test("PUT /:id/corte propaga los errores de negocio del modelo (pasado, congelada)", async () => {
+  encendida();
+  respuestas.fijarCorte = createError(422, "El cierre debe ser una fecha y hora futuras.", "corte_pasado");
+  const pasado = await llamar("PUT", "/3/corte", { corte: "2020-01-01T00:00:00Z" });
+  assert.equal(pasado.estado, 422);
+  assert.equal(pasado.json.codigo, "corte_pasado");
+  respuestas.fijarCorte = createError(409, "La preliquidación ya fue liquidada.", "ya_liquidada");
+  assert.equal((await llamar("PUT", "/3/corte", { corte: null })).estado, 409);
+});
+
+test("PUT /:id/corte es solo admin y con el interruptor apagado responde 409 sin llamar al modelo", async () => {
+  guardPasa = false;
+  assert.equal((await llamar("PUT", "/3/corte", { corte: null })).estado, 403);
+  guardPasa = true;
+  const apagada = await llamar("PUT", "/3/corte", { corte: null });
+  assert.equal(apagada.estado, 409);
+  assert.equal(apagada.json.codigo, "preliquidacion_apagada");
+  assert.equal(llamadas.length, 0);
 });

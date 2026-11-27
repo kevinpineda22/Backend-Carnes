@@ -811,3 +811,112 @@ test("[M5] obtener expone siesa_activo según CARNES_SIESA_ACTIVO (true y false)
     else process.env.CARNES_SIESA_ACTIVO = previo;
   }
 });
+
+// ─── Corte manual ──────────────────────────────────────────────────────────
+
+const AHORA_CORTE = new Date("2026-11-23T15:00:00.000Z"); // 10:00 Bogotá del 23-nov; corte automático = 2026-11-24T02:30Z
+
+test("fijarCorte: valida, llama a la RPC con versiones, corte automático y ventana, y devuelve la preliquidación", async () => {
+  const r = await Modelo.fijarCorte(1, "2026-11-24T18:00:00-05:00", { por: "ana@x.co", ahora: AHORA_CORTE });
+  const llamadas = rpcs.filter((x) => x.nombre === "carnes_preliq_fijar_corte");
+  assert.equal(llamadas.length, 1);
+  assert.deepEqual(llamadas[0].args, {
+    p_id: 1,
+    p_version: 3,
+    p_orden_version: 5,
+    p_corte: "2026-11-24T23:00:00.000Z",
+    p_corte_automatico: "2026-11-24T02:30:00.000Z",
+    p_ventana_fin: "2026-11-25T04:59:59.999Z",
+    p_por: "ana@x.co",
+  });
+  assert.equal(r.id, 1);
+  assert.ok("corte" in r && "corte_automatico" in r && "corte_manual" in r);
+});
+
+test("fijarCorte: null restablece (p_corte NULL) y la ventana vuelve a la de 2 días", async () => {
+  tablas.carnes_preliquidaciones[0].corte_manual = "2026-11-26T15:00:00+00:00";
+  tablas.carnes_preliquidaciones[0].ventana_fin = "2026-11-27T04:59:59.999Z";
+  await Modelo.fijarCorte(1, null, { ahora: AHORA_CORTE });
+  const a = rpcs.find((x) => x.nombre === "carnes_preliq_fijar_corte").args;
+  assert.equal(a.p_corte, null);
+  assert.equal(a.p_ventana_fin, "2026-11-25T04:59:59.999Z");
+});
+
+test("fijarCorte: una regla de negocio rechaza SIN llamar a la RPC (pasado, tope, formato, congelada)", async () => {
+  await falla(() => Modelo.fijarCorte(1, "2026-11-23T09:00:00-05:00", { ahora: AHORA_CORTE }), 422, "corte_pasado");
+  await falla(() => Modelo.fijarCorte(1, "2026-12-30T09:00:00-05:00", { ahora: AHORA_CORTE }), 422, "corte_excede_limite");
+  await falla(() => Modelo.fijarCorte(1, "mañana", { ahora: AHORA_CORTE }), 422, "corte_invalido");
+  tablas.carnes_preliquidaciones[0].liquidada_at = "2026-11-24T02:31:00.000Z";
+  await falla(() => Modelo.fijarCorte(1, "2026-11-24T18:00:00-05:00", { ahora: AHORA_CORTE }), 409, "ya_liquidada");
+  assert.equal(rpcs.length, 0);
+});
+
+test("fijarCorte: si el cambio dejaría fuera una recepción ya vinculada, 409 y sin RPC", async () => {
+  tablas.carnes_preliquidaciones[0].corte_manual = "2026-11-26T15:00:00+00:00";
+  tablas.carnes_preliquidaciones[0].ventana_fin = "2026-11-27T04:59:59.999Z";
+  tablas.carnes_preliquidacion_sedes = [sede({ id: 11, recepcion_id: 101 })];
+  tablas.carnes_recepciones = [recepcion({ id: 101, fecha_ingreso: "2026-11-26", preliquidacion_id: 1 })];
+  await falla(() => Modelo.fijarCorte(1, null, { ahora: AHORA_CORTE }), 409, "corte_deja_sedes_fuera");
+  assert.equal(rpcs.length, 0);
+});
+
+test("fijarCorte: carrera con la corrida (version_cambiada) relee y reintenta; a la tercera es 409", async () => {
+  respuestasRpc = [{ resultado: "version_cambiada" }, { resultado: "ok" }];
+  await Modelo.fijarCorte(1, "2026-11-24T18:00:00-05:00", { ahora: AHORA_CORTE });
+  assert.equal(rpcs.filter((x) => x.nombre === "carnes_preliq_fijar_corte").length, 2);
+
+  rpcs = [];
+  respuestasRpc = [{ resultado: "version_cambiada" }, { resultado: "version_cambiada" }, { resultado: "version_cambiada" }];
+  await falla(() => Modelo.fijarCorte(1, "2026-11-24T18:00:00-05:00", { ahora: AHORA_CORTE }), 409, "version_cambiada");
+  assert.equal(rpcs.length, 3);
+});
+
+test("fijarCorte: la RPC manda bajo el lock (ya_liquidada, corte_pasado, corte_sin_primer_ingreso) y se traduce a HTTP", async () => {
+  for (const [resultado, estado] of [
+    ["ya_liquidada", 409],
+    ["no_abierta", 409],
+    ["corte_pasado", 422],
+    ["corte_excede_limite", 422],
+    ["corte_automatico_pasado", 409],
+    ["corte_sin_primer_ingreso", 409],
+  ]) {
+    respuestasRpc = [{ resultado }];
+    await falla(() => Modelo.fijarCorte(1, "2026-11-24T18:00:00-05:00", { ahora: AHORA_CORTE }), estado, resultado);
+  }
+});
+
+test("obtener expone el corte efectivo y si es manual", async () => {
+  const auto = await Modelo.obtener(1);
+  assert.equal(auto.corte, "2026-11-24T02:30:00.000Z");
+  assert.equal(auto.corte_automatico, "2026-11-24T02:30:00.000Z");
+  assert.equal(auto.corte_manual, null);
+
+  tablas.carnes_preliquidaciones[0].corte_manual = "2026-11-24T23:00:00+00:00";
+  const manual = await Modelo.obtener(1);
+  assert.equal(manual.corte, "2026-11-24T23:00:00.000Z");
+  assert.equal(manual.corte_automatico, "2026-11-24T02:30:00.000Z");
+  assert.equal(manual.corte_manual, "2026-11-24T23:00:00+00:00");
+
+  tablas.carnes_preliquidaciones[0].fecha_primer_ingreso = null;
+  tablas.carnes_preliquidaciones[0].corte_manual = null;
+  const sinIniciar = await Modelo.obtener(1);
+  assert.equal(sinIniciar.corte, null);
+  assert.equal(sinIniciar.corte_automatico, null);
+});
+
+test("actualizar servicio: p_corte es el corte efectivo (el manual, si lo hay)", async () => {
+  tablas.carnes_preliquidaciones[0].corte_manual = "2026-11-24T23:00:00+00:00";
+  respuestasRpc = [{ resultado: "ok", congelada: false, desbloqueo: false }];
+  await Modelo.actualizar(1, { servicio: 700000 });
+  assert.equal(rpcs[0].args.p_corte, "2026-11-24T23:00:00.000Z");
+});
+
+test("armarPlanVincular: con corte manual posterior la ventana del plan llega al fin del día del corte", () => {
+  const r = Modelo.armarPlanVincular({
+    cabecera: cabecera({ corte_manual: "2026-11-27T15:00:00+00:00" }),
+    recepcion: { id: 101, fechaIngreso: "2026-11-23", recibidoAt: "2026-11-23T15:00:00.000Z", animales: 4 },
+    sedes: [],
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.plan.ventana_fin, "2026-11-28T04:59:59.999Z");
+});

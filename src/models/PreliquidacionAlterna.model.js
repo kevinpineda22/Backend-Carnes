@@ -251,6 +251,7 @@ export async function registrarAlternaTardia(cabecera, opciones = {}) {
       servicioAt: cabecera.servicio_at,
       servicioAplicado: cabecera.servicio_aplicado,
       fechaPrimerIngreso: cabecera.fecha_primer_ingreso,
+      corteManual: cabecera.corte_manual ?? null,
       liquidadaAt: cabecera.liquidada_at,
     };
     if (requiereAlternaTardia(datos)) return await registrar();

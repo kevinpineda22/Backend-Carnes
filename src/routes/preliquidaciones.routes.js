@@ -44,6 +44,9 @@ router.patch("/saldos/:saldoId", validators.actualizarSaldoPreliquidacion, Preli
 router.get("/:id", PreliquidacionesController.obtener);
 router.patch("/:id", validators.actualizarPreliquidacion, PreliquidacionesController.actualizar);
 
+// Cierre (corte) manual: fija o restablece (corte = null) mientras esté abierta y sin liquidar.
+router.put("/:id/corte", validators.fijarCortePreliquidacion, PreliquidacionesController.fijarCorte);
+
 router.put("/:id/gastos", validators.guardarGastosPreliquidacion, PreliquidacionesController.guardarGastos);
 
 // Retomas de la entrega (solo cerdo, solo antes de congelar). No son un gasto: entran

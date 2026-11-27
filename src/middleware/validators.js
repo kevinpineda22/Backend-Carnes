@@ -1148,6 +1148,18 @@ export const validators = {
       .refine((v) => Object.keys(v).length > 0, "No hay nada que actualizar."),
   ),
 
+  // Cierre manual: ISO con desfase o null. El formato fino y las reglas de negocio las valida el modelo
+  // (mensajes de negocio en español); aquí solo se exige que la clave venga y sea texto o null.
+  fijarCortePreliquidacion: validar(
+    z
+      .object({
+        corte: z.union([z.string({ invalid_type_error: "El cierre no es válido." }), z.null()], {
+          errorMap: () => ({ message: "Indique el cierre (fecha y hora con zona horaria) o null para restablecer el automático." }),
+        }),
+      })
+      .strict(),
+  ),
+
   guardarGastosPreliquidacion: validar(
     z.object({
       filas: z

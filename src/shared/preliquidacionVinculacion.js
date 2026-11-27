@@ -9,7 +9,7 @@
  * `estado`, `motivoBloqueo`, `liberadaAt`.
  */
 
-import { enVentana, ventanaFin as calcularVentanaFin } from "./preliquidacionTiempo.js";
+import { enVentana, finDiaBogota, ventanaFin as calcularVentanaFin } from "./preliquidacionTiempo.js";
 
 // ─── elegirPreliquidacion ──────────────────────────────────────────────────
 
@@ -48,18 +48,31 @@ export function elegirPreliquidacion({ abiertas, especie, fechaIngreso }) {
 // ─── planearVentana ────────────────────────────────────────────────────────
 
 /**
+ * Fin de ventana con corte manual: el mayor entre el fin por fecha y el fin del día (Bogotá) del
+ * corte. Así, correr el corte para esperar sedes tardías no deja la ventana cerrada antes que él.
+ * @returns {Date}
+ */
+export function ventanaConCorte(fechaPrimerIngreso, dias, corteManual) {
+  const porFecha = calcularVentanaFin(fechaPrimerIngreso, dias);
+  if (!corteManual) return porFecha;
+  const delCorte = finDiaBogota(corteManual);
+  return delCorte.getTime() > porFecha.getTime() ? delCorte : porFecha;
+}
+
+/**
  * Inicio y fin de ventana tras vincular una recepción: el primer ingreso los fija;
- * un ingreso más temprano los adelanta solo si todavía no se liquidó.
+ * un ingreso más temprano los adelanta solo si todavía no se liquidó. Con `corteManual`
+ * la ventana llega al menos hasta el fin del día de ese corte (`ventanaConCorte`).
  * @returns {{cambia: boolean, fechaPrimerIngreso: string, ventanaFin: Date}}
  */
-export function planearVentana({ fechaPrimerIngreso, liquidadaAt, fechaIngreso, dias = 2 }) {
+export function planearVentana({ fechaPrimerIngreso, liquidadaAt, fechaIngreso, dias = 2, corteManual = null }) {
   const adelanta = !!fechaPrimerIngreso && !liquidadaAt && fechaIngreso < fechaPrimerIngreso;
   const inicia = !fechaPrimerIngreso;
   const inicio = inicia || adelanta ? fechaIngreso : fechaPrimerIngreso;
   return {
     cambia: inicia || adelanta,
     fechaPrimerIngreso: inicio,
-    ventanaFin: calcularVentanaFin(inicio, dias),
+    ventanaFin: ventanaConCorte(inicio, dias, corteManual),
   };
 }
 

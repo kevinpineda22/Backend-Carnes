@@ -6,7 +6,9 @@
  * se aplica a mano; no depende de la zona del servidor (Vercel corre en UTC).
  *
  * - Corte: 21:30 Bogotá del día del primer ingreso. El servicio cargado hasta ese
- *   instante (inclusive) es "precorte" y entra a la primera liquidación.
+ *   instante (inclusive) es "precorte" y entra a la primera liquidación. Un admin puede
+ *   fijar a mano otro instante (`corte_manual`): el corte efectivo es ese si existe y, si
+ *   no, el automático (`corteEfectivo`). Todo consumidor del corte pasa por ahí.
  * - Ventana: 2 días calendario Bogotá desde el primer ingreso, hasta las
  *   23:59:59.999 del segundo día (no son 48 horas).
  */
@@ -51,14 +53,39 @@ export function corteBogota(fechaISO, hhmm = "21:30") {
 }
 
 /**
+ * Corte efectivo: el manual si hay (instante absoluto) y, si no, el automático de la fecha del
+ * primer ingreso. `null` si no hay ninguno (preliquidación aún sin primer ingreso).
+ * @param {{fechaPrimerIngreso?: string|null, corteManual?: Date|string|null}} p
+ * @returns {Date|null}
+ */
+export function corteEfectivo({ fechaPrimerIngreso, corteManual } = {}) {
+  if (corteManual) return aInstante(corteManual);
+  return fechaPrimerIngreso ? corteBogota(fechaPrimerIngreso) : null;
+}
+
+/** Corte efectivo de una fila de `carnes_preliquidaciones` (`corte_manual` si está, si no el automático). */
+export function corteDePreliquidacion(preliq) {
+  return corteEfectivo({ fechaPrimerIngreso: preliq?.fecha_primer_ingreso, corteManual: preliq?.corte_manual });
+}
+
+/** @returns {Date} 23:59:59.999 Bogotá del día (Bogotá) al que pertenece el instante */
+export function finDiaBogota(instante) {
+  const local = new Date(aInstante(instante).getTime() - OFFSET_BOGOTA_H * 3_600_000);
+  return new Date(
+    Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1, OFFSET_BOGOTA_H) - 1,
+  );
+}
+
+/**
  * `true` si el servicio se cargó a tiempo para la primera liquidación.
  * Falso cuando la preliquidación ya se liquidó (todo cambio posterior es tardío);
- * verdadero cuando aún no hay primer ingreso (no hay corte que haya pasado).
+ * verdadero cuando aún no hay corte (sin primer ingreso ni corte manual).
  */
-export function esPrecorte({ servicioAt, fechaPrimerIngreso, liquidadaAt }) {
+export function esPrecorte({ servicioAt, fechaPrimerIngreso, liquidadaAt, corteManual = null }) {
   if (liquidadaAt) return false;
-  if (!fechaPrimerIngreso) return true;
-  return aInstante(servicioAt).getTime() <= corteBogota(fechaPrimerIngreso).getTime();
+  const corte = corteEfectivo({ fechaPrimerIngreso, corteManual });
+  if (!corte) return true;
+  return aInstante(servicioAt).getTime() <= corte.getTime();
 }
 
 /**
@@ -85,10 +112,10 @@ export function enVentana({ ingreso, ventanaFin: fin }) {
   return instante.getTime() <= aInstante(fin).getTime();
 }
 
-/** Hay primer ingreso, ya pasó el corte (inclusive) y aún no se liquidó. */
+/** Hay primer ingreso, ya pasó el corte efectivo (inclusive) y aún no se liquidó. */
 export function debeLiquidar({ preliq, ahora }) {
   if (!preliq?.fecha_primer_ingreso || preliq.liquidada_at) return false;
-  return aInstante(ahora).getTime() >= corteBogota(preliq.fecha_primer_ingreso).getTime();
+  return aInstante(ahora).getTime() >= corteDePreliquidacion(preliq).getTime();
 }
 
 /**
@@ -99,7 +126,7 @@ export function debeLiquidar({ preliq, ahora }) {
 export function corridaPerdida({ preliq, corridas = [], ahora }) {
   if (!debeLiquidar({ preliq, ahora })) return false;
   const t = aInstante(ahora).getTime();
-  const corte = corteBogota(preliq.fecha_primer_ingreso).getTime();
+  const corte = corteDePreliquidacion(preliq).getTime();
   if (t <= corte + MARGEN_CORRIDA_PERDIDA_MIN * MS_MINUTO) return false;
 
   const desde = Math.max(corte, t - MARGEN_CORRIDA_PERDIDA_MIN * MS_MINUTO);

@@ -37,7 +37,8 @@ import {
 import { TIMEOUT_OFICIAL_MS } from "../services/siesa.service.js";
 import { costeoVigente, mapearEnvio, puedeReclamar, transicionSede } from "../shared/preliquidacionEstados.js";
 import { planearEnvios } from "../shared/preliquidacionPlan.js";
-import { corteBogota, debeLiquidar } from "../shared/preliquidacionTiempo.js";
+import { corteDePreliquidacion, debeLiquidar } from "../shared/preliquidacionTiempo.js";
+import { validarCorteManual } from "../shared/preliquidacionCorte.js";
 import {
   elegirPreliquidacion,
   planearDesvinculacion,
@@ -123,6 +124,13 @@ const ERRORES_RESULTADO = {
   destino_liquidada: [409, "La preliquidación destino ya se liquidó: el saldo no entraría en su gasto."],
   sede_no_enviada: [409, "Solo se puede anular una sede que ya se envió a SIESA (estado enviada)."],
   sin_correccion: [409, "La sede no tiene una corrección pendiente."],
+  corte_sin_primer_ingreso: [
+    409,
+    "La preliquidación aún no tiene recepciones vinculadas: el cierre se puede cambiar cuando entre la primera.",
+  ],
+  corte_pasado: [422, "El cierre debe ser una fecha y hora futuras."],
+  corte_excede_limite: [422, "El cierre no puede pasar de 7 días después del cierre automático."],
+  corte_automatico_pasado: [409, "El cierre automático ya pasó: indique una nueva fecha y hora futuras."],
   no_encontrada: [404, "No se encontró el registro."],
   sin_recepcion: [404, "Recepción no encontrada."],
 };
@@ -262,6 +270,7 @@ export function armarPlanVincular({ cabecera, recepcion, sedes }) {
     liquidadaAt: cabecera.liquidada_at,
     fechaIngreso: recepcion.fechaIngreso,
     dias: VENTANA_DIAS,
+    corteManual: cabecera.corte_manual ?? null,
   });
 
   const { sedesFijas, sedesVinculadas } = particionar(sedes);
@@ -564,7 +573,7 @@ export async function actualizar(id, cambios = {}, { por = null, encolar = encol
         p_servicio: cambios.servicio,
         p_por: por,
         p_fecha_primer_ingreso: fecha,
-        p_corte: fecha ? corteBogota(fecha).toISOString() : null,
+        p_corte: fecha ? corteDePreliquidacion(actual).toISOString() : null,
         p_desbloqueo: desbloqueaServicioCero({
           liquidadaAt: actual.liquidada_at,
           servicioPrecorte: actual.servicio_precorte,
@@ -604,6 +613,32 @@ export async function actualizar(id, cambios = {}, { por = null, encolar = encol
   }
 
   return { ...respuesta, preliquidacion: await leerCabecera(id), alterna, aviso };
+}
+
+/**
+ * Fija (`corte` = ISO con desfase) o restablece (`corte = null`) el corte manual de una preliquidación
+ * abierta y sin liquidar. Valida con `validarCorteManual` (pura) y persiste con `carnes_preliq_fijar_corte`,
+ * que revalida bajo el lock de la cabecera: la corrida programada y este cambio no pueden pisarse.
+ * Devuelve la preliquidación como `obtener` (con `corte`, `corte_automatico` y `corte_manual`).
+ */
+export async function fijarCorte(id, corte, { por = null, ahora = new Date() } = {}) {
+  await conReintentoVersion(async () => {
+    const cabecera = await leerCabecera(id);
+    const sedes = await leerSedesConRecepcion(id);
+    const validado = validarCorteManual({ corte, preliq: cabecera, sedes, ahora });
+    if (!validado.ok) throw createError(validado.estado, validado.mensaje, validado.codigo);
+    const r = await llamarRpc("carnes_preliq_fijar_corte", {
+      p_id: id,
+      p_version: cabecera.version,
+      p_orden_version: cabecera.orden_version,
+      p_corte: validado.corteManual ? validado.corteManual.toISOString() : null,
+      p_corte_automatico: validado.corteAutomatico.toISOString(),
+      p_ventana_fin: validado.ventanaFin.toISOString(),
+      p_por: por,
+    });
+    return r?.resultado === "version_cambiada" ? r : exigirOk(r);
+  });
+  return obtener(id);
 }
 
 /** Reemplaza los gastos manuales (solo antes de congelar) y sube la versión al final. */
@@ -1047,7 +1082,9 @@ export async function obtener(id) {
 
   const { cabecera, gastos, saldos } = contexto;
   // `siesa_activo` permite al panel ocultar "Enviar" cuando SIESA está apagado (M5).
-  const respuesta = { ...cabecera, gastos, saldos, sedes, totales_sedes: totalesSedes(sedes, cabecera.especie), calculo, siesa_activo: siesaActivo() };
+  const corteAutomatico = cabecera.fecha_primer_ingreso ? corteDePreliquidacion({ fecha_primer_ingreso: cabecera.fecha_primer_ingreso }) : null;
+  const corte = corteDePreliquidacion(cabecera);
+  const respuesta = { ...cabecera, corte_manual: cabecera.corte_manual ?? null, corte: corte ? corte.toISOString() : null, corte_automatico: corteAutomatico ? corteAutomatico.toISOString() : null, gastos, saldos, sedes, totales_sedes: totalesSedes(sedes, cabecera.especie), calculo, siesa_activo: siesaActivo() };
   if (calculoError) respuesta.calculo_error = calculoError;
   return respuesta;
 }
@@ -1707,7 +1744,7 @@ async function liquidarCabecera(id, contexto) {
       return llamarRpc("carnes_preliq_liquidar", {
         p_id: id,
         p_version: cabecera.version,
-        p_corte: corteBogota(cabecera.fecha_primer_ingreso).toISOString(),
+        p_corte: corteDePreliquidacion(cabecera).toISOString(),
         p_plan: gasto.plan,
       });
     });

@@ -302,3 +302,18 @@ test("si lo que queda no alcanza para el peor caso de un envío (TIMEOUT_ENVIO_M
   await alFinalizar(recepcion({ novillos: 3 }), { inicioPeticion: 0, ahora: DESPUES }, justo.deps);
   assert.equal(justo.registro.despachos.length, 1);
 });
+
+test("corte manual futuro: vincular tras el corte automático NO envía (espera_corte); alcanzado, sí", async () => {
+  const cabecera = {
+    id: 1, especie: "res", estado: "abierta", fecha_primer_ingreso: "2026-11-23", liquidada_at: null,
+    corte_manual: "2026-11-24T20:00:00.000Z",
+  };
+  const retenida = armar({ cabecera });
+  const r = await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: DESPUES }, retenida.deps);
+  assert.deepEqual(r, { resultado: "vinculada", envio: "espera_corte" });
+  assert.equal(retenida.registro.waitUntil, 0);
+
+  const alcanzada = armar({ cabecera: { ...cabecera, corte_manual: "2026-11-23T20:00:00.000Z" } });
+  const r2 = await alFinalizar(recepcion(), { inicioPeticion: 0, ahora: new Date("2026-11-23T21:00:00Z") }, alcanzada.deps);
+  assert.equal(r2.envio, "programado");
+});

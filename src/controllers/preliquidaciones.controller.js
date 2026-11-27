@@ -130,6 +130,21 @@ export async function actualizar(req, res, next) {
   }
 }
 
+/**
+ * PUT /api/preliquidaciones/:id/corte — Body: { corte: "<ISO con desfase>" | null }
+ *
+ * Fija el cierre a mano (instante futuro, hasta 7 días después del automático) o, con `null`,
+ * restablece la regla automática. Solo mientras la preliquidación está abierta y sin liquidar.
+ */
+export async function fijarCorte(req, res, next) {
+  try {
+    const data = await PreliquidacionModel.fijarCorte(req.idPreliquidacion, req.body.corte, { por: quien(req) });
+    res.json({ ok: true, data });
+  } catch (error) {
+    next(error);
+  }
+}
+
 /** PUT /api/preliquidaciones/:id/gastos — Body: { filas: [...] } */
 export async function guardarGastos(req, res, next) {
   try {

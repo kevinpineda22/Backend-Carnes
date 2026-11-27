@@ -681,3 +681,20 @@ test("CEI: con viscerasInline: false (el cron) no se manda ningún CEI en línea
   assert.equal(r.enviadas, 2);
   assert.equal(r.visceras, undefined);
 });
+
+// ─── Corte manual ──────────────────────────────────────────────────────────
+
+test("corte manual futuro: con el automático ya pasado NO liquida (antes_del_corte) ni escribe", async () => {
+  tablas.carnes_preliquidaciones[0] = cabecera({ corte_manual: "2026-11-24T20:00:00.000Z" });
+  const r = await procesar({ ahora: DESPUES });
+  assert.equal(r.resultado, "antes_del_corte");
+  assert.equal(rpcs.length, 0);
+});
+
+test("corte manual alcanzado: liquida aunque el automático no haya llegado, y p_corte es el manual", async () => {
+  tablas.carnes_preliquidaciones[0] = cabecera({ corte_manual: "2026-11-23T20:00:00.000Z" });
+  await procesar({ ahora: ANTES });
+  const l = rpcDe("carnes_preliq_liquidar");
+  assert.equal(l.length, 1);
+  assert.equal(new Date(l[0].args.p_corte).toISOString(), "2026-11-23T20:00:00.000Z");
+});
