@@ -58,6 +58,13 @@ CARNES_MAIL_SIESA_PROVEEDORES=
 # que el barrido la avise (default 30). Solo aplica al barrido; el error de un envío avisa al instante.
 CARNES_ALERTA_SIESA_MIN=30
 
+# Piso de activación del BARRIDO de recepciones de proveedor sin SIESA: solo avisa de las finalizadas
+# desde esta fecha (inclusive), además de la ventana de 14 días. Formato estricto: YYYY-MM-DD
+# (00:00 Bogotá) o YYYY-MM-DDTHH:mm:ss con Z o ±HH:MM, p. ej. 2026-12-01T00:00:00-05:00.
+# SIN definir o inválida el barrido NO hace nada (falla seguro, se avisa una vez en el log); la alerta
+# inmediata de un envío fallido sigue saliendo.
+CARNES_ALERTA_SIESA_DESDE=
+
 # Quién recibe las alertas de la preliquidación de talleres (excede animales,
 # utilidad negativa, error de envío, servicio tardío, cierre, etc.). Acepta varios
 # separados por coma o punto y coma; si está vacía cae a CARNES_MAIL_ADMIN y, si
@@ -131,12 +138,24 @@ Dos caminos mandan el mismo correo a `CARNES_MAIL_SIESA_PROVEEDORES`, una sola v
   `.github/workflows/proveedores-siesa.yml` cada 15 minutos con los secrets `PRELIQ_URL`,
   `CRON_SECRET` y `VERCEL_AUTOMATION_BYPASS_SECRET` (los del workflow de preliquidación). Avisa de las
   recepciones `Finalizada` hace más de `CARNES_ALERTA_SIESA_MIN` minutos, sin entrada `ok`, y solo de
-  las finalizadas en los últimos 14 días: sin envío (anota si SIESA está apagado), `error`,
-  `sin_confirmar` o `enviando` abandonado (más de 6 min). Máximo 25 correos por corrida; el resto
-  sale en la siguiente.
-- **Dedupe:** requiere `sql/045_alerta_siesa_proveedor.sql` (`alerta_siesa_at`, `alerta_siesa_motivo`).
-  Sin ella la alerta inmediata sale sin dedupe y el barrido se omite. Cuando el admin reintenta el
-  envío la marca se borra, así un nuevo fallo avisa otra vez.
+  las finalizadas en los últimos 14 días **y desde `CARNES_ALERTA_SIESA_DESDE`** (sin esa variable, o
+  con un formato inválido, el barrido no hace nada y responde `omitido: "sin_piso"`): sin envío,
+  SIESA apagado (`siesa_apagado`), `error`, `sin_confirmar` o `enviando` abandonado (más de 6 min).
+  Antes de reclamar cada una vuelve a leer la recepción (sigue `Finalizada`) y sus envíos de entrada
+  (sigue sin `ok`); si cambió, la descarta. Máximo 25 correos por corrida y no empieza correos nuevos
+  pasados ~90 s (`PRESUPUESTO_BARRIDO_MS`); el resto queda `pendientes` y sale en la siguiente. El
+  `curl` del workflow espera hasta 240 s.
+- **Correo:** la nota crédito sale como «Nota crédito de proveedor sin subir a SIESA»; un `sin_confirmar`
+  pide *resolver* el envío (no reintentarlo) y con SIESA apagado indica que hay que activar
+  `CARNES_SIESA_ACTIVO`.
+- **En segundo plano:** la alerta inmediata no se espera (usa `waitUntil` en Vercel): no retrasa el
+  cierre de la recepción ni la respuesta, y nunca cambia el resultado del envío.
+- **Dedupe:** requiere `sql/045_alerta_siesa_proveedor.sql` (`alerta_siesa_at` = reclamada,
+  `alerta_siesa_enviada_at` = el correo salió, `alerta_siesa_motivo`). Sin ella la alerta inmediata
+  sale sin dedupe y el barrido se omite. Un reclamo sin correo enviado de más de 15 minutos (la
+  función murió entre el reclamo y el correo) lo vuelve a reclamar el barrido. Cuando el admin
+  reintenta la entrada o la nota crédito, o resuelve un envío, la marca se borra justo antes de
+  reservar el nuevo envío (pasadas las guardas que pueden dar 409), así un nuevo fallo avisa otra vez.
 - Con `CARNES_SANDBOX=true` no sale ningún correo y la marca se libera.
 
 ## Autenticación de la API (`CARNES_AUTH`)

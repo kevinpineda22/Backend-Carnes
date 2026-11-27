@@ -383,7 +383,7 @@ function calendarioValido(anio, mes, dia) {
  * del servidor: un piso mal entendido hacia atrás reenvía la historia.
  * @returns {Date|null}
  */
-function parsearPisoVisceras(crudo) {
+export function parsearPisoVisceras(crudo) {
   let m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(crudo);
   if (m) {
     const [anio, mes, dia] = [Number(m[1]), Number(m[2]), Number(m[3])];

@@ -1,9 +1,10 @@
 import { supabase } from "../config/supabase.js";
-import { siesaActivo } from "../config/siesa.js";
+import { siesaActivo, parsearPisoVisceras } from "../config/siesa.js";
 import { esMigracionFaltante } from "../shared/migraciones.js";
 import { ESTADOS } from "../shared/estadosProveedor.js";
 import { TIPO_ENVIO_PROVEEDOR } from "../shared/siesaProveedor.js";
 import { sendEmail, destinatariosSiesaProveedores } from "./email.service.js";
+
 
 /* =============================================
    Alerta por correo: recepciones de proveedor que NO llegaron a SIESA.
@@ -16,10 +17,15 @@ import { sendEmail, destinatariosSiesaProveedores } from "./email.service.js";
                     Recoge lo que NO dejó fila ni correo (SIESA apagado, función caída
                     antes de reservar) y lo que quedó trabado (`enviando` abandonado).
 
-   Dedupe (sql/045): `alerta_siesa_at` en la recepción. Se RECLAMA con un UPDATE
-   condicional (`alerta_siesa_at is null`) ANTES de mandar el correo, así dos corridas
-   simultáneas no mandan el mismo aviso. Si el correo no sale (SMTP caído, sandbox) se
-   libera el reclamo y el siguiente barrido lo reintenta.
+   Dedupe (sql/045): `alerta_siesa_at` (reclamado) y `alerta_siesa_enviada_at` (enviado) en
+   la recepción. Se RECLAMA con un UPDATE condicional (`alerta_siesa_at is null`) ANTES de
+   mandar el correo, así dos corridas simultáneas no mandan el mismo aviso; al salir el correo
+   se anota `alerta_siesa_enviada_at`. Si el correo no sale (SMTP caído, sandbox) se libera el
+   reclamo y el siguiente barrido lo reintenta. Un reclamo sin `enviada_at` de más de
+   `RECLAMO_HUERFANO_MS` es de una función que murió a medias: el barrido lo reclama de nuevo.
+
+   El barrido solo mira lo finalizado desde `CARNES_ALERTA_SIESA_DESDE` (sin ella no hace nada)
+   y deja de empezar correos pasado `PRESUPUESTO_BARRIDO_MS`.
 
    Todo es best-effort: ningún camino lanza hacia quien lo llama.
    ============================================= */
@@ -34,6 +40,10 @@ export const MINUTOS_POR_DEFECTO = 30;
 export const VENTANA_DIAS = 14;
 /** Tope de correos por corrida: el resto sale en la siguiente (cada 15 min), sin saturar la función. */
 export const MAX_ALERTAS_POR_CORRIDA = 25;
+/** Tras este tiempo el barrido no empieza más correos (el resto queda pendiente). El curl del workflow espera bastante más. */
+export const PRESUPUESTO_BARRIDO_MS = 90_000;
+/** Un reclamo sin correo enviado de más de este tiempo se considera huérfano y se puede reclamar otra vez. */
+export const RECLAMO_HUERFANO_MS = 15 * 60 * 1000;
 /** PostgREST corta en silencio a 1000 filas: todo se lee por páginas de este tamaño o menos. */
 const PAGINA_MAX = 1000;
 const PAGINA_RECEPCIONES = 500;
@@ -41,6 +51,7 @@ const LOTE_IDS = 100;
 
 export const MOTIVOS = {
   SIN_ENVIO: "sin_envio",
+  SIESA_APAGADO: "siesa_apagado",
   ERROR: "error",
   SIN_CONFIRMAR: "sin_confirmar",
   ENVIANDO_ABANDONADO: "enviando_abandonado",
@@ -50,6 +61,37 @@ const COLUMNAS_RECEPCION =
   "id, estado, proveedor_razon_social, proveedor_nit, proveedor_sucursal, factura, factura_siesa, " +
   "bodega_siesa, codigo_co, fecha_recepcion, finalizado_at, recibido_por, recibidor_nombre, " +
   "sede:carnes_sedes ( nombre, codigo_co )";
+
+let avisoPisoEmitido = false;
+/** Solo para los tests. */
+export function reiniciarAvisoPiso() {
+  avisoPisoEmitido = false;
+}
+
+/**
+ * Piso de activación del barrido: `CARNES_ALERTA_SIESA_DESDE` (estricto: `YYYY-MM-DD` = 00:00
+ * Bogotá, o `YYYY-MM-DDTHH:mm(:ss)` con `Z` o `±HH:MM`). Sin ella, vacía o inválida el barrido NO
+ * hace nada (falla seguro: evita avisar de todo el historial al desplegar); se avisa una vez.
+ *
+ * @returns {{desde: Date|null, motivo: null|"sin_definir"|"invalida"}}
+ */
+export function pisoDeAlerta(env = process.env) {
+  const crudo = String(env.CARNES_ALERTA_SIESA_DESDE ?? "").trim();
+  const desde = crudo ? parsearPisoVisceras(crudo) : null;
+  if (desde) return { desde, motivo: null };
+  const motivo = crudo ? "invalida" : "sin_definir";
+  if (!avisoPisoEmitido) {
+    avisoPisoEmitido = true;
+    console.warn(
+      motivo === "invalida"
+        ? `[alerta-siesa-proveedor] CARNES_ALERTA_SIESA_DESDE tiene un formato inválido ("${crudo}"): use YYYY-MM-DD o ` +
+            "YYYY-MM-DDTHH:mm:ss con Z o ±HH:MM. El barrido no avisa de nada hasta corregirla."
+        : "[alerta-siesa-proveedor] CARNES_ALERTA_SIESA_DESDE no está definida: el barrido no avisa de nada " +
+            "hasta definirla (fecha ISO de activación). La alerta inmediata sigue funcionando.",
+    );
+  }
+  return { desde: null, motivo };
+}
 
 /** Minutos que una recepción Finalizada puede estar sin entrada ok antes de alertar. */
 export function minutosDeAlerta(env = process.env) {
@@ -85,14 +127,19 @@ export function clasificarRecepcion({ envios = [], ahora = new Date(), activo = 
   )[0];
 
   if (!ultimo) {
-    return {
-      motivo: MOTIVOS.SIN_ENVIO,
-      detalle: activo
-        ? "La recepción se finalizó pero no hay ningún intento de envío a SIESA registrado."
-        : "La recepción se finalizó pero no hay ningún intento de envío a SIESA registrado: " +
-          "el envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).",
-      envio: null,
-    };
+    return activo
+      ? {
+          motivo: MOTIVOS.SIN_ENVIO,
+          detalle: "La recepción se finalizó pero no hay ningún intento de envío a SIESA registrado.",
+          envio: null,
+        }
+      : {
+          motivo: MOTIVOS.SIESA_APAGADO,
+          detalle:
+            "La recepción se finalizó pero no hay ningún intento de envío a SIESA registrado: " +
+            "el envío a SIESA está apagado (CARNES_SIESA_ACTIVO no es true).",
+          envio: null,
+        };
   }
 
   if (ultimo.estado === "enviando") {
@@ -113,7 +160,7 @@ export function clasificarRecepcion({ envios = [], ahora = new Date(), activo = 
       detalle:
         `SIESA no confirmó el envío ${ultimo.referencia || `#${ultimo.id}`}` +
         (ultimo.error ? `: ${ultimo.error}` : ".") +
-        " Verificá en SIESA si el documento existe antes de reintentar.",
+        " Verifique en SIESA si el documento existe y resuelva el envío (no lo reintente).",
       envio: ultimo,
     };
   }
@@ -151,6 +198,7 @@ const dia = (fecha) => {
 
 const TITULO_MOTIVO = {
   [MOTIVOS.SIN_ENVIO]: "No se intentó subir a SIESA",
+  [MOTIVOS.SIESA_APAGADO]: "El envío a SIESA está apagado",
   [MOTIVOS.ERROR]: "SIESA no recibió el documento",
   [MOTIVOS.SIN_CONFIRMAR]: "SIESA no confirmó el documento",
   [MOTIVOS.ENVIANDO_ABANDONADO]: "El envío a SIESA quedó trabado",
@@ -161,7 +209,9 @@ const TITULO_MOTIVO = {
  *
  * @param {{recepcion: object, motivo: string, detalle: string, documento?: string, panel?: string}} p
  */
-export function armarCorreoAlerta({ recepcion, motivo, detalle, documento = "Entrada CEA", panel }) {
+export function armarCorreoAlerta({ recepcion, motivo, detalle, documento, esNota = false, panel }) {
+  documento ??= esNota ? "Nota crédito" : "Entrada CEA";
+  const titulo = esNota ? "Nota crédito de proveedor sin subir a SIESA" : "Recepción de proveedor sin subir a SIESA";
   const proveedor = recepcion.proveedor_razon_social || "Proveedor";
   const sede = recepcion.sede?.nombre || `Sede ${recepcion.sede_id ?? "—"}`;
   const co = recepcion.codigo_co || recepcion.sede?.codigo_co || "—";
@@ -183,9 +233,24 @@ export function armarCorreoAlerta({ recepcion, motivo, detalle, documento = "Ent
     ["Documento", documento],
   ];
 
+  let accion;
+  if (motivo === MOTIVOS.SIESA_APAGADO) {
+    accion =
+      "El envío a SIESA está apagado (<b>CARNES_SIESA_ACTIVO</b>): actívelo y luego reintente desde " +
+      "<b>Carnes → Proveedores → Actualizar estado con SIESA / reintentar</b>:";
+  } else if (motivo === MOTIVOS.SIN_CONFIRMAR) {
+    accion =
+      "Verifique en SIESA si el documento existe y <b>resuelva</b> el envío desde el panel de envíos a SIESA " +
+      "(no lo reintente, para no duplicarlo):";
+  } else if (esNota) {
+    accion = "Reintente la nota crédito desde <b>Carnes → Proveedores</b> (detalle de la recepción):";
+  } else {
+    accion = "Reintente desde <b>Carnes → Proveedores → Actualizar estado con SIESA / reintentar</b>:";
+  }
+
   const html = `
     <div style="font-family:Arial,sans-serif;max-width:620px;margin:0 auto;color:#111827;">
-      <h2 style="margin:0 0 4px;">Recepción de proveedor sin subir a SIESA</h2>
+      <h2 style="margin:0 0 4px;">${esc(titulo)}</h2>
       <p style="margin:0 0 16px;color:#6b7280;">Recepción #${esc(recepcion.id)} · ${esc(proveedor)}</p>
 
       <table cellpadding="6" cellspacing="0" width="100%"
@@ -204,7 +269,7 @@ export function armarCorreoAlerta({ recepcion, motivo, detalle, documento = "Ent
       </div>
 
       <p style="margin:0 0 16px;font-size:13px;color:#374151;">
-        Reintentá desde <b>Carnes → Proveedores → Actualizar estado con SIESA / reintentar</b>:
+        ${accion}
         <a href="${esc(url)}">${esc(url)}</a>
       </p>
 
@@ -212,7 +277,7 @@ export function armarCorreoAlerta({ recepcion, motivo, detalle, documento = "Ent
     </div>`;
 
   return {
-    subject: `Recepción de proveedor sin subir a SIESA — #${recepcion.id} ${proveedor}`.replace(/\s+/g, " ").trim(),
+    subject: `${titulo} — #${recepcion.id} ${proveedor}`.replace(/\s+/g, " ").trim(),
     html,
   };
 }
@@ -240,14 +305,27 @@ const dependencias = (deps = {}) => ({
   destinatarios: deps.destinatarios ?? destinatariosSiesaProveedores,
 });
 
-/** UPDATE condicional: solo gana quien encuentra `alerta_siesa_at` vacía. */
-async function reclamar(db, recepcionId, motivo, marca) {
-  const { data, error } = await db
+/**
+ * Filtro de "reclamable": sin reclamo, o con un reclamo huérfano (sin correo enviado y más viejo
+ * que `RECLAMO_HUERFANO_MS`). Sirve igual para el UPDATE del reclamo y para leer candidatas.
+ */
+const filtroReclamable = (ahoraMs) =>
+  `alerta_siesa_at.is.null,and(alerta_siesa_enviada_at.is.null,alerta_siesa_at.lt.${new Date(
+    ahoraMs - RECLAMO_HUERFANO_MS,
+  ).toISOString()})`;
+
+/**
+ * UPDATE condicional: solo gana quien encuentra la alerta sin reclamar (o con un reclamo
+ * huérfano). `soloFinalizada` (el barrido) exige además que la recepción siga Finalizada.
+ */
+async function reclamar(db, recepcionId, motivo, marca, { soloFinalizada = false } = {}) {
+  let consulta = db
     .from(TABLA)
-    .update({ alerta_siesa_at: marca, alerta_siesa_motivo: motivo })
+    .update({ alerta_siesa_at: marca, alerta_siesa_enviada_at: null, alerta_siesa_motivo: motivo })
     .eq("id", recepcionId)
-    .is("alerta_siesa_at", null)
-    .select("id");
+    .or(filtroReclamable(new Date(marca).getTime()));
+  if (soloFinalizada) consulta = consulta.eq("estado", ESTADOS.FINALIZADA);
+  const { data, error } = await consulta.select("id");
   if (error) return { estado: esMigracionFaltante(error) ? "sin_columnas" : "error", error };
   return { estado: data?.length ? "reclamada" : "ya_alertada" };
 }
@@ -257,11 +335,27 @@ async function liberar(db, recepcionId, marca) {
   try {
     await db
       .from(TABLA)
-      .update({ alerta_siesa_at: null, alerta_siesa_motivo: null })
+      .update({ alerta_siesa_at: null, alerta_siesa_enviada_at: null, alerta_siesa_motivo: null })
       .eq("id", recepcionId)
       .eq("alerta_siesa_at", marca);
   } catch (e) {
     console.error(`[alerta-siesa-proveedor] no se pudo liberar el reclamo de #${recepcionId}: ${e?.message}`);
+  }
+}
+
+/** Anota que el correo salió (solo si el reclamo sigue siendo el nuestro). Best-effort. */
+async function marcarEnviada(db, recepcionId, marca, ahora) {
+  try {
+    const { error } = await db
+      .from(TABLA)
+      .update({ alerta_siesa_enviada_at: new Date(ahora).toISOString() })
+      .eq("id", recepcionId)
+      .eq("alerta_siesa_at", marca);
+    if (error) {
+      console.error(`[alerta-siesa-proveedor] no se pudo anotar el envío de #${recepcionId}: ${error.message}`);
+    }
+  } catch (e) {
+    console.error(`[alerta-siesa-proveedor] no se pudo anotar el envío de #${recepcionId}: ${e?.message}`);
   }
 }
 
@@ -275,8 +369,8 @@ async function liberar(db, recepcionId, marca) {
  * @returns {Promise<{estado: 'enviada'|'sandbox'|'fallida'|'ya_alertada'|'sin_destinatarios'|'sin_columnas'|'error'}>}
  */
 export async function alertarRecepcion(
-  { recepcion, motivo, detalle, documento },
-  { sinDedupe = false, ahora = new Date(), ...deps } = {},
+  { recepcion, motivo, detalle, esNota = false },
+  { sinDedupe = false, soloFinalizada = false, ahora = new Date(), ...deps } = {},
 ) {
   const { db, enviar, destinatarios } = dependencias(deps);
   try {
@@ -288,7 +382,7 @@ export async function alertarRecepcion(
 
     const marca = new Date(ahora).toISOString();
     let reclamada = false;
-    const reclamo = await reclamar(db, recepcion.id, motivo, marca);
+    const reclamo = await reclamar(db, recepcion.id, motivo, marca, { soloFinalizada });
     if (reclamo.estado === "ya_alertada") return { estado: "ya_alertada" };
     if (reclamo.estado === "reclamada") reclamada = true;
     else if (reclamo.estado === "sin_columnas" && sinDedupe) {
@@ -302,7 +396,7 @@ export async function alertarRecepcion(
 
     let resultado;
     try {
-      const { subject, html } = armarCorreoAlerta({ recepcion, motivo, detalle, documento });
+      const { subject, html } = armarCorreoAlerta({ recepcion, motivo, detalle, esNota });
       resultado = await enviar({ to, subject, html });
     } catch (e) {
       resultado = { success: false, error: e?.message };
@@ -310,7 +404,10 @@ export async function alertarRecepcion(
 
     const salio = Boolean(resultado?.success) && !resultado?.sandbox;
     if (!salio && reclamada) await liberar(db, recepcion.id, marca);
-    if (salio) return { estado: "enviada" };
+    if (salio) {
+      if (reclamada) await marcarEnviada(db, recepcion.id, marca, new Date());
+      return { estado: "enviada" };
+    }
     return { estado: resultado?.sandbox ? "sandbox" : "fallida" };
   } catch (e) {
     console.error(`[alerta-siesa-proveedor] #${recepcion?.id}: ${e?.message}`);
@@ -343,16 +440,15 @@ export async function alertarEnvioProveedorFallido(envio, opciones = {}) {
     if (![ESTADOS.FINALIZADA, ESTADOS.ENVIADA_SIESA].includes(recepcion.estado)) return { estado: "no_aplica" };
 
     const esNota = envio.tipo === TIPO_ENVIO_PROVEEDOR.NOTA_CREDITO;
-    const documento = esNota ? "Nota crédito" : "Entrada CEA";
     const referencia = envio.referencia ? ` ${envio.referencia}` : "";
     const detalle =
       envio.estado === "sin_confirmar"
         ? `SIESA no confirmó el envío${referencia}${envio.error ? `: ${envio.error}` : "."} ` +
-          "Verificá en SIESA si el documento existe antes de reintentar."
+          "Verifique en SIESA si el documento existe y resuelva el envío (no lo reintente)."
         : envio.error || "SIESA rechazó el envío sin dar detalle.";
 
     return await alertarRecepcion(
-      { recepcion, motivo: envio.estado === "sin_confirmar" ? MOTIVOS.SIN_CONFIRMAR : MOTIVOS.ERROR, detalle, documento },
+      { recepcion, motivo: envio.estado === "sin_confirmar" ? MOTIVOS.SIN_CONFIRMAR : MOTIVOS.ERROR, detalle, esNota },
       { ...opciones, sinDedupe: true },
     );
   } catch (e) {
@@ -361,16 +457,59 @@ export async function alertarEnvioProveedorFallido(envio, opciones = {}) {
   }
 }
 
+const pendientes = new Set();
+
 /**
- * Borra la marca de alerta: se llama cuando el admin reintenta el envío, para que un
- * nuevo fallo avise otra vez. Best-effort: nunca lanza ni frena el reintento.
+ * `waitUntil` del proyecto (`waitUntilPorDefecto`, de @vercel/functions). Carga perezosa: el módulo
+ * arrastra la preliquidación entera y esta alerta no tiene por qué cargarla si no la usa.
+ */
+async function waitUntilDelProyecto(crearTarea) {
+  const { waitUntilPorDefecto } = await import("./preliquidacionInmediato.js");
+  return waitUntilPorDefecto(crearTarea);
+}
+
+/**
+ * Alerta inmediata en segundo plano: NO se espera. Así el correo (SMTP lento) no retrasa el cierre
+ * de la recepción ni la respuesta al celular, y nunca cambia el resultado del envío. En Vercel se
+ * registra con `waitUntil` para que la función no se congele antes de que salga; sin él corre como
+ * promesa suelta con su catch.
+ *
+ * @param {object} envio
+ * @param {object} [opciones] `waitUntil` (inyectable en tests) + las de `alertarEnvioProveedorFallido`
+ */
+export async function despacharAlertaEnvioProveedor(envio, { waitUntil = waitUntilDelProyecto, ...opciones } = {}) {
+  let tarea = null;
+  const crear = () => {
+    tarea ??= alertarEnvioProveedorFallido(envio, opciones)
+      .catch((e) => console.error(`[alerta-siesa-proveedor] alerta en segundo plano: ${e?.message}`))
+      .finally(() => pendientes.delete(tarea));
+    pendientes.add(tarea);
+    return tarea;
+  };
+  try {
+    if (!(await waitUntil(crear))) crear();
+  } catch (e) {
+    console.error(`[alerta-siesa-proveedor] waitUntil: ${e?.message}`);
+    crear();
+  }
+}
+
+/** Solo para los tests: espera a que terminen las alertas en segundo plano. */
+export async function esperarAlertasPendientes() {
+  while (pendientes.size) await Promise.allSettled([...pendientes]);
+}
+
+/**
+ * Borra la marca de alerta (reclamo y envío): se llama justo antes de que el admin reintente o
+ * resuelva un envío, para que un nuevo fallo avise otra vez. Best-effort: nunca lanza ni frena el
+ * reintento.
  */
 export async function limpiarAlertaSiesa(recepcionId, opciones = {}) {
   const { db } = dependencias(opciones);
   try {
     const { error } = await db
       .from(TABLA)
-      .update({ alerta_siesa_at: null, alerta_siesa_motivo: null })
+      .update({ alerta_siesa_at: null, alerta_siesa_enviada_at: null, alerta_siesa_motivo: null })
       .eq("id", recepcionId)
       .not("alerta_siesa_at", "is", null);
     if (error && !esMigracionFaltante(error)) {
@@ -398,7 +537,7 @@ async function leerPaginado(construir, pagina) {
  * Recepciones Finalizadas, finalizadas entre `piso` y `corte`, sin alerta. Paginación por
  * llave (`id > último`), no por offset: el reclamo de alertas cambia el conjunto mientras se lee.
  */
-async function leerCandidatas(db, { piso, corte, pagina }) {
+async function leerCandidatas(db, { piso, corte, pagina, ahoraMs }) {
   const filas = [];
   let ultimo = 0;
   for (;;) {
@@ -406,7 +545,7 @@ async function leerCandidatas(db, { piso, corte, pagina }) {
       .from(TABLA)
       .select(COLUMNAS_RECEPCION)
       .eq("estado", ESTADOS.FINALIZADA)
-      .is("alerta_siesa_at", null)
+      .or(filtroReclamable(ahoraMs))
       .gte("finalizado_at", piso)
       .lte("finalizado_at", corte)
       .gt("id", ultimo)
@@ -460,23 +599,34 @@ export async function barrerProveedoresSinSiesa(opciones = {}, deps = {}) {
     ahora = new Date(),
     activo = siesaActivo(),
     maxAlertas = MAX_ALERTAS_POR_CORRIDA,
+    presupuestoMs = PRESUPUESTO_BARRIDO_MS,
+    reloj = () => Date.now(),
+    env = process.env,
   } = opciones;
+  const inicio = reloj();
   const pagina = Math.min(opciones.pagina ?? PAGINA_RECEPCIONES, PAGINA_MAX);
   const lote = opciones.lote ?? LOTE_IDS;
   const { db, destinatarios } = dependencias(deps);
 
-  const base = { ok: true, minutos, revisadas: 0, candidatas: 0, enviadas: 0, sandbox: 0, fallidas: 0, ya_alertadas: 0, pendientes: 0 };
+  const base = {
+    ok: true, minutos, revisadas: 0, candidatas: 0, enviadas: 0, sandbox: 0, fallidas: 0,
+    ya_alertadas: 0, descartadas: 0, pendientes: 0,
+  };
 
   if (!destinatarios().length) {
     avisarSinDestinatarios();
     return { ...base, omitido: "sin_destinatarios" };
   }
 
+  const { desde } = pisoDeAlerta(env);
+  if (!desde) return { ...base, omitido: "sin_piso" };
+
   const ahoraMs = new Date(ahora).getTime();
   const corte = new Date(ahoraMs - minutos * 60_000).toISOString();
-  const piso = new Date(ahoraMs - VENTANA_DIAS * 86_400_000).toISOString();
+  // Ventana de 14 días, pero nunca antes del piso de activación.
+  const piso = new Date(Math.max(ahoraMs - VENTANA_DIAS * 86_400_000, desde.getTime())).toISOString();
 
-  const recepciones = await leerCandidatas(db, { piso, corte, pagina });
+  const recepciones = await leerCandidatas(db, { piso, corte, pagina, ahoraMs });
   if (recepciones.error) {
     if (esMigracionFaltante(recepciones.error)) {
       console.error("[alerta-siesa-proveedor] falta sql/045_alerta_siesa_proveedor.sql: el barrido no corre.");
@@ -498,13 +648,27 @@ export async function barrerProveedoresSinSiesa(opciones = {}, deps = {}) {
   resultado.candidatas = alertas.length;
 
   for (const alerta of alertas) {
-    if (resultado.enviadas + resultado.sandbox + resultado.fallidas >= maxAlertas) {
+    if (
+      resultado.enviadas + resultado.sandbox + resultado.fallidas >= maxAlertas ||
+      reloj() - inicio >= presupuestoMs
+    ) {
       resultado.pendientes += 1;
       continue;
     }
+
+    // Releída justo antes de reclamar: lo clasificado arriba pudo cambiar (la entrada quedó ok, un
+    // envío en curso terminó, otro barrido ya la avisó) mientras se mandaban los correos anteriores.
+    const fresco = await leerEnvios(db, [alerta.recepcion.id], { lote, pagina });
+    if (fresco.error) throw new Error(`Error al leer los envíos de proveedor: ${fresco.error.message}`);
+    const vigente = clasificarRecepcion({ envios: fresco.data.get(alerta.recepcion.id) || [], ahora, activo });
+    if (!vigente) {
+      resultado.descartadas += 1;
+      continue;
+    }
+
     const { estado } = await alertarRecepcion(
-      { recepcion: alerta.recepcion, motivo: alerta.motivo, detalle: alerta.detalle },
-      { ahora, ...deps },
+      { recepcion: alerta.recepcion, motivo: vigente.motivo, detalle: vigente.detalle },
+      { ahora, soloFinalizada: true, ...deps },
     );
     if (estado === "enviada") resultado.enviadas += 1;
     else if (estado === "sandbox") resultado.sandbox += 1;
@@ -513,5 +677,6 @@ export async function barrerProveedoresSinSiesa(opciones = {}, deps = {}) {
     else if (estado === "sin_columnas") return { ...resultado, omitido: "migracion_faltante" };
     else resultado.fallidas += 1;
   }
+  if (resultado.pendientes && reloj() - inicio >= presupuestoMs) resultado.presupuesto_agotado = true;
   return resultado;
 }

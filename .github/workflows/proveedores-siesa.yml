@@ -29,7 +29,11 @@ jobs:
         run: |
           set -uo pipefail
 
-          args=(--silent --show-error --fail-with-body --max-time 120
+          # El backend deja de empezar correos a los ~90 s (PRESUPUESTO_BARRIDO_MS) y la función de
+          # Vercel dura hasta 300 s: este tope de curl tiene que quedar holgadamente por encima del
+          # presupuesto, para no cortar un barrido que todavía está cerrando el último correo.
+
+          args=(--silent --show-error --fail-with-body --max-time 240
             -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${CRON_SECRET}")
           # Los previews de Vercel exigen el bypass de la protección de despliegues.
           if [ -n "${BYPASS:-}" ]; then
@@ -50,7 +54,7 @@ jobs:
 
           omitido=$(echo "$respuesta" | jq -r '.omitido // empty')
           if [ -n "$omitido" ]; then
-            echo "::warning::Barrido omitido (${omitido}): revisá CARNES_MAIL_SIESA_PROVEEDORES o sql/045"
+            echo "::warning::Barrido omitido (${omitido}): revise CARNES_MAIL_SIESA_PROVEEDORES, CARNES_ALERTA_SIESA_DESDE o sql/045"
           fi
 
           pendientes=$(echo "$respuesta" | jq -r '.pendientes // 0')

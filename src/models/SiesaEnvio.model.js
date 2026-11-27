@@ -148,7 +148,7 @@ import {
   notificarErrorEnvioSiesa,
 } from "../services/notificaciones.service.js";
 import {
-  alertarEnvioProveedorFallido,
+  despacharAlertaEnvioProveedor,
   limpiarAlertaSiesa,
 } from "../services/alertasSiesaProveedor.js";
 
@@ -757,7 +757,7 @@ async function registrarYEnviar({
   // (`CARNES_MAIL_SIESA_PROVEEDORES`, con dedupe por recepción). Ninguno lanza ni cambia el envío.
   const esProveedor = esTipoProveedor(tipo);
   const avisarError = async (envio) => {
-    if (esProveedor) await alertarEnvioProveedorFallido(envio);
+    if (esProveedor) await despacharAlertaEnvioProveedor(envio);
     else await avisarErrorEnvio(envio, resumen.sede ?? null, etiqueta);
   };
 
@@ -898,7 +898,7 @@ async function registrarYEnviar({
   // `omitirAviso` deja sin correo el error que el flujo corrige solo (ver `ejecutarAjuste`).
   if (estado === "error" && !omitirAviso?.(data)) await avisarError(data);
   // Un sin_confirmar de Talleres no avisa; el de proveedor sí: SIESA pudo no haberlo recibido.
-  if (estado === "sin_confirmar" && esProveedor) await alertarEnvioProveedorFallido(data);
+  if (estado === "sin_confirmar" && esProveedor) await despacharAlertaEnvioProveedor(data);
   return data;
 }
 
@@ -4212,14 +4212,17 @@ export async function reintentarEntradaProveedor(recepcionId, por) {
   }
 
   await refrescarSnapshotsProveedor(recepcion);
-  // El admin reintenta: si vuelve a fallar tiene que avisar otra vez (best-effort, nunca lanza).
-  await limpiarAlertaSiesa(recepcionId);
 
   // Releída justo antes de reservar: tiene que seguir Finalizada.
   const fresca = await cargarRecepcionProveedor(recepcionId);
   if (!puedeEnviarASiesa(fresca.estado)) {
     throw createError(409, `La recepción está en "${fresca.estado}": ya no se puede enviar.`, "RECEPCION_CAMBIO");
   }
+
+  // El admin reintenta: si vuelve a fallar tiene que avisar otra vez. Se borra la marca recién acá,
+  // pasadas las guardas que pueden dar 409, para no dejar una alerta futura abierta sin reintento
+  // (best-effort, nunca lanza).
+  await limpiarAlertaSiesa(recepcionId);
 
   const fila = await mandarEntrada(fresca, por);
   // Otro pedido la reservó entre la pregunta de arriba y la reserva.
@@ -4296,6 +4299,11 @@ export async function dispararNotaCreditoSiCorresponde(recepcionId, por, { manua
     }
     return { decision, fila: null, notaCredito: notaCreditoParaFront(decision) };
   }
+
+  // Entrada y nota crédito comparten la marca de alerta de la recepción: antes de reservar la
+  // nota crédito (pasadas las guardas de arriba) se borra, así su fallo avisa aunque la entrada
+  // ya hubiera avisado. Cubre el reintento manual, la reconciliación y el resolver.
+  await limpiarAlertaSiesa(recepcionId);
 
   const fila = await registrarYEnviar({
     armado,

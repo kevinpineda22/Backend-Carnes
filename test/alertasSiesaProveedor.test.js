@@ -17,6 +17,11 @@ const {
   barrerProveedoresSinSiesa,
   minutosDeAlerta,
   reiniciarAvisoSinDestinatarios,
+  reiniciarAvisoPiso,
+  pisoDeAlerta,
+  despacharAlertaEnvioProveedor,
+  esperarAlertasPendientes,
+  RECLAMO_HUERFANO_MS,
   MOTIVOS,
 } = await import("../src/services/alertasSiesaProveedor.js");
 const { destinatariosSiesaProveedores } = await import("../src/services/email.service.js");
@@ -34,6 +39,28 @@ class Q {
   eq(c, v) { this.f.push((r) => r[c] != null && String(r[c]) === String(v)); return this; }
   is(c, v) { this.f.push((r) => (v === null ? r[c] == null : r[c] === v)); return this; }
   not(c, _op, v) { this.f.push((r) => (v === null ? r[c] != null : r[c] !== v)); return this; }
+  or(expr) {
+    // Solo la forma que usa el servicio: `col.is.null,and(col.is.null,col.lt.ISO)`.
+    const dividir = (txt) => {
+      const partes = []; let prof = 0; let ini = 0;
+      for (let i = 0; i < txt.length; i += 1) {
+        if (txt[i] === "(") prof += 1;
+        else if (txt[i] === ")") prof -= 1;
+        else if (txt[i] === "," && prof === 0) { partes.push(txt.slice(ini, i)); ini = i + 1; }
+      }
+      partes.push(txt.slice(ini));
+      return partes;
+    };
+    const evaluar = (t) => {
+      if (t.startsWith("and(")) { const hs = dividir(t.slice(4, -1)).map(evaluar); return (r) => hs.every((h) => h(r)); }
+      const m = /^([a-z_]+)\.(is|lt)\.(.+)$/.exec(t);
+      if (m[2] === "is") return (r) => r[m[1]] == null;
+      return (r) => r[m[1]] != null && new Date(r[m[1]]) < new Date(m[3]);
+    };
+    const hs = dividir(expr).map(evaluar);
+    this.f.push((r) => hs.some((h) => h(r)));
+    return this;
+  }
   in(c, a) { this.f.push((r) => a.map(String).includes(String(r[c]))); return this; }
   gt(c, v) { this.f.push((r) => r[c] > v); return this; }
   gte(c, v) { this.f.push((r) => r[c] != null && new Date(r[c]) >= new Date(v)); return this; }
@@ -120,6 +147,8 @@ beforeEach(() => {
   destinos = DESTINOS;
   seqEnvio = 0;
   reiniciarAvisoSinDestinatarios();
+  reiniciarAvisoPiso();
+  process.env.CARNES_ALERTA_SIESA_DESDE = "2026-11-01T00:00:00-05:00";
   console.warn = () => {};
   console.error = () => {};
   console.log = () => {};
@@ -128,12 +157,12 @@ test.after(() => Object.assign(console, silenciar));
 
 // ─── Clasificación ───
 
-test("clasificar: sin ningún envío → sin_envio, y anota si SIESA está apagado", () => {
+test("clasificar: sin ningún envío → sin_envio, o siesa_apagado si el interruptor está apagado", () => {
   const encendido = clasificarRecepcion({ envios: [], ahora: AHORA, activo: true });
   assert.equal(encendido.motivo, MOTIVOS.SIN_ENVIO);
   assert.doesNotMatch(encendido.detalle, /apagado/);
   const apagado = clasificarRecepcion({ envios: [], ahora: AHORA, activo: false });
-  assert.equal(apagado.motivo, MOTIVOS.SIN_ENVIO);
+  assert.equal(apagado.motivo, MOTIVOS.SIESA_APAGADO);
   assert.match(apagado.detalle, /apagado/);
 });
 
@@ -366,7 +395,7 @@ test("barrido: avisa solo de las finalizadas hace más de N min, sin ok, dentro 
     recepcion(2), // error → avisa
     recepcion(3), // ok → no
     recepcion(4, { finalizado_at: hace(10) }), // reciente → no
-    recepcion(5, { alerta_siesa_at: hace(60) }), // ya alertada → no
+    recepcion(5, { alerta_siesa_at: hace(60), alerta_siesa_enviada_at: hace(59) }), // ya alertada → no
     recepcion(6, { finalizado_at: hace(15 * 24 * 60) }), // más de 14 días → no
     recepcion(7, { estado: "Enviada_SIESA" }), // ya enviada → no
     recepcion(8), // enviando joven → no
@@ -388,8 +417,8 @@ test("barrido: avisa solo de las finalizadas hace más de N min, sin ok, dentro 
     [1, 2, 9, 10],
   );
   const motivos = Object.fromEntries(db.carnes_proveedor_recepciones.map((x) => [x.id, x.alerta_siesa_motivo]));
-  assert.deepEqual([motivos[1], motivos[2], motivos[9], motivos[10]], ["sin_envio", "error", "enviando_abandonado", "sin_confirmar"]);
-  assert.match(correos.find((c) => c.subject.includes("#1 ")).html, /apagado/);
+  assert.deepEqual([motivos[1], motivos[2], motivos[9], motivos[10]], ["siesa_apagado", "error", "enviando_abandonado", "sin_confirmar"]);
+  assert.match(correos.find((c) => c.subject.includes("#1 ")).html, /CARNES_SIESA_ACTIVO/);
 });
 
 test("barrido: es idempotente (el segundo no repite correos) y no toca las ya enviadas", async () => {
@@ -472,4 +501,183 @@ test("barrido: respeta el tope por corrida y deja el resto como pendientes", asy
   const r2 = await barrerProveedoresSinSiesa({ ahora: AHORA, maxAlertas: 2 }, deps());
   assert.deepEqual([r2.enviadas, r2.pendientes], [2, 1]);
   assert.equal(correos.length, 4);
+});
+
+// ─── Correo: nota crédito, sin_confirmar y SIESA apagado ───
+
+test("correo: la nota crédito se titula como nota crédito (asunto y encabezado)", () => {
+  const { subject, html } = armarCorreoAlerta({ recepcion: recepcion(7), motivo: MOTIVOS.ERROR, detalle: "x", esNota: true });
+  assert.equal(subject, "Nota crédito de proveedor sin subir a SIESA — #7 PROVEEDOR 7");
+  assert.match(html, /<h2[^>]*>Nota crédito de proveedor sin subir a SIESA/);
+  const entrada = armarCorreoAlerta({ recepcion: recepcion(7), motivo: MOTIVOS.ERROR, detalle: "x" });
+  assert.match(entrada.subject, /^Recepción de proveedor sin subir a SIESA/);
+});
+
+test("correo: sin_confirmar pide resolver (no reintentar) y SIESA apagado indica el interruptor", () => {
+  const sc = armarCorreoAlerta({ recepcion: recepcion(7), motivo: MOTIVOS.SIN_CONFIRMAR, detalle: "x" });
+  assert.match(sc.html, /resuelva/);
+  assert.doesNotMatch(sc.html, /Reintente desde/);
+  const ap = armarCorreoAlerta({ recepcion: recepcion(7), motivo: MOTIVOS.SIESA_APAGADO, detalle: "x" });
+  assert.match(ap.html, /apagado/);
+  assert.match(ap.html, /CARNES_SIESA_ACTIVO/);
+  const nc = clasificarRecepcion({ envios: [envio(1, "sin_confirmar", { error: "t" })], ahora: AHORA });
+  assert.match(nc.detalle, /resuelva/);
+});
+
+// ─── Reclamo huérfano ───
+
+test("reclamo: anota enviada_at al salir el correo y no se vuelve a reclamar", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1)];
+  await alertarRecepcion({ recepcion: recepcion(1), motivo: MOTIVOS.ERROR, detalle: "x" }, { ahora: AHORA, ...deps() });
+  assert.ok(db.carnes_proveedor_recepciones[0].alerta_siesa_enviada_at);
+  const tarde = new Date(AHORA.getTime() + 60 * 60_000);
+  const r = await alertarRecepcion({ recepcion: recepcion(1), motivo: MOTIVOS.ERROR, detalle: "x" }, { ahora: tarde, ...deps() });
+  assert.equal(r.estado, "ya_alertada");
+  assert.equal(correos.length, 1);
+});
+
+test("reclamo huérfano: sin enviada_at y de más de 15 min se reclama de nuevo; uno reciente o enviado no", async () => {
+  db.carnes_proveedor_recepciones = [
+    recepcion(1, { alerta_siesa_at: hace(RECLAMO_HUERFANO_MS / 60_000 + 5), alerta_siesa_motivo: "error" }), // huérfano
+    recepcion(2, { alerta_siesa_at: hace(5), alerta_siesa_motivo: "error" }), // en curso
+    recepcion(3, { alerta_siesa_at: hace(60), alerta_siesa_enviada_at: hace(59), alerta_siesa_motivo: "error" }), // enviado
+  ];
+  const r = await barrerProveedoresSinSiesa({ ahora: AHORA }, deps());
+  assert.equal(r.enviadas, 1);
+  assert.deepEqual(correos.map((c) => Number(c.subject.match(/#(\d+)/)[1])), [1]);
+  assert.equal(db.carnes_proveedor_recepciones[0].alerta_siesa_at, AHORA.toISOString());
+  assert.ok(db.carnes_proveedor_recepciones[0].alerta_siesa_enviada_at);
+});
+
+test("limpiar: borra reclamo, envío y motivo", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1, { alerta_siesa_at: hace(5), alerta_siesa_enviada_at: hace(4), alerta_siesa_motivo: "error" })];
+  await limpiarAlertaSiesa(1, deps());
+  const r = db.carnes_proveedor_recepciones[0];
+  assert.deepEqual([r.alerta_siesa_at, r.alerta_siesa_enviada_at, r.alerta_siesa_motivo], [null, null, null]);
+});
+
+test("liberar tras un fallo deja enviada_at vacía", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1)];
+  respuestaCorreo = { success: false, error: "SMTP" };
+  await alertarRecepcion({ recepcion: recepcion(1), motivo: MOTIVOS.ERROR, detalle: "x" }, { ahora: AHORA, ...deps() });
+  assert.equal(db.carnes_proveedor_recepciones[0].alerta_siesa_enviada_at ?? null, null);
+});
+
+// ─── Presupuesto de tiempo ───
+
+test("barrido: pasado el presupuesto de tiempo no empieza más correos y los deja pendientes", async () => {
+  db.carnes_proveedor_recepciones = Array.from({ length: 5 }, (_, i) => recepcion(i + 1));
+  let t = 0;
+  const reloj = () => t;
+  const enviarLento = async (mail) => { correos.push(mail); t += 40_000; return { success: true }; };
+  const r = await barrerProveedoresSinSiesa(
+    { ahora: AHORA, presupuestoMs: 90_000, reloj },
+    { ...deps(), enviar: enviarLento },
+  );
+  assert.equal(r.enviadas, 3); // empiezan a los 0, 40 y 80 s; a los 120 s ya no
+  assert.equal(r.pendientes, 2);
+  assert.equal(r.presupuesto_agotado, true);
+});
+
+test("workflow: el curl espera bastante más que el presupuesto del barrido", async () => {
+  const { PRESUPUESTO_BARRIDO_MS } = await import("../src/services/alertasSiesaProveedor.js");
+  const { readFileSync } = await import("node:fs");
+  const yml = readFileSync(new URL("../.github/workflows/proveedores-siesa.yml", import.meta.url), "utf8");
+  const maxTime = Number(/--max-time\s+(\d+)/.exec(yml)[1]);
+  assert.ok(maxTime * 1000 >= PRESUPUESTO_BARRIDO_MS + 60_000, `max-time ${maxTime}s es muy justo`);
+  assert.ok(maxTime <= 290, "tiene que caber en los 300 s de la función");
+});
+
+// ─── Piso de activación ───
+
+test("piso: sin variable o inválida el barrido no hace nada y avisa UNA vez; la inmediata sigue", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1)];
+  const avisos = [];
+  console.warn = (m) => avisos.push(m);
+  for (const valor of [undefined, "", "01/12/2026", "2026-13-40"]) {
+    if (valor === undefined) delete process.env.CARNES_ALERTA_SIESA_DESDE; else process.env.CARNES_ALERTA_SIESA_DESDE = valor;
+    const r = await barrerProveedoresSinSiesa({ ahora: AHORA }, deps());
+    assert.equal(r.omitido, "sin_piso");
+    assert.equal(r.ok, true);
+  }
+  assert.equal(correos.length, 0);
+  assert.equal(consultas.length, 0);
+  assert.equal(avisos.length, 1);
+  assert.match(avisos[0], /CARNES_ALERTA_SIESA_DESDE/);
+  const i = await alertarEnvioProveedorFallido(envio(1, "error"), { ahora: AHORA, ...deps() });
+  assert.equal(i.estado, "enviada");
+});
+
+test("piso: el barrido solo mira lo finalizado desde el piso (inclusive), dentro de los 14 días", async () => {
+  process.env.CARNES_ALERTA_SIESA_DESDE = "2026-11-26T10:00:00-05:00"; // 15:00Z
+  db.carnes_proveedor_recepciones = [
+    recepcion(1, { finalizado_at: "2026-11-26T14:59:59Z" }), // antes del piso
+    recepcion(2, { finalizado_at: "2026-11-26T15:00:00Z" }), // en el piso
+    recepcion(3, { finalizado_at: "2026-11-27T10:00:00Z" }),
+  ];
+  const r = await barrerProveedoresSinSiesa({ ahora: AHORA }, deps());
+  assert.equal(r.revisadas, 2);
+  assert.deepEqual(correos.map((c) => Number(c.subject.match(/#(\d+)/)[1])).sort(), [2, 3]);
+});
+
+test("pisoDeAlerta: acepta fecha y fecha-hora con offset, rechaza el resto", () => {
+  assert.ok(pisoDeAlerta({ CARNES_ALERTA_SIESA_DESDE: "2026-12-01" }).desde instanceof Date);
+  assert.ok(pisoDeAlerta({ CARNES_ALERTA_SIESA_DESDE: "2026-12-01T00:00:00-05:00" }).desde instanceof Date);
+  assert.equal(pisoDeAlerta({ CARNES_ALERTA_SIESA_DESDE: "2026-12-01T00:00:00" }).desde, null);
+  assert.equal(pisoDeAlerta({ CARNES_ALERTA_SIESA_DESDE: "12" }).motivo, "invalida");
+});
+
+// ─── Clasificación vieja ───
+
+test("barrido: descarta la recepción si entre la lectura y el reclamo la entrada quedó ok", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1), recepcion(2)];
+  // Al mandar el correo de la 1, la entrada de la 2 queda ok en SIESA.
+  const enviarYCambiar = async (mail) => {
+    correos.push(mail);
+    db.carnes_siesa_envios.push(envio(2, "ok"));
+    return { success: true };
+  };
+  const r = await barrerProveedoresSinSiesa({ ahora: AHORA }, { ...deps(), enviar: enviarYCambiar });
+  assert.equal(r.enviadas, 1);
+  assert.equal(r.descartadas, 1);
+  assert.equal(db.carnes_proveedor_recepciones[1].alerta_siesa_at ?? null, null);
+});
+
+test("barrido: no reclama una recepción que dejó de estar Finalizada (filtro del reclamo)", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(1), recepcion(2)];
+  const enviarYAnular = async (mail) => {
+    correos.push(mail);
+    db.carnes_proveedor_recepciones[1].estado = "Anulada";
+    return { success: true };
+  };
+  const r = await barrerProveedoresSinSiesa({ ahora: AHORA }, { ...deps(), enviar: enviarYAnular });
+  assert.equal(r.enviadas, 1);
+  assert.equal(r.ya_alertadas, 1);
+  assert.equal(correos.length, 1);
+});
+
+// ─── Segundo plano ───
+
+test("despacharAlertaEnvioProveedor: no espera al correo y usa waitUntil cuando hay", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(3)];
+  let liberar;
+  const puerta = new Promise((r) => { liberar = r; });
+  const enviarBloqueado = async (mail) => { await puerta; correos.push(mail); return { success: true }; };
+  let registradas = 0;
+  const waitUntil = async (crear) => { registradas += 1; crear(); return true; };
+  await despacharAlertaEnvioProveedor(envio(3, "error"), { ahora: AHORA, ...deps(), enviar: enviarBloqueado, waitUntil });
+  assert.equal(registradas, 1);
+  assert.equal(correos.length, 0, "el despacho no esperó al correo");
+  liberar();
+  await esperarAlertasPendientes();
+  assert.equal(correos.length, 1);
+});
+
+test("despacharAlertaEnvioProveedor: sin waitUntil corre suelto y nunca lanza, aunque todo falle", async () => {
+  db.carnes_proveedor_recepciones = [recepcion(3)];
+  await assert.doesNotReject(despacharAlertaEnvioProveedor(envio(3, "error"), { ahora: AHORA, ...deps(), waitUntil: async () => false }));
+  await esperarAlertasPendientes();
+  assert.equal(correos.length, 1);
+  await assert.doesNotReject(despacharAlertaEnvioProveedor(envio(3, "error"), { ...deps(), waitUntil: async () => { throw new Error("sin vercel"); } }));
+  await esperarAlertasPendientes();
 });

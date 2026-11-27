@@ -14,6 +14,7 @@ SET LOCAL lock_timeout = '5s';
 
 ALTER TABLE carnes_proveedor_recepciones
   DROP COLUMN IF EXISTS alerta_siesa_at,
+  DROP COLUMN IF EXISTS alerta_siesa_enviada_at,
   DROP COLUMN IF EXISTS alerta_siesa_motivo;
 
 COMMIT;
